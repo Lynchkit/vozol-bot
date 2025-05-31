@@ -13,7 +13,7 @@ MENU_PATH = "menu.json"
 DEFAULT_CATEGORY_PRICE = 1000  # Цена по умолчанию для новых категорий
 
 bot = telebot.TeleBot(TOKEN)
-bot.remove_webhook(drop_pending_updates=True)
+bot.remove_webhook()
 user_data = {}
 
 # ——— Загрузка/сохранение меню ———
