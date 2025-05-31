@@ -1,20 +1,16 @@
-# Используем официальный Python-образ
+# Используем официальный Python 3.11 slim-образ
 FROM python:3.11-slim
 
-# Рабочая директория внутри контейнера
+# Устанавливаем рабочую директорию внутри контейнера
 WORKDIR /app
 
-# Копируем файлы в контейнер
+# 1) Копируем файл с зависимостями и ставим их
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY bot2.py .
+# 2) Копируем сам скрипт бота и файл меню
+COPY bot.py .
 COPY menu.json .
 
-# Переменные окружения (если хотим задать дефолтные)
-# ENV TOKEN=""
-# ENV GROUP_CHAT_ID=""
-# ENV PERSONAL_CHAT_ID=""
-
-# Команда запуска
-CMD ["python", "bot2.py"]
+# 3) Запуск: просто запускаем bot.py, в самом начале которого удаляется старый webhook
+CMD ["python", "bot.py"]
