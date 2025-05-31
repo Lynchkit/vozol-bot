@@ -68,16 +68,24 @@ def get_flavors_keyboard(cat):
     return kb
 
 def address_keyboard():
+    """
+    Добавили кнопку «⬅️ Назад» для отмены ввода адреса.
+    """
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add(types.KeyboardButton("📍 Поделиться геопозицией", request_location=True))
     kb.add("🗺️ Выбрать точку на карте")
     kb.add("✏️ Ввести адрес")
+    kb.add("⬅️ Назад")
     return kb
 
 def contact_keyboard():
+    """
+    Добавили кнопку «⬅️ Назад» для отмены ввода контакта.
+    """
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add(types.KeyboardButton("📞 Поделиться контактом", request_contact=True))
     kb.add("✏️ Ввести ник")
+    kb.add("⬅️ Назад")
     return kb
 
 def comment_keyboard():
@@ -419,6 +427,13 @@ def universal_handler(message):
 
     # — Если ожидаем ввод адреса — обработка локации/текста перед выбором категории —
     if data.get('wait_for_address'):
+        # Новая обработка «⬅️ Назад»: вернуться к выбору категории, отменив адрес
+        if text == "⬅️ Назад":
+            data['wait_for_address'] = False
+            data['current_category'] = None
+            bot.send_message(cid, "Адрес не указан. Вернитесь к выбору категории:", reply_markup=get_main_keyboard())
+            return
+
         if text == "🗺️ Выбрать точку на карте":
             bot.send_message(
                 cid,
@@ -427,6 +442,7 @@ def universal_handler(message):
             )
             return
 
+        # Если пользователь прислал геометку (venue)
         if message.content_type == 'venue' and message.venue:
             v = message.venue
             address = f"{v.title}, {v.address}\n🌍 https://maps.google.com/?q={v.location.latitude},{v.location.longitude}"
@@ -450,6 +466,13 @@ def universal_handler(message):
 
     # — Если ожидаем ввод контакта — обработка перед следующими блоками —
     if data.get('wait_for_contact'):
+        # Обработка «⬅️ Назад»: вернуться на шаг выбора адреса
+        if text == "⬅️ Назад":
+            data['wait_for_address'] = True
+            data['wait_for_contact'] = False
+            bot.send_message(cid, "Вернулись к выбору адреса. Укажите адрес:", reply_markup=address_keyboard())
+            return
+
         if text == "✏️ Ввести ник":
             bot.send_message(cid, "Введите ваш Telegram-ник (без @):", reply_markup=types.ReplyKeyboardRemove())
             return
@@ -479,8 +502,15 @@ def universal_handler(message):
             bot.send_message(
                 cid,
                 "Комментарий сохранён. Нажмите 📤 Отправить заказ.",
-                reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True).add("📤 Отправить заказ")
+                reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True).add("📤 Отправить заказ").add("⬅️ Назад")
             )
+            return
+
+        # Если пользователь нажал «⬅️ Назад» из комментария — возвращаем к выбору контакта
+        if text == "⬅️ Назад":
+            data['wait_for_contact'] = True
+            data['wait_for_comment'] = False
+            bot.send_message(cid, "Вернулись к выбору контакта. Укажите контакт:", reply_markup=contact_keyboard())
             return
 
         if text == "📤 Отправить заказ":
