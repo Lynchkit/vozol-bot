@@ -12,8 +12,16 @@ ADMIN_IDS = {PERSONAL_CHAT_ID}
 MENU_PATH = "menu.json"
 DEFAULT_CATEGORY_PRICE = 1000  # Цена по умолчанию для новых категорий
 
+# ▼▼▼ Принудительно удаляем Webhook через HTTP перед созданием TeleBot
+delete_url = f"https://api.telegram.org/bot{TOKEN}/deleteWebhook"
+try:
+    requests.get(delete_url, timeout=5)
+except Exception:
+    pass
+# ▼▼▼
+
 bot = telebot.TeleBot(TOKEN)
-bot.remove_webhook()
+bot.remove_webhook()  # простой вызов, без аргументов
 user_data = {}
 
 # ——— Загрузка/сохранение меню ———
