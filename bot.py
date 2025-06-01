@@ -52,6 +52,8 @@ def get_main_keyboard():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     for cat in menu:
         kb.add(cat)
+    # Новая кнопка «Изображения устройств»
+    kb.add("📷 Изображения устройств")
     return kb
 
 def get_flavors_keyboard(cat):
@@ -180,11 +182,27 @@ def universal_handler(message):
         "wait_for_address": False, "wait_for_contact": False, "wait_for_comment": False
     })
 
-    # — Режим редактирования меню (/change) —
+    # ——— Обработка кнопки «Изображения устройств» ———
+    if text == "📷 Изображения устройств":
+        bot.send_message(cid, "Сейчас пришлю все изображения устройств:", reply_markup=types.ReplyKeyboardRemove())
+        urls = [
+            "https://raw.githubusercontent.com/Lynchkit/vozol-bot/refs/heads/main/GEAR.png",
+            "https://raw.githubusercontent.com/Lynchkit/vozol-bot/refs/heads/main/photo_1_2024-10-17_09-50-13.png",
+            "https://raw.githubusercontent.com/Lynchkit/vozol-bot/refs/heads/main/photo_2025-03-06_09-11-29.jpg",
+            "https://raw.githubusercontent.com/Lynchkit/vozol-bot/refs/heads/main/photo_3_2024-10-17_09-50-13.png"
+        ]
+        for url in urls:
+            bot.send_photo(cid, url)
+        # После отправки фотографий возвращаем главное меню
+        bot.send_message(cid, "Вы в главном меню:", reply_markup=get_main_keyboard())
+        return
+    # ——— Конец обработки «Изображения устройств» ———
+
+    # ——— Режим редактирования меню (/change) ———
     if data.get('edit_phase'):
         phase = data['edit_phase']
 
-        # Кнопка "⬅️ Back" — возврат на уровень выше в /change
+        # Кнопка «⬅️ Back» — возврат на уровень выше в /change
         if text == "⬅️ Back":
             data.pop('edit_cat', None)
             data.pop('edit_flavor', None)
@@ -452,7 +470,7 @@ def universal_handler(message):
         bot.send_message(cid, "Back to editing menu:", reply_markup=edit_action_keyboard())
         return
 
-    # — Если ожидаем ввод адреса —
+    # ——— Если ожидаем ввод адреса ———
     if data.get('wait_for_address'):
         if text == "⬅️ Назад":
             data['wait_for_address'] = False
@@ -489,7 +507,7 @@ def universal_handler(message):
         bot.send_message(cid, "Укажите контакт для связи:", reply_markup=contact_keyboard())
         return
 
-    # — Если ожидаем ввод контакта —
+    # ——— Если ожидаем ввод контакта ———
     if data.get('wait_for_contact'):
         if text == "⬅️ Назад":
             data['wait_for_address'] = True
@@ -515,7 +533,7 @@ def universal_handler(message):
         bot.send_message(cid, "Напишите комментарий к заказу:", reply_markup=comment_keyboard())
         return
 
-    # — Если ожидаем ввод комментария —
+    # ——— Если ожидаем ввод комментария ———
     if data.get('wait_for_comment'):
         if text == "✏️ Комментарий к заказу":
             bot.send_message(cid, "Введите текст комментария:", reply_markup=types.ReplyKeyboardRemove())
@@ -580,7 +598,7 @@ def universal_handler(message):
             bot.send_message(PERSONAL_CHAT_ID, "[Копия заказа]\n\n" + full)
             return
 
-    # — Обычный сценарий заказа —
+    # ——— Обычный сценарий заказа ———
 
     if text == "⬅️ Назад":
         data['current_category'] = None
