@@ -117,7 +117,6 @@ def fetch_rates():
             continue
     return {"RUB": 0, "USD": 0, "UAH": 0}
 
-# ——— Обработчики команд ———
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     user_data[message.chat.id] = {
@@ -162,13 +161,12 @@ def handle_convert(message):
         except:
             out.append(f"{p}₺ → неверный формат")
             continue
-        rub = round(t * rates.get("RUB", 0) + 400, 2)
+        rub = round(t * rates.get("RUB", 0) + 500, 2)
         usd = round(t * rates.get("USD", 0) + 2, 2)
-        uah = round(t * rates.get("UAH", 0), 2)
+        uah = round(t * rates.get("UAH", 0) + 200, 2)
         out.append(f"{int(t)}₺ → {rub}₽, ${usd}, ₴{uah}")
     bot.reply_to(message, "\n".join(out))
 
-# ——— Универсальный хендлер ———
 @bot.message_handler(content_types=['text','location','venue','contact'])
 def universal_handler(message):
     cid = message.chat.id
@@ -592,9 +590,9 @@ def universal_handler(message):
             summary_en = "\n".join(f"{i['category']}: {i['flavor']} — {i['price']}₺" for i in cart)
 
             rates = fetch_rates()
-            rub = round(total_try * rates.get("RUB", 0) + 400, 2)
+            rub = round(total_try * rates.get("RUB", 0) + 500, 2)
             usd = round(total_try * rates.get("USD", 0) + 2, 2)
-            uah = round(total_try * rates.get("UAH", 0), 2)
+            uah = round(total_try * rates.get("UAH", 0) + 200, 2)
             conv = f"({rub}₽, ${usd}, ₴{uah})"
 
             # Русскоязычная копия админу
@@ -635,7 +633,7 @@ def universal_handler(message):
                         break
             save_menu(menu)
 
-            # Сбрасываем данные заказа
+            # Сброс данных заказа
             data['cart'] = []
             data['current_category'] = None
             data['wait_for_address'] = False
