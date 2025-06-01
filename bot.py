@@ -483,7 +483,8 @@ def universal_handler(message):
             bot.send_message(
                 cid,
                 "Комментарий сохранён. Нажмите 📤 Отправить заказ.",
-                reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True).add("📤 Отправить заказ").add("⬅️ Назад")
+                reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                .add("📤 Отправить заказ").add("⬅️ Назад")
             )
             return
 
@@ -588,16 +589,26 @@ def universal_handler(message):
                 label = f"{flavor} ({category_price}₺) [{stock} шт]"
 
             if text == label and stock > 0:
+                # Добавляем выбранный вкус в корзину
                 data['cart'].append({
                     'category': cat,
                     'emoji':    emoji,
                     'flavor':   flavor,
                     'price':    category_price
                 })
+                # Считаем текущее количество товаров в корзине
+                count = len(data['cart'])
+                # Формируем клавиатуру сразу с кнопками "Добавить ещё", "Завершить заказ" и "Очистить корзину"
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
                 kb.add("➕ Добавить ещё", "✅ Завершить заказ", "🗑️ Очистить корзину")
-                bot.send_message(cid, f"{flavor} добавлен в корзину.", reply_markup=kb)
+                # Отправляем сообщение с указанием количества в корзине
+                bot.send_message(
+                    cid,
+                    f"{flavor} добавлен(а) в корзину. В корзине [{count}] товар(ов).",
+                    reply_markup=kb
+                )
                 return
+
         bot.send_message(cid, "Пожалуйста, выберите вкус из списка:", reply_markup=get_flavors_keyboard(cat))
         return
 
