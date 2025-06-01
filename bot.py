@@ -22,7 +22,6 @@ bot = telebot.TeleBot(TOKEN)
 # ——— Настройки ———
 GROUP_CHAT_ID    = int(os.getenv("GROUP_CHAT_ID",    "-1002414380144"))
 PERSONAL_CHAT_ID = int(os.getenv("PERSONAL_CHAT_ID", "424751188"))
-ADMIN_IDS = {PERSONAL_CHAT_ID}
 MENU_PATH = "menu.json"
 DEFAULT_CATEGORY_PRICE = 1300  # Цена по умолчанию для новых категорий
 
@@ -143,11 +142,9 @@ def handle_convert(message):
         out.append(f"{int(t)}₺ → {rub}₽, ${usd}, ₴{uah}")
     bot.reply_to(message, "\n".join(out))
 
-# ——— Команда /change ———
+# ——— Команда /change — теперь доступна всем ———
 @bot.message_handler(commands=['change'])
 def cmd_change(message):
-    if message.chat.id not in ADMIN_IDS:
-        return
     data = user_data.setdefault(message.chat.id, {
         "cart": [], "current_category": None,
         "wait_for_address": False, "wait_for_contact": False, "wait_for_comment": False
