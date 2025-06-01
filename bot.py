@@ -47,7 +47,7 @@ def save_menu(menu):
 menu = load_menu()
 user_data = {}
 
-# ——— Клавиатуры ———
+# ——— Клавиатуры для заказа ———
 def get_main_keyboard():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     for cat in menu:
@@ -89,8 +89,10 @@ def comment_keyboard():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add("✏️ Комментарий к заказу")
     kb.add("📤 Отправить заказ")
+    kb.add("⬅️ Назад")
     return kb
 
+# ——— Клавиатура для редактирования (/change) ———
 def edit_action_keyboard():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add("➕ Add Category", "➖ Remove Category")
@@ -182,7 +184,15 @@ def universal_handler(message):
     if data.get('edit_phase'):
         phase = data['edit_phase']
 
-        # Кнопка ❌ Cancel — отмена редактирования и возвращение в обычный режим
+        # Кнопка "⬅️ Back" — возврат на уровень выше в /change
+        if text == "⬅️ Back":
+            data.pop('edit_cat', None)
+            data.pop('edit_flavor', None)
+            data['edit_phase'] = 'choose_action'
+            bot.send_message(cid, "Back to editing menu:", reply_markup=edit_action_keyboard())
+            return
+
+        # Кнопка ❌ Cancel — полная отмена редактирования и возврат в главное меню
         if text == "❌ Cancel":
             data.pop('edit_phase', None)
             data.pop('edit_cat', None)
@@ -194,34 +204,36 @@ def universal_handler(message):
         if phase == 'choose_action':
             if text == "➕ Add Category":
                 data['edit_phase'] = 'add_category'
-                bot.send_message(cid, "Enter new category name:")
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("⬅️ Back")
+                bot.send_message(cid, "Enter new category name:", reply_markup=kb)
             elif text == "➖ Remove Category":
                 data['edit_phase'] = 'remove_category'
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
                 for cat in menu:
                     kb.add(cat)
-                kb.add("❌ Cancel")
+                kb.add("⬅️ Back")
                 bot.send_message(cid, "Select category to remove:", reply_markup=kb)
             elif text == "💲 Fix Price":
                 data['edit_phase'] = 'choose_fix_price_cat'
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
                 for cat in menu:
                     kb.add(cat)
-                kb.add("❌ Cancel")
+                kb.add("⬅️ Back")
                 bot.send_message(cid, "Select category to fix price for:", reply_markup=kb)
             elif text == "ALL IN":
                 data['edit_phase'] = 'choose_all_in_cat'
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
                 for cat in menu:
                     kb.add(cat)
-                kb.add("❌ Cancel")
+                kb.add("⬅️ Back")
                 bot.send_message(cid, "Select category to replace full flavor list:", reply_markup=kb)
             elif text == "🔄 Actual Flavor":
                 data['edit_phase'] = 'choose_cat_actual'
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
                 for cat in menu:
                     kb.add(cat)
-                kb.add("❌ Cancel")
+                kb.add("⬅️ Back")
                 bot.send_message(cid, "Select category to update flavor stock:", reply_markup=kb)
             else:
                 bot.send_message(cid, "Choose action:", reply_markup=edit_action_keyboard())
@@ -229,9 +241,15 @@ def universal_handler(message):
 
         # 2) Добавить категорию
         if phase == 'add_category':
+            if text == "⬅️ Back":
+                data['edit_phase'] = 'choose_action'
+                bot.send_message(cid, "Back to editing menu:", reply_markup=edit_action_keyboard())
+                return
             new_cat = text.strip()
             if not new_cat or new_cat in menu:
-                bot.send_message(cid, "Invalid or existing name. Try again:")
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("⬅️ Back")
+                bot.send_message(cid, "Invalid or existing name. Try again:", reply_markup=kb)
                 return
             menu[new_cat] = {
                 "price": DEFAULT_CATEGORY_PRICE,
@@ -249,6 +267,10 @@ def universal_handler(message):
 
         # 3) Удалить категорию
         if phase == 'remove_category':
+            if text == "⬅️ Back":
+                data['edit_phase'] = 'choose_action'
+                bot.send_message(cid, "Back to editing menu:", reply_markup=edit_action_keyboard())
+                return
             if text in menu:
                 del menu[text]
                 save_menu(menu)
@@ -256,26 +278,43 @@ def universal_handler(message):
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(cid, f"Category «{text}» removed.", reply_markup=edit_action_keyboard())
             else:
-                bot.send_message(cid, "Select valid category.")
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("⬅️ Back")
+                bot.send_message(cid, "Select valid category.", reply_markup=kb)
             return
 
         # 4) Выбрать категорию для фиксации цены
         if phase == 'choose_fix_price_cat':
+            if text == "⬅️ Back":
+                data['edit_phase'] = 'choose_action'
+                bot.send_message(cid, "Back to editing menu:", reply_markup=edit_action_keyboard())
+                return
             if text in menu:
                 data['edit_cat'] = text
                 data['edit_phase'] = 'enter_new_price'
-                bot.send_message(cid, f"Enter new price in ₺ for category «{text}»:")
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("⬅️ Back")
+                bot.send_message(cid, f"Enter new price in ₺ for category «{text}»:", reply_markup=kb)
             else:
-                bot.send_message(cid, "Choose category from the list.")
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("⬅️ Back")
+                bot.send_message(cid, "Choose category from the list.", reply_markup=kb)
             return
 
         # 5) Ввод новой цены для категории
         if phase == 'enter_new_price':
+            if text == "⬅️ Back":
+                data.pop('edit_cat', None)
+                data['edit_phase'] = 'choose_action'
+                bot.send_message(cid, "Back to editing menu:", reply_markup=edit_action_keyboard())
+                return
             cat = data.get('edit_cat')
             try:
                 new_price = float(text.strip())
             except:
-                bot.send_message(cid, "Invalid price format. Enter a number, e.g. 1500:")
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("⬅️ Back")
+                bot.send_message(cid, "Invalid price format. Enter a number, e.g. 1500:", reply_markup=kb)
                 return
             menu[cat]["price"] = int(new_price)
             save_menu(menu)
@@ -286,24 +325,38 @@ def universal_handler(message):
 
         # 6) Выбрать категорию для ALL IN (полностью заменить список вкусов)
         if phase == 'choose_all_in_cat':
+            if text == "⬅️ Back":
+                data['edit_phase'] = 'choose_action'
+                bot.send_message(cid, "Back to editing menu:", reply_markup=edit_action_keyboard())
+                return
             if text in menu:
                 data['edit_cat'] = text
                 current_list = []
                 for itm in menu[text]["flavors"]:
                     current_list.append(f"{itm['flavor']} - {itm['stock']}")
                 joined = "\n".join(current_list) if current_list else "(empty)"
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("⬅️ Back")
                 bot.send_message(
                     cid,
                     f"Current flavors in «{text}» (one per line as \"Name - qty\"):\n\n{joined}\n\n"
-                    "Send the full updated list in the same format. Each line: “Name - qty”."
+                    "Send the full updated list in the same format. Each line: “Name - qty”.",
+                    reply_markup=kb
                 )
                 data['edit_phase'] = 'replace_all_in'
             else:
-                bot.send_message(cid, "Choose category from the list.")
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("⬅️ Back")
+                bot.send_message(cid, "Choose category from the list.", reply_markup=kb)
             return
 
         # 7) Заменить полный список вкусов в категории (ALL IN)
         if phase == 'replace_all_in':
+            if text == "⬅️ Back":
+                data.pop('edit_cat', None)
+                data['edit_phase'] = 'choose_action'
+                bot.send_message(cid, "Back to editing menu:", reply_markup=edit_action_keyboard())
+                return
             cat = data.get('edit_cat')
             lines = text.strip().splitlines()
             new_flavors = []
@@ -327,55 +380,62 @@ def universal_handler(message):
 
         # 8) Выбрать категорию для Actual Flavor
         if phase == 'choose_cat_actual':
+            if text == "⬅️ Back":
+                data['edit_phase'] = 'choose_action'
+                bot.send_message(cid, "Back to editing menu:", reply_markup=edit_action_keyboard())
+                return
             if text in menu:
                 data['edit_cat'] = text
                 data['edit_phase'] = 'choose_flavor_actual'
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
                 for it in menu[text]["flavors"]:
-                    if it.get("stock", 0) > 0:
-                        flavor = it["flavor"]
-                        stock = it.get("stock", 0)
-                        kb.add(f"{flavor} [{stock} шт]")
-                kb.add("❌ Cancel")
+                    flavor = it["flavor"]
+                    stock = it.get("stock", 0)
+                    kb.add(f"{flavor} [{stock} шт]")
+                kb.add("⬅️ Back")
                 bot.send_message(cid, "Select flavor to update stock:", reply_markup=kb)
             else:
-                bot.send_message(cid, "Choose category from the list.")
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("⬅️ Back")
+                bot.send_message(cid, "Choose category from the list.", reply_markup=kb)
             return
 
         # 9) Выбрать вкус для Actual Flavor
         if phase == 'choose_flavor_actual':
-            cat = data.get('edit_cat')
-            if cat and text != "❌ Cancel":
-                flavor_name = text.split(' [')[0]
-                # Проверяем, что такой вкус есть в категории
-                exists = any(it["flavor"] == flavor_name for it in menu[cat]["flavors"])
-                if exists:
-                    data['edit_flavor'] = flavor_name
-                    data['edit_phase'] = 'enter_actual_qty'
-                    bot.send_message(cid, "Enter actual quantity!", reply_markup=types.ReplyKeyboardRemove())
-                else:
-                    bot.send_message(cid, "Flavor not found. Choose again:", reply_markup=edit_action_keyboard())
-                    data['edit_phase'] = 'choose_action'
+            if text == "⬅️ Back":
+                data.pop('edit_cat', None)
+                data['edit_phase'] = 'choose_action'
+                bot.send_message(cid, "Back to editing menu:", reply_markup=edit_action_keyboard())
                 return
-            # Если отмена
-            data.pop('edit_cat', None)
-            data['edit_phase'] = 'choose_action'
-            bot.send_message(cid, "Back to editing menu:", reply_markup=edit_action_keyboard())
+            cat = data.get('edit_cat')
+            flavor_name = text.split(' [')[0]
+            exists = any(it["flavor"] == flavor_name for it in menu.get(cat, {}).get("flavors", []))
+            if exists:
+                data['edit_flavor'] = flavor_name
+                data['edit_phase'] = 'enter_actual_qty'
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("⬅️ Back")
+                bot.send_message(cid, "Enter actual quantity!", reply_markup=kb)
+            else:
+                bot.send_message(cid, "Flavor not found. Choose again:", reply_markup=edit_action_keyboard())
+                data['edit_phase'] = 'choose_action'
             return
 
         # 10) Ввод актуального количества для выбранного вкуса
         if phase == 'enter_actual_qty':
+            if text == "⬅️ Back":
+                data.pop('edit_flavor', None)
+                data['edit_phase'] = 'choose_action'
+                bot.send_message(cid, "Back to editing menu:", reply_markup=edit_action_keyboard())
+                return
             cat = data.get('edit_cat')
             flavor = data.get('edit_flavor')
-            if not cat or not flavor:
-                data['edit_phase'] = 'choose_action'
-                bot.send_message(cid, "Error. Back to editing:", reply_markup=edit_action_keyboard())
-                return
             if not text.isdigit():
-                bot.send_message(cid, "Please enter a valid number!", reply_markup=types.ReplyKeyboardRemove())
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("⬅️ Back")
+                bot.send_message(cid, "Please enter a valid number!", reply_markup=kb)
                 return
             new_stock = int(text)
-            # Обновляем stock в menu
             for it in menu[cat]["flavors"]:
                 if it["flavor"] == flavor:
                     it["stock"] = new_stock
@@ -387,7 +447,7 @@ def universal_handler(message):
             data['edit_phase'] = 'choose_action'
             return
 
-        # Если фаза неизвестна → возвращаемся к выбору действия
+        # Если фаза неизвестна — возвращаемся к выбору действия
         data['edit_phase'] = 'choose_action'
         bot.send_message(cid, "Back to editing menu:", reply_markup=edit_action_keyboard())
         return
@@ -463,11 +523,12 @@ def universal_handler(message):
 
         if message.content_type == 'text' and message.text and text != "📤 Отправить заказ":
             data['comment'] = message.text.strip()
+            kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+            kb.add("📤 Отправить заказ", "⬅️ Назад")
             bot.send_message(
                 cid,
                 "Комментарий сохранён. Нажмите 📤 Отправить заказ.",
-                reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-                .add("📤 Отправить заказ").add("⬅️ Назад")
+                reply_markup=kb
             )
             return
 
@@ -572,19 +633,15 @@ def universal_handler(message):
                 label = f"{flavor} ({category_price}₺) [{stock} шт]"
 
             if text == label and stock > 0:
-                # Добавляем выбранный вкус в корзину
                 data['cart'].append({
                     'category': cat,
                     'emoji':    emoji,
                     'flavor':   flavor,
                     'price':    category_price
                 })
-                # Считаем текущее количество товаров в корзине
                 count = len(data['cart'])
-                # Формируем клавиатуру сразу с кнопками "Добавить ещё", "Завершить заказ" и "Очистить корзину"
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
                 kb.add("➕ Добавить ещё", "✅ Завершить заказ", "🗑️ Очистить корзину")
-                # Отправляем сообщение с указанием категории, названия вкуса и цены
                 bot.send_message(
                     cid,
                     f"{cat} — {flavor} ({category_price}₺) добавлен(а) в корзину. В корзине [{count}] товар(ов).",
