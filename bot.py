@@ -1240,7 +1240,6 @@ def handle_add_to_cart(call):
     price = menu[cat]["price"]
     cart.append({"category": cat, "flavor": flavor, "price": price})
     count = len(cart)
-    # Сразу показать содержимое корзины
     grouped = {}
     for item in cart:
         key = (item["category"], item["flavor"], item["price"])
@@ -1393,7 +1392,7 @@ def handle_subscribe(call):
         (chat_id, cat, flavor)
     )
     conn.commit()
-    bot.send_message(chat_id, "Вы подписаны. Как только товар появится, сообщу вам!")
+    bot.send_message(chat_id, "Вы подписаны. Как только товар появится, сообщю вам!")
 
 # —————————————————————————————————————————————————————————————
 #   15. Запуск бота
