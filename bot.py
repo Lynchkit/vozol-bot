@@ -166,16 +166,19 @@ def get_inline_language_buttons(chat_id: int) -> types.InlineKeyboardMarkup:
     return kb
 
 # —————————————————————————————————————————————————————————————
-#   8. Inline-кнопки для главного меню (категории + завершить заказ)
+#   8. Inline-кнопки для главного меню (категории + «Корзина» + «Завершить заказ»)
 # —————————————————————————————————————————————————————————————
 def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
     """
-    Возвращает Inline-клавиатуру со списком категорий (моделей) и кнопкой «Завершить заказ».
+    Возвращает Inline-клавиатуру со списком категорий (моделей),
+    кнопкой «Корзина» и кнопкой «Завершить заказ».
     """
     kb = types.InlineKeyboardMarkup(row_width=2)
     for cat in menu.keys():
         kb.add(types.InlineKeyboardButton(text=cat, callback_data=f"category|{cat}"))
-    # Кнопка завершения заказа:
+    # Кнопка «Корзина»
+    kb.add(types.InlineKeyboardButton(text=f"🛒 {t(chat_id,'view_cart')}", callback_data="view_cart"))
+    # Кнопка «Завершить заказ»
     kb.add(types.InlineKeyboardButton(text=f"✅ {t(chat_id,'finish_order')}", callback_data="finish_order"))
     return kb
 
@@ -372,7 +375,7 @@ def handle_set_lang(call):
 
     bot.answer_callback_query(call.id, t(chat_id, "lang_set"))
 
-    # Сразу показываем главное меню (категории + «Завершить заказ»)
+    # Сразу показываем главное меню (категории, «Корзина» и «Завершить заказ»)
     bot.send_message(chat_id, t(chat_id, "welcome"), reply_markup=types.ReplyKeyboardRemove())
     bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
 
@@ -459,7 +462,7 @@ def handle_flavor(call):
     bot.send_message(chat_id, t(chat_id, "choose_action"), reply_markup=kb)
 
 # —————————————————————————————————————————————————————————————
-#   18. Callback: добавить в корзину (возвращаем к главному меню с кнопкой «Завершить заказ»)
+#   18. Callback: добавить в корзину (возвращаем к главному меню с кнопкой «Корзина» и «Завершить заказ»)
 # —————————————————————————————————————————————————————————————
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("add_to_cart|"))
 def handle_add_to_cart(call):
@@ -474,12 +477,149 @@ def handle_add_to_cart(call):
 
     bot.send_message(
         chat_id,
-        f"«{flavor}» добавлен(а) в корзину! Теперь выберите другую категорию или завершите заказ:",
+        f"«{flavor}» добавлен(а) в корзину! Теперь выберите другую категорию, просмотрите корзину или завершите заказ:",
         reply_markup=get_inline_main_menu(chat_id)
     )
 
 # —————————————————————————————————————————————————————————————
-#   19. Callback: завершить заказ (запрос адреса)
+#   19. Callback: «Просмотр корзины»
+# —————————————————————————————————————————————————————————————
+@bot.callback_query_handler(func=lambda call: call.data == "view_cart")
+def handle_view_cart(call):
+    chat_id = call.from_user.id
+    bot.answer_callback_query(call.id)
+    data = user_data.get(chat_id, {})
+    cart = data.get("cart", [])
+    if not cart:
+        bot.send_message(chat_id, t(chat_id, "cart_empty"), reply_markup=get_inline_main_menu(chat_id))
+        return
+
+    grouped = {}
+    for item in cart:
+        key = (item["category"], item["flavor"], item["price"])
+        grouped[key] = grouped.get(key, 0) + 1
+
+    text_lines = [f"🛒 {t(chat_id, 'view_cart')}:"]
+    for idx, ((cat, flavor, price), qty) in enumerate(grouped.items(), start=1):
+        text_lines.append(f"{idx}. {cat} — {flavor} — {price}₺ x {qty}")
+    msg = "\n".join(text_lines)
+
+    # Inline-кнопки «Удалить i» и «Изменить i»
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    for idx, ((cat, flavor, price), qty) in enumerate(grouped.items(), start=1):
+        kb.add(
+            types.InlineKeyboardButton(
+                text=f"{t(chat_id,'remove_item')} {idx}",
+                callback_data=f"remove_item|{idx}"
+            ),
+            types.InlineKeyboardButton(
+                text=f"{t(chat_id,'edit_item')} {idx}",
+                callback_data=f"edit_item|{idx}"
+            )
+        )
+    # Кнопка «Назад к категориям»
+    kb.add(
+        types.InlineKeyboardButton(
+            text=f"⬅️ {t(chat_id,'back_to_categories')}",
+            callback_data="go_back_to_categories"
+        )
+    )
+    bot.send_message(chat_id, msg, reply_markup=kb)
+
+# —————————————————————————————————————————————————————————————
+#   20. Callback: «Удалить i» из корзины
+# —————————————————————————————————————————————————————————————
+@bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("remove_item|"))
+def handle_remove_item(call):
+    chat_id = call.from_user.id
+    _, idx_str = call.data.split("|", 1)
+    idx = int(idx_str) - 1
+    data = user_data.get(chat_id, {})
+    cart = data.get("cart", [])
+    grouped = {}
+    for item in cart:
+        key = (item["category"], item["flavor"], item["price"])
+        grouped[key] = grouped.get(key, 0) + 1
+    items_list = list(grouped.items())
+    if idx < 0 or idx >= len(items_list):
+        bot.answer_callback_query(call.id, t(chat_id, "error_invalid"))
+        return
+    key_to_remove, _ = items_list[idx]
+    cat, flavor, price = key_to_remove
+    new_cart = [it for it in cart if not (it["category"] == cat and it["flavor"] == flavor and it["price"] == price)]
+    data["cart"] = new_cart
+    bot.answer_callback_query(call.id, t(chat_id, "item_removed").format(flavor=flavor))
+    # Обновляем просмотр корзины
+    handle_view_cart(call)
+
+# —————————————————————————————————————————————————————————————
+#   21. Callback: «Изменить i» в корзине → ввод количества
+# —————————————————————————————————————————————————————————————
+@bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("edit_item|"))
+def handle_edit_item_request(call):
+    chat_id = call.from_user.id
+    _, idx_str = call.data.split("|", 1)
+    idx = int(idx_str) - 1
+    data = user_data.get(chat_id, {})
+    cart = data.get("cart", [])
+    grouped = {}
+    for item in cart:
+        key = (item["category"], item["flavor"], item["price"])
+        grouped[key] = grouped.get(key, 0) + 1
+    items_list = list(grouped.items())
+    if idx < 0 or idx >= len(items_list):
+        bot.answer_callback_query(call.id, t(chat_id, "error_invalid"))
+        return
+    key_to_edit, old_qty = items_list[idx]
+    cat, flavor, price = key_to_edit
+    bot.answer_callback_query(call.id)
+    data["edit_cart_phase"] = "enter_qty"
+    data["edit_index"] = idx
+    bot.send_message(chat_id,
+                     f"Текущий товар: {cat} — {flavor} — {price}₺ (в корзине {old_qty} шт).\n"
+                     f"{t(chat_id, 'enter_new_qty')}",
+                     reply_markup=types.ReplyKeyboardRemove())
+
+@bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get("edit_cart_phase") == "enter_qty", content_types=['text'])
+def handle_enter_new_qty(message):
+    chat_id = message.chat.id
+    data = user_data.get(chat_id, {})
+    text = message.text.strip()
+    if not text.isdigit():
+        bot.send_message(chat_id, t(chat_id, "error_invalid"))
+        data["edit_cart_phase"] = None
+        data.pop("edit_index", None)
+        return
+    new_qty = int(text)
+    idx = data.get("edit_index", -1)
+    cart = data.get("cart", [])
+    grouped = {}
+    for item in cart:
+        key = (item["category"], item["flavor"], item["price"])
+        grouped[key] = grouped.get(key, 0) + 1
+    items_list = list(grouped.items())
+    if idx < 0 or idx >= len(items_list):
+        bot.send_message(chat_id, t(chat_id, "error_invalid"))
+        data["edit_cart_phase"] = None
+        data.pop("edit_index", None)
+        return
+    key_to_edit, old_qty = items_list[idx]
+    cat, flavor, price = key_to_edit
+    new_cart = [it for it in cart if not (it["category"] == cat and it["flavor"] == flavor and it["price"] == price)]
+    for _ in range(new_qty):
+        new_cart.append({"category": cat, "flavor": flavor, "price": price})
+    data["cart"] = new_cart
+    data["edit_cart_phase"] = None
+    data.pop("edit_index", None)
+    if new_qty == 0:
+        bot.send_message(chat_id, t(chat_id, "item_removed").format(flavor=flavor),
+                         reply_markup=get_inline_main_menu(chat_id))
+    else:
+        bot.send_message(chat_id, t(chat_id, "qty_changed").format(flavor=flavor, qty=new_qty),
+                         reply_markup=get_inline_main_menu(chat_id))
+
+# —————————————————————————————————————————————————————————————
+#   22. Callback: завершить заказ (запрос адреса)
 # —————————————————————————————————————————————————————————————
 @bot.callback_query_handler(func=lambda call: call.data == "finish_order")
 def handle_finish_order(call):
@@ -502,7 +642,7 @@ def handle_finish_order(call):
     data["wait_for_address"] = True
 
 # —————————————————————————————————————————————————————————————
-#   20. /change: перевод в режим редактирования меню для любого пользователя
+#   23. /change: перевод в режим редактирования меню для любого пользователя
 # —————————————————————————————————————————————————————————————
 @bot.message_handler(commands=['change'])
 def cmd_change(message):
@@ -538,7 +678,7 @@ def cmd_change(message):
     bot.send_message(chat_id, "Menu editing: choose action", reply_markup=edit_action_keyboard())
 
 # —————————————————————————————————————————————————————————————
-#   21. Универсальный хендлер (всё остальное)
+#   24. Универсальный хендлер (всё остальное)
 # —————————————————————————————————————————————————————————————
 @bot.message_handler(content_types=['text','location','venue','contact'])
 def universal_handler(message):
@@ -1218,7 +1358,7 @@ def universal_handler(message):
                     data['cart'].append({'category': cat0, 'flavor': flavor0, 'price': price})
                     bot.send_message(
                         chat_id,
-                        f"«{flavor0}» добавлен(а) в корзину! Теперь выберите другую категорию или завершите заказ:",
+                        f"«{flavor0}» добавлен(а) в корзину! Теперь выберите другую категорию, просмотрите корзину или завершите заказ:",
                         reply_markup=get_inline_main_menu(chat_id)
                     )
                     return
@@ -1346,7 +1486,7 @@ def universal_handler(message):
         return
 
 # —————————————————————————————————————————————————————————————
-#   22. Запуск бота
+#   25. Запуск бота
 # —————————————————————————————————————————————————————————————
 if __name__ == "__main__":
     bot.delete_webhook()  # Сброс webhook перед polling
