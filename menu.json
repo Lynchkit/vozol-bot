@@ -3,7 +3,7 @@
     "price": 1300,
     "flavors": [
       {
-        "emoji": "",
+        "emoji": "🍑❄️",
         "flavor": "Peach ice",
         "stock": 1,
         "tags": [],
@@ -12,7 +12,7 @@
         "photo_url": ""
       },
       {
-        "emoji": "",
+        "emoji": "🍓🥭",
         "flavor": "Strawberry mango",
         "stock": 1,
         "tags": [],
@@ -21,7 +21,7 @@
         "photo_url": ""
       },
       {
-        "emoji": "",
+        "emoji": "🍓🥝",
         "flavor": "Strawberry kiwi",
         "stock": 2,
         "tags": [],
@@ -30,7 +30,7 @@
         "photo_url": ""
       },
       {
-        "emoji": "",
+        "emoji": "🍓🍉",
         "flavor": "Strawberry watermelon",
         "stock": 1,
         "tags": [],
@@ -44,7 +44,7 @@
     "price": 1400,
     "flavors": [
       {
-        "emoji": "",
+        "emoji": "🍏🍎",
         "flavor": "Double apple",
         "stock": 2,
         "tags": [],
@@ -53,7 +53,7 @@
         "photo_url": ""
       },
       {
-        "emoji": "",
+        "emoji": "🍒🥤",
         "flavor": "Cherry cola",
         "stock": 2,
         "tags": [],
@@ -62,7 +62,7 @@
         "photo_url": ""
       },
       {
-        "emoji": "",
+        "emoji": "🍒❄️",
         "flavor": "Cherry ice",
         "stock": 1,
         "tags": [],
@@ -71,7 +71,7 @@
         "photo_url": ""
       },
       {
-        "emoji": "",
+        "emoji": "🥭🍑",
         "flavor": "Mango peach",
         "stock": 1,
         "tags": [],
@@ -85,7 +85,7 @@
     "price": 1000,
     "flavors": [
       {
-        "emoji": "",
+        "emoji": "🥭❄️",
         "flavor": "Mango ice",
         "stock": 1,
         "tags": [],
@@ -94,7 +94,7 @@
         "photo_url": ""
       },
       {
-        "emoji": "",
+        "emoji": "⚡️",
         "flavor": "Vzbull",
         "stock": 2,
         "tags": [],
@@ -103,7 +103,7 @@
         "photo_url": ""
       },
       {
-        "emoji": "",
+        "emoji": "🍇❄️",
         "flavor": "Grape ice",
         "stock": 1,
         "tags": [],
@@ -112,7 +112,7 @@
         "photo_url": ""
       },
       {
-        "emoji": "",
+        "emoji": "🍑❄️",
         "flavor": "Peach ice",
         "stock": 1,
         "tags": [],
@@ -121,7 +121,7 @@
         "photo_url": ""
       },
       {
-        "emoji": "",
+        "emoji": "🍓🥭",
         "flavor": "Strawberry mango",
         "stock": 1,
         "tags": [],
