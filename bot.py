@@ -187,7 +187,6 @@ def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
             flavor_name = item["flavor"]
             label = f"{emoji} {flavor_name} — {price}₺ [{item['stock']}шт]"
             kb.add(types.InlineKeyboardButton(text=label, callback_data=f"flavor|{cat}|{flavor_name}"))
-    # Кнопка «Назад к категориям»
     kb.add(types.InlineKeyboardButton(text=f"⬅️ {t(chat_id,'back_to_categories')}", callback_data="go_back_to_categories"))
     return kb
 
@@ -449,11 +448,10 @@ def handle_flavor(call):
     description = item_obj.get(f"description_{user_lang}", "") or ""
     price = menu[cat]["price"]
 
-    caption = (
-        f"<b>{flavor}</b>\n\n"
-        f"{description}\n\n"
-        f"📌 {price}₺"
-    )
+    caption = f"<b>{flavor}</b> — {cat}\n"
+    if description:
+        caption += f"{description}\n"
+    caption += f"📌 {price}₺"
 
     bot.send_message(chat_id, caption, parse_mode="HTML")
 
