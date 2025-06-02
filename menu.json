@@ -1,4 +1,3 @@
-
 {
   "VOZOL Power — 20.000 puffs": {
     "price": 1300,
@@ -7,41 +6,37 @@
         "emoji": "🍑❄️",
         "flavor": "Peach ice",
         "stock": 1,
-        "tags": ["фруктовый", "освежающий"],
-        "description_ru": "Сочный персик с холодящей ноткой льда.",
-        "description_en": "Juicy peach with a chilling ice note.",
-        "photo_url": "https://example.com/peach_ice.jpg",
-        "rating": 0
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
       },
       {
         "emoji": "🍓🥭",
         "flavor": "Strawberry mango",
         "stock": 1,
-        "tags": ["ягодный", "сладкий"],
-        "description_ru": "Сочный клубнично-манговый микс.",
-        "description_en": "Juicy strawberry-mango blend.",
-        "photo_url": "https://example.com/strawberry_mango.jpg",
-        "rating": 0
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
       },
       {
         "emoji": "🍓🥝",
         "flavor": "Strawberry kiwi",
         "stock": 2,
-        "tags": ["ягодный", "кивито"],
-        "description_ru": "Клубника с кисло-сладким киви.",
-        "description_en": "Strawberry with tangy kiwi.",
-        "photo_url": "https://example.com/strawberry_kiwi.jpg",
-        "rating": 0
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
       },
       {
         "emoji": "🍓🍉",
         "flavor": "Strawberry watermelon",
         "stock": 1,
-        "tags": ["ягодный", "арбузный"],
-        "description_ru": "Лёгкий микс клубники и арбуза.",
-        "description_en": "Light blend of strawberry and watermelon.",
-        "photo_url": "https://example.com/strawberry_watermelon.jpg",
-        "rating": 0
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
       }
     ]
   },
@@ -52,41 +47,37 @@
         "emoji": "🍏🍎",
         "flavor": "Double apple",
         "stock": 2,
-        "tags": ["яблоко", "классика"],
-        "description_ru": "Двойное яблоко – насыщенный вкус.",
-        "description_en": "Double apple – rich classic flavor.",
-        "photo_url": "https://example.com/double_apple.jpg",
-        "rating": 0
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
       },
       {
         "emoji": "🍒🥤",
         "flavor": "Cherry cola",
         "stock": 2,
-        "tags": ["вишня", "кола"],
-        "description_ru": "Освежающая вишнёвая кола.",
-        "description_en": "Refreshing cherry cola.",
-        "photo_url": "https://example.com/cherry_cola.jpg",
-        "rating": 0
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
       },
       {
         "emoji": "🍒❄️",
         "flavor": "Cherry ice",
         "stock": 1,
-        "tags": ["вишня", "лед"],
-        "description_ru": "Вишня с холодящей ноткой.",
-        "description_en": "Cherry with an icy twist.",
-        "photo_url": "https://example.com/cherry_ice.jpg",
-        "rating": 0
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
       },
       {
         "emoji": "🥭🍑",
         "flavor": "Mango peach",
         "stock": 1,
-        "tags": ["манго", "персик"],
-        "description_ru": "Сочный манго с добавлением персика.",
-        "description_en": "Juicy mango with a hint of peach.",
-        "photo_url": "https://example.com/mango_peach.jpg",
-        "rating": 0
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
       }
     ]
   },
@@ -97,51 +88,46 @@
         "emoji": "🥭❄️",
         "flavor": "Mango ice",
         "stock": 1,
-        "tags": ["манго", "лед"],
-        "description_ru": "Манго с холодящим эффектом.",
-        "description_en": "Mango with an ice-cool finish.",
-        "photo_url": "https://example.com/mango_ice.jpg",
-        "rating": 0
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
       },
       {
         "emoji": "⚡️",
         "flavor": "Vzbull",
         "stock": 2,
-        "tags": ["энергия", "уксус"],
-        "description_ru": "Смесь энергетика и кислых нот.",
-        "description_en": "Energy drink with tangy twist.",
-        "photo_url": "https://example.com/vzbull.jpg",
-        "rating": 0
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
       },
       {
         "emoji": "🍇❄️",
         "flavor": "Grape ice",
         "stock": 1,
-        "tags": ["виноград", "лед"],
-        "description_ru": "Сладкий виноград с холодком.",
-        "description_en": "Sweet grape with icy finish.",
-        "photo_url": "https://example.com/grape_ice.jpg",
-        "rating": 0
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
       },
       {
         "emoji": "🍑❄️",
         "flavor": "Peach ice",
         "stock": 1,
-        "tags": ["персик", "лед"],
-        "description_ru": "Персик с прохладой.",
-        "description_en": "Peach with a cool twist.",
-        "photo_url": "https://example.com/peach_ice_vista.jpg",
-        "rating": 0
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
       },
       {
         "emoji": "🍓🥭",
         "flavor": "Strawberry mango",
         "stock": 1,
-        "tags": ["ягода", "манго"],
-        "description_ru": "Клубника с манговым акцентом.",
-        "description_en": "Strawberry with a mango accent.",
-        "photo_url": "https://example.com/strawberry_mango_vista.jpg",
-        "rating": 0
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
       }
     ]
   }

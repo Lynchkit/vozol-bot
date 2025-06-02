@@ -1,5 +1,2 @@
 pyTelegramBotAPI
 requests
-matplotlib
-pandas
-apscheduler
