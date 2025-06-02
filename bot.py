@@ -68,21 +68,6 @@ CREATE TABLE IF NOT EXISTS reviews (
     timestamp   TEXT
 )
 """)
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS subscriptions (
-    sub_id      INTEGER PRIMARY KEY AUTOINCREMENT,
-    chat_id     INTEGER,
-    category    TEXT,
-    flavor      TEXT
-)
-""")
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS promos (
-    code        TEXT PRIMARY KEY,
-    discount    INTEGER,
-    expires_at  TEXT
-)
-""")
 conn.commit()
 
 # —————————————————————————————————————————————————————————————
@@ -203,21 +188,14 @@ def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
     price = menu[cat]["price"]
     for item in menu[cat]["flavors"]:
         stock = item.get("stock", 0)
-        emoji = item.get("emoji", "")
-        flavor_name = item["flavor"]
         if stock > 0:
+            emoji = item.get("emoji", "")
+            flavor_name = item["flavor"]
             label = f"{emoji} {flavor_name} — {price}₺ [{stock}шт]"
             kb.add(
                 types.InlineKeyboardButton(
                     text=label,
                     callback_data=f"flavor|{cat}|{flavor_name}"
-                )
-            )
-        else:
-            kb.add(
-                types.InlineKeyboardButton(
-                    text=f"{emoji} {flavor_name} — ❌ Нет в наличии",
-                    callback_data=f"notify|{cat}|{flavor_name}"
                 )
             )
     kb.add(
@@ -261,18 +239,11 @@ def get_flavors_keyboard(cat: str) -> types.ReplyKeyboardMarkup:
     price = menu[cat]["price"]
     for it in menu[cat]["flavors"]:
         stock = it.get("stock", 0)
-        emoji = it.get("emoji", "")
-        flavor = it["flavor"]
         if stock > 0:
+            emoji = it.get("emoji", "")
+            flavor = it["flavor"]
             label = f"{emoji} {flavor} ({price}₺) [{stock} шт]"
-        else:
-            label = f"{emoji} {flavor} — ❌ Нет в наличии"
-        kb.add(label)
-    kb.add("⬅️ Назад")
-    return kb
-
-def description_keyboard() -> types.ReplyKeyboardMarkup:
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+            kb.add(label)
     kb.add("⬅️ Назад")
     return kb
 
@@ -737,7 +708,7 @@ def universal_handler(message):
                 data['edit_phase'] = 'choose_action'
             return
 
-        # 10) Actual Flavor: установка количества и уведомление подписчиков
+        # 10) Actual Flavor: установка количества
         if phase == 'enter_actual_qty':
             if text == "⬅️ Back":
                 data['edit_flavor'] = None
@@ -752,28 +723,12 @@ def universal_handler(message):
                 bot.send_message(chat_id, "Please enter a valid number!", reply_markup=kb)
                 return
             new_stock = int(text)
-            old_stock = 0
             for itm in menu[cat]["flavors"]:
                 if itm["flavor"] == flavor:
-                    old_stock = itm.get("stock", 0)
                     itm["stock"] = new_stock
                     break
             with open(MENU_PATH, "w", encoding="utf-8") as f:
                 json.dump(menu, f, ensure_ascii=False, indent=2)
-            # Уведомление подписчикам, если товар вернулся в наличие
-            if old_stock == 0 and new_stock > 0:
-                cursor.execute(
-                    "SELECT chat_id FROM subscriptions WHERE category = ? AND flavor = ?",
-                    (cat, flavor)
-                )
-                subs = cursor.fetchall()
-                for (sub_chat_id,) in subs:
-                    bot.send_message(sub_chat_id, f"🔔 Вкус «{flavor}» снова в наличии в категории «{cat}».")
-                cursor.execute(
-                    "DELETE FROM subscriptions WHERE category = ? AND flavor = ?",
-                    (cat, flavor)
-                )
-                conn.commit()
             bot.send_message(chat_id, f"Stock for flavor «{flavor}» in category «{cat}» set to {new_stock}.",
                              reply_markup=edit_action_keyboard())
             data['edit_cat'] = None
@@ -1023,32 +978,7 @@ def universal_handler(message):
                         reply_markup=kb
                     )
                     return
-            else:
-                label = f"{emoji} {flavor} — ❌ Нет в наличии"
-                if text == label:
-                    bot.send_message(chat_id,
-                                     "Товар отсутствует. Можете подписаться на уведомление.",
-                                     reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-                                                   .add("🔔 Уведомить, когда в наличии").add("⬅️ Назад"))
-                    data['last_flavor'] = flavor
-                    data['current_category'] = cat
-                    return
         bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=get_flavors_keyboard(cat))
-        return
-
-    # ——— Подписка на уведомление о поступлении товара ———
-    if text == "🔔 Уведомить, когда в наличии":
-        cat = data.get("current_category")
-        flavor = data.get("last_flavor")
-        if cat and flavor:
-            cursor.execute(
-                "INSERT INTO subscriptions (chat_id, category, flavor) VALUES (?, ?, ?)",
-                (chat_id, cat, flavor)
-            )
-            conn.commit()
-            bot.send_message(chat_id, "Вы подписаны. Как только товар появится, сообщю вам!")
-        else:
-            bot.send_message(chat_id, "Не удалось подписаться.")
         return
 
     # ——— /history ———
@@ -1252,10 +1182,8 @@ def handle_flavor(call):
         )
         bot.send_message(chat_id, t(chat_id, "choose_action"), reply_markup=kb)
     else:
-        kb = types.InlineKeyboardMarkup(row_width=1)
-        kb.add(types.InlineKeyboardButton(text=f"🔔 Уведомить, когда в наличии", callback_data=f"subscribe|{cat}|{flavor}"))
-        kb.add(types.InlineKeyboardButton(text=f"⬅️ {t(chat_id,'back_to_categories')}", callback_data=f"category|{cat}"))
-        bot.send_message(chat_id, "Товар временно отсутствует. Хотите подписаться на уведомление?", reply_markup=kb)
+        # Пропускаем кнопку «нет в наличии» и подписку
+        bot.send_message(chat_id, f"К сожалению, «{flavor}» временно недоступен.", reply_markup=get_inline_categories(chat_id))
 
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("add_to_cart|"))
 def handle_add_to_cart(call):
@@ -1414,18 +1342,6 @@ def handle_finish_order(call):
         reply_markup=kb
     )
     data["wait_for_address"] = True
-
-@bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("subscribe|"))
-def handle_subscribe(call):
-    chat_id = call.from_user.id
-    _, cat, flavor = call.data.split("|", 2)
-    bot.answer_callback_query(call.id)
-    cursor.execute(
-        "INSERT INTO subscriptions (chat_id, category, flavor) VALUES (?, ?, ?)",
-        (chat_id, cat, flavor)
-    )
-    conn.commit()
-    bot.send_message(chat_id, "Вы подписаны. Как только товар появится, сообщю вам!")
 
 # —————————————————————————————————————————————————————————————
 #   15. Запуск бота
