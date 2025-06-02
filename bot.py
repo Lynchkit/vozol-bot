@@ -300,29 +300,7 @@ scheduler.start()
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     chat_id = message.chat.id
-    # Регистрация в users
-    cursor.execute("SELECT chat_id FROM users WHERE chat_id = ?", (chat_id,))
-    if cursor.fetchone() is None:
-        text = message.text or ""
-        referred_by = None
-        if "ref=" in text:
-            code = text.split("ref=")[1]
-            cursor.execute("SELECT chat_id FROM users WHERE referral_code = ?", (code,))
-            row = cursor.fetchone()
-            if row:
-                referred_by = row[0]
-        new_code = generate_ref_code()
-        while True:
-            cursor.execute("SELECT referral_code FROM users WHERE referral_code = ?", (new_code,))
-            if cursor.fetchone() is None:
-                break
-            new_code = generate_ref_code()
-        cursor.execute(
-            "INSERT INTO users (chat_id, points, referral_code, referred_by) VALUES (?, ?, ?, ?)",
-            (chat_id, 0, new_code, referred_by)
-        )
-        conn.commit()
-    # Инициализация user_data
+    # Инициализируем/сбрасываем состояние
     data = user_data.setdefault(chat_id, {
         "lang": None,
         "cart": [],
@@ -348,9 +326,32 @@ def cmd_start(message):
         "wait_for_address": False,
         "wait_for_contact": False,
         "wait_for_comment": False,
-        "pending_discount": data.get("pending_discount", 0)
     })
-    # Выбор языка
+
+    # Регистрация в users (поддержка реферальной ссылки)
+    cursor.execute("SELECT chat_id FROM users WHERE chat_id = ?", (chat_id,))
+    if cursor.fetchone() is None:
+        text = message.text or ""
+        referred_by = None
+        if "ref=" in text:
+            code = text.split("ref=")[1]
+            cursor.execute("SELECT chat_id FROM users WHERE referral_code = ?", (code,))
+            row = cursor.fetchone()
+            if row:
+                referred_by = row[0]
+        new_code = generate_ref_code()
+        while True:
+            cursor.execute("SELECT referral_code FROM users WHERE referral_code = ?", (new_code,))
+            if cursor.fetchone() is None:
+                break
+            new_code = generate_ref_code()
+        cursor.execute(
+            "INSERT INTO users (chat_id, points, referral_code, referred_by) VALUES (?, ?, ?, ?)",
+            (chat_id, 0, new_code, referred_by)
+        )
+        conn.commit()
+
+    # Предлагаем выбрать язык
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         types.InlineKeyboardButton(text="Русский 🇷🇺", callback_data="set_lang|ru"),
@@ -365,10 +366,9 @@ def cmd_start(message):
 def handle_set_lang(call):
     chat_id = call.from_user.id
     _, lang_code = call.data.split("|", 1)
-    data = user_data.setdefault(chat_id, {})
-    data["lang"] = lang_code
-    data.setdefault("cart", [])
-    data.update({
+    data = user_data.setdefault(chat_id, {
+        "lang": None,
+        "cart": [],
         "current_category": None,
         "edit_phase": None,
         "edit_cat": None,
@@ -377,11 +377,29 @@ def handle_set_lang(call):
         "edit_index": None,
         "wait_for_address": False,
         "wait_for_contact": False,
-        "wait_for_comment": False
+        "wait_for_comment": False,
+        "pending_discount": 0
     })
+    data["lang"] = lang_code
+
+    # Сбрасываем все флаги состояния оформления
+    data.update({
+        "cart": [],
+        "current_category": None,
+        "edit_phase": None,
+        "edit_cat": None,
+        "edit_flavor": None,
+        "edit_cart_phase": None,
+        "edit_index": None,
+        "wait_for_address": False,
+        "wait_for_contact": False,
+        "wait_for_comment": False,
+    })
+
     bot.answer_callback_query(call.id, t(chat_id, "lang_set"))
     bot.send_message(chat_id, t(chat_id, "welcome"), reply_markup=get_inline_categories(chat_id))
-    # После первого выбора языка можно показать реферальный код
+
+    # Отправляем реферальный код
     cursor.execute("SELECT referral_code FROM users WHERE chat_id = ?", (chat_id,))
     row = cursor.fetchone()
     if row:
@@ -973,7 +991,6 @@ def universal_handler(message):
                 label = f"{emoji} {flavor} — ❌ Нет в наличии"
                 if text == label:
                     bot.send_message(chat_id, "Товар отсутствует. Можете подписаться на уведомление.", reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True).add("🔔 Уведомить, когда в наличии").add("⬅️ Назад"))
-                    # Сохраним текущий flavor для подписки
                     data['last_flavor'] = flavor
                     data['current_category'] = cat
                     return
