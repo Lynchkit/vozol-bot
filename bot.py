@@ -287,7 +287,6 @@ scheduler.start()
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     chat_id = message.chat.id
-    # Инициализируем или сбрасываем состояние пользователя
     data = user_data.setdefault(chat_id, {
         "lang": None,
         "cart": [],
@@ -321,7 +320,6 @@ def cmd_start(message):
         "edit_cart_phase": None
     })
 
-    # Реферальная регистрация
     cursor.execute("SELECT chat_id FROM users WHERE chat_id = ?", (chat_id,))
     if cursor.fetchone() is None:
         text = message.text or ""
@@ -344,7 +342,6 @@ def cmd_start(message):
         )
         conn.commit()
 
-    # Отправляем кнопку выбора языка
     bot.send_message(
         chat_id,
         t(chat_id, "choose_language"),
@@ -359,7 +356,6 @@ def handle_set_lang(call):
     chat_id = call.from_user.id
     _, lang_code = call.data.split("|", 1)
 
-    # Сбрасываем состояние, устанавливаем язык
     data = user_data.setdefault(chat_id, {
         "lang": None,
         "cart": [],
@@ -396,12 +392,9 @@ def handle_set_lang(call):
 
     bot.answer_callback_query(call.id, t(chat_id, "lang_set"))
 
-    # Сначала убираем любую Reply-клавиатуру
     bot.send_message(chat_id, t(chat_id, "welcome"), reply_markup=types.ReplyKeyboardRemove())
-    # Затем показываем inline-меню категорий
     bot.send_message(chat_id, t(chat_id, "welcome"), reply_markup=get_inline_categories(chat_id))
 
-    # Отправляем реферальный код
     cursor.execute("SELECT referral_code FROM users WHERE chat_id = ?", (chat_id,))
     row = cursor.fetchone()
     if row:
@@ -441,12 +434,10 @@ def handle_flavor(call):
     _, cat, flavor = call.data.split("|", 2)
     chat_id = call.from_user.id
 
-    # Проверяем, что категория существует
     if cat not in menu:
         bot.answer_callback_query(call.id, t(chat_id, "error_invalid"))
         return
 
-    # Находим объект вкуса
     item_obj = next((i for i in menu[cat]["flavors"] if i["flavor"] == flavor), None)
     if not item_obj:
         bot.answer_callback_query(call.id, t(chat_id, "error_invalid"))
@@ -464,10 +455,8 @@ def handle_flavor(call):
         f"📌 {price}₺"
     )
 
-    # Всегда отправляем только текст
     bot.send_message(chat_id, caption, parse_mode="HTML")
 
-    # Кнопки «Добавить в корзину» и «Назад к категориям»
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         types.InlineKeyboardButton(
@@ -662,7 +651,43 @@ def handle_finish_order(call):
     data["wait_for_address"] = True
 
 # —————————————————————————————————————————————————————————————
-#   22. Callback и Handler: все остальное (сообщения: адрес, контакт, комментарий, редактирование меню)
+#   22. /change: перевод в режим редактирования меню для любого пользователя
+# —————————————————————————————————————————————————————————————
+@bot.message_handler(commands=['change'])
+def cmd_change(message):
+    chat_id = message.chat.id
+    data = user_data.setdefault(chat_id, {
+        "lang": None,
+        "cart": [],
+        "current_category": None,
+        "wait_for_address": False,
+        "wait_for_contact": False,
+        "wait_for_comment": False,
+        "address": "",
+        "contact": "",
+        "comment": "",
+        "pending_discount": 0,
+        "edit_phase": None,
+        "edit_cat": None,
+        "edit_flavor": None,
+        "edit_index": None,
+        "edit_cart_phase": None
+    })
+    data.update({
+        "current_category": None,
+        "wait_for_address": False,
+        "wait_for_contact": False,
+        "wait_for_comment": False,
+        "edit_phase": "choose_action",
+        "edit_cat": None,
+        "edit_flavor": None,
+        "edit_index": None,
+        "edit_cart_phase": None
+    })
+    bot.send_message(chat_id, "Menu editing: choose action", reply_markup=edit_action_keyboard())
+
+# —————————————————————————————————————————————————————————————
+#   23. Универсальный хендлер (всё остальное)
 # —————————————————————————————————————————————————————————————
 @bot.message_handler(content_types=['text','location','venue','contact'])
 def universal_handler(message):
@@ -686,7 +711,7 @@ def universal_handler(message):
         "edit_cart_phase": None
     })
 
-    # —── Если мы сейчас в режиме редактирования меню (/change) ─────────────────────
+    # ─── Если мы сейчас в режиме редактирования меню (/change) ─────────────────────
     if data.get('edit_phase'):
         phase = data['edit_phase']
 
@@ -749,7 +774,6 @@ def universal_handler(message):
                 bot.send_message(chat_id, "Select category to update flavor stock:", reply_markup=kb)
                 return
 
-            # Если ни одна кнопка редактирования не распознана → вывести выбор заново
             bot.send_message(chat_id, "Choose action:", reply_markup=edit_action_keyboard())
             return
 
@@ -976,7 +1000,6 @@ def universal_handler(message):
             data['edit_phase'] = 'choose_action'
             return
 
-        # Если ничего не подошло — возвращаемся в главное меню редактирования
         data['edit_phase'] = 'choose_action'
         bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
         return
@@ -984,16 +1007,13 @@ def universal_handler(message):
 
     # ——— Если мы сейчас в режиме редактирования корзины ———
     if data.get('edit_cart_phase'):
-        # 1) Выбор действия (удалить или изменить)
         if data['edit_cart_phase'] == 'choose_action':
-            # Назад
             if text == "⬅️ Назад":
                 data['edit_cart_phase'] = None
                 data['edit_index'] = None
                 bot.send_message(chat_id, "Вернулись в главное меню.", reply_markup=get_inline_categories(chat_id))
                 return
 
-            # Удалить N
             if text.startswith("Удалить "):
                 try:
                     idx = int(text.split()[1]) - 1
@@ -1012,14 +1032,13 @@ def universal_handler(message):
                     data['edit_cart_phase'] = None
                     return
                 key_to_remove, count = items_list[idx]
-                new_cart = [it for it in data['cart'] if not (it['category']==key_to_remove[0] and it['flavor']==key_to_remove[1] and it['price']==key_to_remove[2])]
+                new_cart = [it for it in data['cart'] if not (it['category'] == key_to_remove[0] and it['flavor'] == key_to_remove[1] and it['price'] == key_to_remove[2])]
                 data['cart'] = new_cart
                 data['edit_cart_phase'] = None
                 data['edit_index'] = None
                 bot.send_message(chat_id, f"Удалено все позиции «{key_to_remove[1]}» из корзины.", reply_markup=get_inline_categories(chat_id))
                 return
 
-            # Изменить N
             if text.startswith("Изменить "):
                 try:
                     idx = int(text.split()[1]) - 1
@@ -1043,7 +1062,6 @@ def universal_handler(message):
                 bot.send_message(chat_id, f"Текущий товар: {cat0} — {flavor0} — {price0}₺ (в корзине {count} шт).\nВведите новое количество (0 чтобы удалить):")
                 return
 
-        # 2) Ввод нового количества для выбранного элемента
         if data['edit_cart_phase'] == 'enter_qty':
             if text == "⬅️ Назад":
                 data['edit_cart_phase'] = None
@@ -1080,7 +1098,7 @@ def universal_handler(message):
                 bot.send_message(chat_id, f"Количество «{flavor0}» изменено на {new_qty}.", reply_markup=get_inline_categories(chat_id))
             return
 
-    # ——— Обработка «Корзина» по клику Reply-инлайн (только текстовый fallback) ———
+    # ——— Обработка «Корзина» по клику Reply-кнопок ———
     if text == "🛒 Корзина":
         cart = data['cart']
         if not cart:
@@ -1477,43 +1495,6 @@ def universal_handler(message):
         )
         bot.send_message(chat_id, report)
         return
-
-# —————————————————————————————————————————————————————————————
-#   23. Делаем /change доступным всем: переход в режим редактирования меню
-# —————————————————————————————————————————————————————————————
-@bot.message_handler(commands=['change'])
-def cmd_change(message):
-    chat_id = message.chat.id
-    data = user_data.setdefault(chat_id, {
-        "lang": None,
-        "cart": [],
-        "current_category": None,
-        "wait_for_address": False,
-        "wait_for_contact": False,
-        "wait_for_comment": False,
-        "address": "",
-        "contact": "",
-        "comment": "",
-        "pending_discount": 0,
-        "edit_phase": None,
-        "edit_cat": None,
-        "edit_flavor": None,
-        "edit_index": None,
-        "edit_cart_phase": None
-    })
-    # Сбросим все "ожидалки", переведём в режим 'choose_action'
-    data.update({
-        "current_category": None,
-        "wait_for_address": False,
-        "wait_for_contact": False,
-        "wait_for_comment": False,
-        "edit_phase": "choose_action",
-        "edit_cat": None,
-        "edit_flavor": None,
-        "edit_index": None,
-        "edit_cart_phase": None
-    })
-    bot.send_message(chat_id, "Menu editing: choose action", reply_markup=edit_action_keyboard())
 
 # —————————————————————————————————————————————————————————————
 #   24. Запуск бота
