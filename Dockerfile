@@ -8,9 +8,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 2) Копируем сам скрипт бота и файл меню
+# 2) Копируем сам скрипт бота, menu.json и languages.json
 COPY bot.py .
 COPY menu.json .
+COPY languages.json .
 
-# 3) Запуск: просто запускаем bot.py, в самом начале которого удаляется старый webhook
+# 3) Запуск бота
 CMD ["python", "bot.py"]
