@@ -1,2 +1,5 @@
 pyTelegramBotAPI
 requests
+pandas
+matplotlib
+apscheduler
