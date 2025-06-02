@@ -4,6 +4,7 @@ import json
 import requests
 import telebot
 from telebot import types
+import urllib.parse
 
 # ——— Сразу в начале: удаляем возможный старый webhook ———
 TOKEN = os.getenv("TOKEN")
@@ -43,23 +44,26 @@ def save_menu(menu_data):
 menu = load_menu()
 user_data = {}
 
-# Функция для перевода текста с русского на английский через LibreTranslate API
+# Функция для перевода текста с русского на английский через публичный Google Translate API
 def translate_to_en(text: str) -> str:
+    if not text:
+        return ""
     try:
-        res = requests.post(
-            "https://libretranslate.com/translate",
-            data={
-                "q": text,
-                "source": "ru",
-                "target": "en",
-                "format": "text"
-            },
-            timeout=5
-        )
-        resp_json = res.json()
-        return resp_json.get("translatedText", text)
+        # Собираем GET-запрос к Google Translate без ключа
+        base_url = "https://translate.googleapis.com/translate_a/single"
+        params = {
+            "client": "gtx",
+            "sl": "ru",
+            "tl": "en",
+            "dt": "t",
+            "q": text
+        }
+        res = requests.get(base_url, params=params, timeout=5)
+        data = res.json()
+        # Первый элемент массива содержит переведённый текст
+        return data[0][0][0]
     except Exception:
-        # В случае ошибки возвращаем оригинал
+        # Если что-то пошло не так — возвращаем исходный текст
         return text
 
 # ——— Клавиатуры ———
@@ -136,6 +140,7 @@ def fetch_rates():
             continue
     return {"RUB": 0, "USD": 0, "UAH": 0}
 
+# ——— Обработчики команд ———
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     user_data[message.chat.id] = {
@@ -627,7 +632,7 @@ def universal_handler(message):
 
             # Переводим комментарий на английский (если он существует)
             comment_ru = data.get('comment', '')
-            comment_en = translate_to_en(comment_ru) if comment_ru else '—'
+            comment_en = translate_to_en(comment_ru) if comment_ru else "—"
 
             # Англоязычный итог для группы
             full_en = (
