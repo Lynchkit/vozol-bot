@@ -17,14 +17,14 @@ MENU_PATH = "menu.json"
 DEFAULT_CATEGORY_PRICE = 1300
 
 # Реквизиты для оплаты
-PAY_COD    = "💵 Оплата при получении"
-PAY_UAH    = "💳 Перевод гривнами"
-PAY_CRYPTO = "₿ Оплатить криптой"
+PAY_COD        = "💵 Оплата при получении"
+PAY_TRANSFER   = "💳 Перевод гривнами или рублями"
+PAY_CRYPTO     = "₿ Оплатить криптой"
 
 # Платежные данные
-UAH_CARD_NUMBER = "4441 1111 5771 8424"
-UAH_RECIPIENT   = "Артур, +7 996 996 12 99"
-CRYPTO_ADDRESS  = "TUnMJ7oCtSDCHZiQSMrFjShkUPv18SVFDc"  # Tron (TRC20)
+TRANSFER_UAH_CARD     = "4441 1111 5771 8424 — Влад"
+TRANSFER_RUB_PHONE    = "+7 996 996 12 99 — Артур, Тинькофф"
+CRYPTO_ADDRESS        = "TUnMJ7oCtSDCHZiQSMrFjShkUPv18SVFDc"  # Tron (TRC20)
 
 # ——— Загрузка/сохранение меню ———
 def load_menu():
@@ -133,7 +133,7 @@ def cmd_start(message):
         "cart": [], "current_category": None,
         "wait_for_address": False, "wait_for_contact": False, "wait_for_comment": False,
         "pending_order": None,
-        "awaiting_uah_tx": False, "awaiting_crypto_tx": False,
+        "awaiting_transfer_tx": False, "awaiting_crypto_tx": False,
         "edit_phase": None, "edit_cat": None, "edit_flavor": None,
         "edit_cart_phase": None, "edit_index": None
     }
@@ -150,7 +150,7 @@ def cmd_change(message):
         "cart": [], "current_category": None,
         "wait_for_address": False, "wait_for_contact": False, "wait_for_comment": False,
         "pending_order": None,
-        "awaiting_uah_tx": False, "awaiting_crypto_tx": False,
+        "awaiting_transfer_tx": False, "awaiting_crypto_tx": False,
         "edit_phase": None, "edit_cat": None, "edit_flavor": None,
         "edit_cart_phase": None, "edit_index": None
     })
@@ -166,7 +166,7 @@ def universal_handler(message):
         "cart": [], "current_category": None,
         "wait_for_address": False, "wait_for_contact": False, "wait_for_comment": False,
         "pending_order": None,
-        "awaiting_uah_tx": False, "awaiting_crypto_tx": False,
+        "awaiting_transfer_tx": False, "awaiting_crypto_tx": False,
         "edit_phase": None, "edit_cat": None, "edit_flavor": None,
         "edit_cart_phase": None, "edit_index": None
     })
@@ -337,7 +337,7 @@ def universal_handler(message):
                 for cat in menu:
                     kb.add(cat)
                 kb.add("⬅️ Back")
-                bot.send_message(cid, "Select category to update flavor stock:", reply_markup=kb)
+                bot.send_message(cid, "Select category to update flavor stock:",	reply_markup=kb)
             else:
                 bot.send_message(cid, "Choose action:", reply_markup=edit_action_keyboard())
             return
@@ -480,7 +480,7 @@ def universal_handler(message):
                     stock = it.get("stock", 0)
                     kb.add(f"{flavor} [{stock} шт]")
                 kb.add("⬅️ Back")
-                bot.send_message(cid, "Select flavor to update stock:", reply_markup=kb)
+                bot.send_message(cid, "Select flavor to update stock:",	reply_markup=kb)
             else:
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
                 kb.add("⬅️ Back")
@@ -640,14 +640,16 @@ def universal_handler(message):
 
             curr_text = f"{total_try}₺ (≈ {rub}₽, ${usd}, ₴{uah})"
             pay_kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-            pay_kb.add(PAY_COD, PAY_UAH)
+            pay_kb.add(PAY_COD, PAY_TRANSFER)
             pay_kb.add(PAY_CRYPTO, "⬅️ Назад")
 
             bot.send_message(
                 cid,
                 f"Сумма к оплате: {curr_text}\n\n"
                 f"💵 Оплата при получении: оплачиваете курьеру наличными или картой (переводом рубли и гривны)\n\n"
-                f"💳 Перевод гривнами: переводите ₴ на карту {UAH_CARD_NUMBER} ({UAH_RECIPIENT})\n\n"
+                f"💳 Перевод гривнами или рублями:\n"
+                f"   • гривны: карта {TRANSFER_UAH_CARD}\n"
+                f"   • рубли: {TRANSFER_RUB_PHONE}\n\n"
                 f"₿ Оплатить криптой: переводите USDT (TRC20) на адрес {CRYPTO_ADDRESS}",
                 reply_markup=pay_kb
             )
@@ -677,23 +679,22 @@ def universal_handler(message):
         data["wait_for_comment"] = False
         return
 
-    # ——— Обработка «Перевод гривнами» ———
-    if text == PAY_UAH and data.get("pending_order"):
+    # ——— Обработка «Перевод гривнами или рублями» ———
+    if text == PAY_TRANSFER and data.get("pending_order"):
         pend = data["pending_order"]
-        bank_info = (
-            f"Для перевода гривнами (₴) используйте:\n\n"
-            f"🏦 Банк: Тинькофф (Tinkoff Bank)\n"
-            f"💳 Карта: {UAH_CARD_NUMBER}\n"
-            f"👤 Получатель: {UAH_RECIPIENT}\n\n"
+        transfer_info = (
+            "Для перевода используйте следующие реквизиты:\n\n"
+            f"• Гривны: карта {TRANSFER_UAH_CARD}\n"
+            f"• Рубли: {TRANSFER_RUB_PHONE}\n\n"
             "После перевода пришлите скриншот платежа или описание (TX-ID).\n"
             "Ваш заказ будет обработан после подтверждения."
         )
-        bot.send_message(cid, bank_info, reply_markup=view_cart_keyboard())
-        data["awaiting_uah_tx"] = True
+        bot.send_message(cid, transfer_info, reply_markup=view_cart_keyboard())
+        data["awaiting_transfer_tx"] = True
         return
 
-    # ——— Ожидание скрина или TX-ID для UAH ———
-    if data.get("awaiting_uah_tx") and message.content_type == "text":
+    # ——— Ожидание скрина или TX-ID для перевода ———
+    if data.get("awaiting_transfer_tx") and message.content_type == "text":
         tx_info = message.text.strip()
         # Замените логику проверки на реальную
         confirmed = True
@@ -701,7 +702,7 @@ def universal_handler(message):
             pend = data["pending_order"]
             bot.send_message(
                 GROUP_CHAT_ID,
-                f"✅ Перевод гривнами получен (₴ → TRY):\n{pend['summary_en']}\nПлатёж: {tx_info}"
+                f"✅ Перевод (гривны/рубли) получен:\n{pend['summary_en']}\nПлатёж: {tx_info}"
             )
             bot.send_message(cid, "Перевод подтверждён! Ваш заказ будет доставлен.", reply_markup=get_main_keyboard())
             for o in pend["cart"]:
@@ -713,7 +714,7 @@ def universal_handler(message):
             save_menu(menu)
             data["cart"] = []
             data["pending_order"] = None
-            data["awaiting_uah_tx"] = False
+            data["awaiting_transfer_tx"] = False
         else:
             bot.send_message(cid, "Перевод не найден или не зачислен. Попробуйте позже.", reply_markup=get_main_keyboard())
         return
@@ -724,19 +725,16 @@ def universal_handler(message):
         total_try = pend["total_try"]
         rates = pend["rates"]
 
-        # Получаем курс TRON (TRC20) в TRY
+        # Получаем курс TRON (TRC20) в TRY и курс доллара
         try:
             r = requests.get("https://api.coingecko.com/api/v3/simple/price",
                              params={"ids":"tron","vs_currencies":"try,usd"}, timeout=5)
             prices = r.json()
             tron_price_try = prices["tron"]["try"]
-            # Курс 1 USD в TRY
             usd_to_try = 1 / rates.get("USD", 1)
-            # Добавляем $1 к сумме в TRY
             adjusted_try = total_try + usd_to_try
             amount_trx = round(adjusted_try / tron_price_try, 2)
         except:
-            # В случае ошибки просто делаем без добавки
             amount_trx = None
 
         text_crypto  = f"Сумма к оплате: {total_try}₺ + экв. $1 (для комиссии).\n\n"
@@ -785,7 +783,7 @@ def universal_handler(message):
         data["wait_for_contact"] = False
         data["wait_for_comment"] = False
         data["pending_order"] = None
-        data["awaiting_uah_tx"] = False
+        data["awaiting_transfer_tx"] = False
         data["awaiting_crypto_tx"] = False
         bot.send_message(cid, "Выберите категорию:", reply_markup=get_main_keyboard())
         return
