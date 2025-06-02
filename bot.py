@@ -190,36 +190,8 @@ def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
     kb.add(types.InlineKeyboardButton(text=f"⬅️ {t(chat_id,'back_to_categories')}", callback_data="go_back_to_categories"))
     return kb
 
-def get_inline_after_add(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        types.InlineKeyboardButton(text=f"➕ {t(chat_id,'add_more')}", callback_data=f"go_back_to_category|{cat}"),
-        types.InlineKeyboardButton(text=f"🛒 {t(chat_id,'view_cart')}", callback_data="view_cart")
-    )
-    kb.add(types.InlineKeyboardButton(text=f"✅ {t(chat_id,'finish_order')}", callback_data="finish_order"))
-    return kb
-
-def get_inline_cart(chat_id: int) -> types.InlineKeyboardMarkup:
-    data = user_data.get(chat_id, {})
-    cart = data.get("cart", [])
-    if not cart:
-        return None
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    grouped = {}
-    for item in cart:
-        key = (item["category"], item["flavor"], item["price"])
-        grouped[key] = grouped.get(key, 0) + 1
-    for idx, ((cat, flavor, price), qty) in enumerate(grouped.items(), start=1):
-        kb.add(
-            types.InlineKeyboardButton(text=f"❌ {t(chat_id,'remove_item')} {idx}", callback_data=f"remove_item|{idx}"),
-            types.InlineKeyboardButton(text=f"✏️ {t(chat_id,'edit_item')} {idx}", callback_data=f"edit_item|{idx}")
-        )
-    kb.add(types.InlineKeyboardButton(text=f"⬅️ {t(chat_id,'back_to_categories')}", callback_data="go_back_to_categories"))
-    kb.add(types.InlineKeyboardButton(text=f"✅ {t(chat_id,'finish_order')}", callback_data="finish_order"))
-    return kb
-
 # —————————————————————————————————————————————————————————————
-#   9. Reply-клавиатуры (альтернатива inline для части потока)
+#   9. Reply-клавиатуры (альтернатива inline)
 # —————————————————————————————————————————————————————————————
 def address_keyboard() -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -431,7 +403,6 @@ def handle_go_back_to_categories(call):
 # —————————————————————————————————————————————————————————————
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("flavor|"))
 def handle_flavor(call):
-    print("DEBUG: получен call.data =", call.data)
     _, cat, flavor = call.data.split("|", 2)
     chat_id = call.from_user.id
 
@@ -471,7 +442,7 @@ def handle_flavor(call):
     bot.send_message(chat_id, t(chat_id, "choose_action"), reply_markup=kb)
 
 # —————————————————————————————————————————————————————————————
-#   17. Callback: добавить в корзину
+#   17. Callback: добавить в корзину (сразу возвращаем к выбору категорий)
 # —————————————————————————————————————————————————————————————
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("add_to_cart|"))
 def handle_add_to_cart(call):
@@ -484,22 +455,10 @@ def handle_add_to_cart(call):
     price = menu[cat]["price"]
     cart.append({"category": cat, "flavor": flavor, "price": price})
 
-    count = len(cart)
-    grouped = {}
-    for item in cart:
-        key = (item["category"], item["flavor"], item["price"])
-        grouped[key] = grouped.get(key, 0) + 1
-
-    lines = ["🛒 Ваша корзина:"]
-    for idx, ((c, f, p), qty) in enumerate(grouped.items(), start=1):
-        lines.append(f"{idx}. {c} — {f} — {p}₺ x {qty}")
-    text_cart = "\n".join(lines)
-
-    kb = get_inline_after_add(chat_id, cat)
     bot.send_message(
         chat_id,
-        f"{cat} — {flavor} ({price}₺) {t(chat_id,'added_to_cart').format(flavor=flavor, count=count)}\n\n{text_cart}",
-        reply_markup=kb
+        f"«{flavor}» добавлен(а) в корзину! Теперь выберите другую категорию:",
+        reply_markup=get_inline_categories(chat_id)
     )
 
 # —————————————————————————————————————————————————————————————
@@ -1365,12 +1324,10 @@ def universal_handler(message):
                 label = f"{emoji} {flavor0} ({price}₺) [{it['stock']} шт]"
                 if text == label:
                     data['cart'].append({'category': cat0, 'flavor': flavor0, 'price': price})
-                    count = len(data['cart'])
-                    kb = get_inline_after_add(chat_id, cat0)
                     bot.send_message(
                         chat_id,
-                        f"{cat0} — {flavor0} ({price}₺) {t(chat_id,'added_to_cart').format(flavor=flavor0, count=count)}",
-                        reply_markup=kb
+                        f"«{flavor0}» добавлен(а) в корзину! Теперь выберите другую категорию:",
+                        reply_markup=get_inline_categories(chat_id)
                     )
                     return
         bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=get_inline_flavors(chat_id, cat0))
