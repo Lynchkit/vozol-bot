@@ -375,8 +375,7 @@ def handle_set_lang(call):
 
     bot.answer_callback_query(call.id, t(chat_id, "lang_set"))
 
-    # Сразу показываем главное меню (категории, «Корзина» и «Завершить заказ»)
-    bot.send_message(chat_id, t(chat_id, "welcome"), reply_markup=types.ReplyKeyboardRemove())
+    # Показываем только одно сообщение «Выберите категорию» с меню
     bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
 
     cursor.execute("SELECT referral_code FROM users WHERE chat_id = ?", (chat_id,))
@@ -732,8 +731,8 @@ def universal_handler(message):
             if text == "➖ Remove Category":
                 data['edit_phase'] = 'remove_category'
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-                for cat in menu:
-                    kb.add(cat)
+                for cat_key in menu:
+                    kb.add(cat_key)
                 kb.add("⬅️ Back")
                 bot.send_message(chat_id, "Select category to remove:", reply_markup=kb)
                 return
@@ -741,8 +740,8 @@ def universal_handler(message):
             if text == "💲 Fix Price":
                 data['edit_phase'] = 'choose_fix_price_cat'
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-                for cat in menu:
-                    kb.add(cat)
+                for cat_key in menu:
+                    kb.add(cat_key)
                 kb.add("⬅️ Back")
                 bot.send_message(chat_id, "Select category to fix price for:", reply_markup=kb)
                 return
@@ -750,8 +749,8 @@ def universal_handler(message):
             if text == "ALL IN":
                 data['edit_phase'] = 'choose_all_in_cat'
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-                for cat in menu:
-                    kb.add(cat)
+                for cat_key in menu:
+                    kb.add(cat_key)
                 kb.add("⬅️ Back")
                 bot.send_message(chat_id, "Select category to replace full flavor list:", reply_markup=kb)
                 return
@@ -759,8 +758,8 @@ def universal_handler(message):
             if text == "🔄 Actual Flavor":
                 data['edit_phase'] = 'choose_cat_actual'
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-                for cat in menu:
-                    kb.add(cat)
+                for cat_key in menu:
+                    kb.add(cat_key)
                 kb.add("⬅️ Back")
                 bot.send_message(chat_id, "Select category to update flavor stock:", reply_markup=kb)
                 return
@@ -1089,7 +1088,7 @@ def universal_handler(message):
                 bot.send_message(chat_id, f"Количество «{flavor0}» изменено на {new_qty}.", reply_markup=get_inline_main_menu(chat_id))
             return
 
-    # ——— Обработка «Корзина» по клику Reply-кнопок ———
+    # ——— Обработка «Корзина» по Reply-кнопке ———
     if text == "🛒 Корзина":
         cart = data['cart']
         if not cart:
