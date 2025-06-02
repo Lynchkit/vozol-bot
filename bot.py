@@ -428,15 +428,24 @@ def handle_flavor(call):
 
     bot.send_message(chat_id, caption, parse_mode="HTML")
 
-    kb = types.InlineKeyboardMarkup(row_width=2)
+    # Inline-клавиатура: добавить в корзину, назад к категориям, завершить заказ
+    kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(
         types.InlineKeyboardButton(
             text=f"➕ {t(chat_id,'add_to_cart')}",
             callback_data=f"add_to_cart|{cat}|{flavor}"
-        ),
+        )
+    )
+    kb.add(
         types.InlineKeyboardButton(
             text=f"⬅️ {t(chat_id,'back_to_categories')}",
             callback_data=f"category|{cat}"
+        )
+    )
+    kb.add(
+        types.InlineKeyboardButton(
+            text=f"✅ {t(chat_id,'finish_order')}",
+            callback_data="finish_order"
         )
     )
     bot.send_message(chat_id, t(chat_id, "choose_action"), reply_markup=kb)
