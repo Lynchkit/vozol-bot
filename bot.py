@@ -43,6 +43,25 @@ def save_menu(menu_data):
 menu = load_menu()
 user_data = {}
 
+# Функция для перевода текста с русского на английский через LibreTranslate API
+def translate_to_en(text: str) -> str:
+    try:
+        res = requests.post(
+            "https://libretranslate.com/translate",
+            data={
+                "q": text,
+                "source": "ru",
+                "target": "en",
+                "format": "text"
+            },
+            timeout=5
+        )
+        resp_json = res.json()
+        return resp_json.get("translatedText", text)
+    except Exception:
+        # В случае ошибки возвращаем оригинал
+        return text
+
 # ——— Клавиатуры ———
 def get_main_keyboard():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -606,6 +625,10 @@ def universal_handler(message):
             )
             bot.send_message(PERSONAL_CHAT_ID, full_rus)
 
+            # Переводим комментарий на английский (если он существует)
+            comment_ru = data.get('comment', '')
+            comment_en = translate_to_en(comment_ru) if comment_ru else '—'
+
             # Англоязычный итог для группы
             full_en = (
                 f"📥 New order from @{message.from_user.username or message.from_user.first_name}:\n\n"
@@ -613,7 +636,7 @@ def universal_handler(message):
                 f"Total: {total_try}₺ {conv}\n"
                 f"📍 Address: {data.get('address', '—')}\n"
                 f"📱 Contact: {data.get('contact', '—')}\n"
-                f"💬 Comment: {data.get('comment', '—')}"
+                f"💬 Comment: {comment_en}"
             )
             bot.send_message(GROUP_CHAT_ID, full_en)
 
