@@ -391,8 +391,10 @@ def handle_set_lang(call):
 
     bot.answer_callback_query(call.id, t(chat_id, "lang_set"))
 
+    # Первый вызов — очищаем предыдущие клавиатуры
     bot.send_message(chat_id, t(chat_id, "welcome"), reply_markup=types.ReplyKeyboardRemove())
-    bot.send_message(chat_id, t(chat_id, "welcome"), reply_markup=get_inline_categories(chat_id))
+    # Второй вызов — показываем список категорий один раз
+    bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_categories(chat_id))
 
     cursor.execute("SELECT referral_code FROM users WHERE chat_id = ?", (chat_id,))
     row = cursor.fetchone()
