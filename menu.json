@@ -4,23 +4,39 @@
     "flavors": [
       {
         "emoji": "",
-        "flavor": "🍑Peach ice",
-        "stock": 1
+        "flavor": "Peach ice",
+        "stock": 1,
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
       },
       {
         "emoji": "",
-        "flavor": "🍓🥭Strawberry mango",
-        "stock": 1
+        "flavor": "Strawberry mango",
+        "stock": 1,
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
       },
       {
         "emoji": "",
-        "flavor": "🍓🥝Strawberry kiwi",
-        "stock": 2
+        "flavor": "Strawberry kiwi",
+        "stock": 2,
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
       },
       {
         "emoji": "",
-        "flavor": "🍓🍉Strawberry watermelon",
-        "stock": 1
+        "flavor": "Strawberry watermelon",
+        "stock": 1,
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
       }
     ]
   },
@@ -29,23 +45,39 @@
     "flavors": [
       {
         "emoji": "",
-        "flavor": "🍏🍎Double apple",
-        "stock": 2
+        "flavor": "Double apple",
+        "stock": 2,
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
       },
       {
         "emoji": "",
-        "flavor": "🍒🥤Cherry cola",
-        "stock": 2
+        "flavor": "Cherry cola",
+        "stock": 2,
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
       },
       {
         "emoji": "",
-        "flavor": "🍒Cherry ice",
-        "stock": 1
+        "flavor": "Cherry ice",
+        "stock": 1,
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
       },
       {
         "emoji": "",
-        "flavor": "🥭Mango peach",
-        "stock": 1
+        "flavor": "Mango peach",
+        "stock": 1,
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
       }
     ]
   },
@@ -54,28 +86,48 @@
     "flavors": [
       {
         "emoji": "",
-        "flavor": "🥭Mango ice",
-        "stock": 1
+        "flavor": "Mango ice",
+        "stock": 1,
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
       },
       {
         "emoji": "",
-        "flavor": "⚡️Vzbull",
-        "stock": 2
+        "flavor": "Vzbull",
+        "stock": 2,
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
       },
       {
         "emoji": "",
-        "flavor": "🍇Grape ice",
-        "stock": 1
+        "flavor": "Grape ice",
+        "stock": 1,
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
       },
       {
         "emoji": "",
-        "flavor": "🍑Peach ice",
-        "stock": 1
+        "flavor": "Peach ice",
+        "stock": 1,
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
       },
       {
         "emoji": "",
-        "flavor": "🍓🥭Strawberry mango",
-        "stock": 1
+        "flavor": "Strawberry mango",
+        "stock": 1,
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
       }
     ]
   }
