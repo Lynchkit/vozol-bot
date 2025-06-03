@@ -886,9 +886,9 @@ def handle_comment_input(message):
         row = cursor.fetchone()
         if row and row[0]:
             inviter = row[0]
-            cursor.execute("UPDATE users SET points = points + 10 WHERE chat_id = ?", (inviter,))
+            cursor.execute("UPDATE users SET points = points + 200 WHERE chat_id = ?", (inviter,))
             conn.commit()
-            bot.send_message(inviter, "🎉 Вам начислено 10 бонусных баллов за приглашение нового клиента!")
+            bot.send_message(inviter, "🎉 Вам начислено 200 бонусных баллов за приглашение нового клиента!")
             cursor.execute("UPDATE users SET referred_by = NULL WHERE chat_id = ?", (chat_id,))
             conn.commit()
 
