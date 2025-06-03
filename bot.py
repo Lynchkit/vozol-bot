@@ -408,8 +408,23 @@ def handle_category(call):
     if cat not in menu:
         bot.answer_callback_query(call.id, t(chat_id, "error_invalid"))
         return
+
     bot.answer_callback_query(call.id)
     user_data[chat_id]["current_category"] = cat
+
+    # 1) Показываем картинку категории, если она есть
+    photo_url = menu[cat].get("photo_url", "").strip()
+    if photo_url:
+        # Отправляем фото с подписью “Выберите вкус для категории «<cat>»”
+        caption = f"{t(chat_id, 'choose_flavor')} «{cat}»"
+        bot.send_photo(chat_id, photo_url, caption=caption)
+    else:
+        # Если фото не задано, просто отправляем текст
+        bot.send_message(chat_id, f"{t(chat_id, 'choose_flavor')} «{cat}»")
+
+    # 2) Отправляем клавиатуру вкусов
+    bot.send_message(chat_id, " ", reply_markup=get_inline_flavors(chat_id, cat))
+
 
 # —————————————————————————————————————————————————————————————
 #   16. Callback: «Назад к категориям»
