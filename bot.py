@@ -405,25 +405,34 @@ def handle_set_lang(call):
 def handle_category(call):
     chat_id = call.from_user.id
     _, cat = call.data.split("|", 1)
+
+    # Если категория не найдена, отвечаем ошибкой
     if cat not in menu:
         bot.answer_callback_query(call.id, t(chat_id, "error_invalid"))
         return
 
+    # Подтверждаем нажатие (убираем «часики»)
     bot.answer_callback_query(call.id)
+
+    # Сохраняем, что сейчас пользователь в этой категории
     user_data[chat_id]["current_category"] = cat
 
-    # 1) Показываем картинку категории, если она есть
+    # 1) Если в menu[cat] есть photo_url, отправляем её
     photo_url = menu[cat].get("photo_url", "").strip()
     if photo_url:
-        # Отправляем фото с подписью “Выберите вкус для категории «<cat>»”
-        caption = f"{t(chat_id, 'choose_flavor')} «{cat}»"
-        bot.send_photo(chat_id, photo_url, caption=caption)
-    else:
-        # Если фото не задано, просто отправляем текст
-        bot.send_message(chat_id, f"{t(chat_id, 'choose_flavor')} «{cat}»")
+        try:
+            bot.send_photo(chat_id, photo_url)
+        except Exception as e:
+            # Если по какой-то причине не удалось прислать картинку, можно вывести сообщение в лог или просто проигнорировать
+            print(f"Failed to send category photo for {cat}: {e}")
 
-    # 2) Отправляем клавиатуру вкусов
-    bot.send_message(chat_id, " ", reply_markup=get_inline_flavors(chat_id, cat))
+    # 2) Отправляем текст «Выберите вкус...» + кнопки со вкусами
+    bot.send_message(
+        chat_id,
+        f"{t(chat_id, 'choose_flavor')} «{cat}»",
+        reply_markup=get_inline_flavors(chat_id, cat)
+    )
+
 
 
 # —————————————————————————————————————————————————————————————
