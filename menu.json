@@ -1,7 +1,7 @@
 {
   "VOZOL Gear Power — 20.000 puffs": {
     "price": 1300,
-    "photo_url": "https://raw.githubusercontent.com/Lynchkit/vozol-bot/refs/heads/main/GEAR.png",
+    "photo_url": "https://raw.githubusercontent.com/Lynchkit/vozol-bot/main/GEAR.png",
     "flavors": [
       {
         "emoji": "🍑❄️",
@@ -43,7 +43,7 @@
   },
   "VOZOL Shisha — 25.000 puffs": {
     "price": 1400,
-    "photo_url": "https://raw.githubusercontent.com/Lynchkit/vozol-bot/refs/heads/main/photo_2025-03-06_09-11-29.jpg",
+    "photo_url": "https://raw.githubusercontent.com/Lynchkit/vozol-bot/main/photo_2025-03-06_09-11-29.jpg",
     "flavors": [
       {
         "emoji": "🍏🍎",
@@ -85,7 +85,7 @@
   },
   "VOZOL Vista — 20.000 puffs": {
     "price": 1300,
-    "photo_url": "https://github.com/Lynchkit/vozol-bot/blob/main/photo_3_2024-10-17_09-50-13.png",
+    "photo_url": "https://raw.githubusercontent.com/Lynchkit/vozol-bot/main/photo_3_2024-10-17_09-50-13.png",
     "flavors": [
       {
         "emoji": "🥭❄️",
