@@ -34,12 +34,19 @@ LANG_PATH = "languages.json"
 DB_PATH = "database.db"
 
 # —————————————————————————————————————————————————————————————
-#   3. Инициализация SQLite и создание таблиц
+#   3. Функция для получения локального подключения к БД
 # —————————————————————————————————————————————————————————————
-conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-cursor = conn.cursor()
+def get_db_connection():
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    return conn
 
-cursor.execute("""
+# —————————————————————————————————————————————————————————————
+#   4. Инициализация SQLite и создание таблиц (при старте)
+# —————————————————————————————————————————————————————————————
+conn_init = get_db_connection()
+cursor_init = conn_init.cursor()
+
+cursor_init.execute("""
 CREATE TABLE IF NOT EXISTS users (
     chat_id        INTEGER PRIMARY KEY,
     points         INTEGER DEFAULT 0,
@@ -47,7 +54,7 @@ CREATE TABLE IF NOT EXISTS users (
     referred_by    INTEGER
 )
 """)
-cursor.execute("""
+cursor_init.execute("""
 CREATE TABLE IF NOT EXISTS orders (
     order_id    INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id     INTEGER,
@@ -56,7 +63,7 @@ CREATE TABLE IF NOT EXISTS orders (
     timestamp   TEXT
 )
 """)
-cursor.execute("""
+cursor_init.execute("""
 CREATE TABLE IF NOT EXISTS reviews (
     review_id   INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id     INTEGER,
@@ -67,10 +74,12 @@ CREATE TABLE IF NOT EXISTS reviews (
     timestamp   TEXT
 )
 """)
-conn.commit()
+conn_init.commit()
+cursor_init.close()
+conn_init.close()
 
 # —————————————————————————————————————————————————————————————
-#   4. Загрузка menu.json и languages.json
+#   5. Загрузка menu.json и languages.json
 # —————————————————————————————————————————————————————————————
 def load_json(path):
     if not os.path.exists(path):
@@ -85,7 +94,7 @@ menu = load_json(MENU_PATH)
 translations = load_json(LANG_PATH)
 
 # —————————————————————————————————————————————————————————————
-#   5. Хранилище данных пользователей (in-memory)
+#   6. Хранилище данных пользователей (in-memory)
 # —————————————————————————————————————————————————————————————
 user_data = {}
 # Структура user_data[chat_id]:
@@ -112,7 +121,7 @@ user_data = {}
 # }
 
 # —————————————————————————————————————————————————————————————
-#   6. Утилиты
+#   7. Утилиты
 # —————————————————————————————————————————————————————————————
 def t(chat_id: int, key: str) -> str:
     """
@@ -160,7 +169,7 @@ def translate_to_en(text: str) -> str:
         return text
 
 # —————————————————————————————————————————————————————————————
-#   7. Inline-кнопки для выбора языка
+#   8. Inline-кнопки для выбора языка
 # —————————————————————————————————————————————————————————————
 def get_inline_language_buttons(chat_id: int) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=2)
@@ -171,7 +180,7 @@ def get_inline_language_buttons(chat_id: int) -> types.InlineKeyboardMarkup:
     return kb
 
 # —————————————————————————————————————————————————————————————
-#   8. Inline-кнопки для главного меню 
+#   9. Inline-кнопки для главного меню 
 #      (категории + «Корзина» + «Очистить корзину» + «Завершить заказ»)
 # —————————————————————————————————————————————————————————————
 def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
@@ -184,7 +193,7 @@ def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
     return kb
 
 # —————————————————————————————————————————————————————————————
-#   9. Inline-кнопки для выбора вкусов
+#   10. Inline-кнопки для выбора вкусов
 # —————————————————————————————————————————————————————————————
 def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=1)
@@ -199,7 +208,7 @@ def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
     return kb
 
 # —————————————————————————————————————————————————————————————
-#   10. Reply-клавиатуры (альтернатива inline)
+#   11. Reply-клавиатуры (альтернатива inline)
 # —————————————————————————————————————————————————————————————
 def address_keyboard() -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -224,7 +233,7 @@ def comment_keyboard() -> types.ReplyKeyboardMarkup:
     return kb
 
 # —————————————————————————————————————————————————————————————
-#   11. Клавиатура редактирования меню (/change) — ВСЁ НА АНГЛИЙСКОМ
+#   12. Клавиатура редактирования меню (/change) — ВСЁ НА АНГЛИЙСКОМ
 # —————————————————————————————————————————————————————————————
 def edit_action_keyboard() -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -234,12 +243,15 @@ def edit_action_keyboard() -> types.ReplyKeyboardMarkup:
     return kb
 
 # —————————————————————————————————————————————————————————————
-#   12. Планировщик – еженедельный дайджест (необязательно)
+#   13. Планировщик – еженедельный дайджест (необязательно)
 # —————————————————————————————————————————————————————————————
 def send_weekly_digest():
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+
     one_week_ago = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).isoformat()
-    cursor.execute("SELECT items_json FROM orders WHERE timestamp >= ?", (one_week_ago,))
-    recent = cursor.fetchall()
+    cursor_local.execute("SELECT items_json FROM orders WHERE timestamp >= ?", (one_week_ago,))
+    recent = cursor_local.fetchall()
     counts = {}
     for (items_json,) in recent:
         items = json.loads(items_json)
@@ -251,23 +263,26 @@ def send_weekly_digest():
     else:
         lines = [f"{flavor}: {qty} продаж" for flavor, qty in top3]
         text = "📢 Топ-3 вкуса за неделю:\n" + "\n".join(lines)
-    cursor.execute("SELECT DISTINCT chat_id FROM orders")
-    users = cursor.fetchall()
+    cursor_local.execute("SELECT DISTINCT chat_id FROM orders")
+    users = cursor_local.fetchall()
     for (uid,) in users:
         bot.send_message(uid, text)
+
+    cursor_local.close()
+    conn_local.close()
 
 scheduler = BackgroundScheduler(timezone="Europe/Riga")
 scheduler.add_job(send_weekly_digest, trigger="cron", day_of_week="mon", hour=9, minute=0)
 scheduler.start()
 
 # —————————————————————————————————————————————————————————————
-#   13. Хендлер /start – регистрация, реферальная система, выбор языка
+#   14. Хендлер /start – регистрация, реферальная система, выбор языка
 # —————————————————————————————————————————————————————————————
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     chat_id = message.chat.id
 
-    # Если пользователя нет, создаём запись с default-значениями (lang=None)
+    # Если пользователя нет, создаём запись в user_data с default-значениями (lang=None)
     if chat_id not in user_data:
         user_data[chat_id] = {
             "lang": None,
@@ -314,27 +329,33 @@ def cmd_start(message):
         "edit_cart_phase": None
     })
 
-    cursor.execute("SELECT chat_id FROM users WHERE chat_id = ?", (chat_id,))
-    if cursor.fetchone() is None:
+    # Проверяем наличие пользователя в БД и создаём, если нет
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+
+    cursor_local.execute("SELECT chat_id FROM users WHERE chat_id = ?", (chat_id,))
+    if cursor_local.fetchone() is None:
         text = message.text or ""
         referred_by = None
         if "ref=" in text:
             code = text.split("ref=")[1]
-            cursor.execute("SELECT chat_id FROM users WHERE referral_code = ?", (code,))
-            row = cursor.fetchone()
+            cursor_local.execute("SELECT chat_id FROM users WHERE referral_code = ?", (code,))
+            row = cursor_local.fetchone()
             if row:
                 referred_by = row[0]
         new_code = generate_ref_code()
         while True:
-            cursor.execute("SELECT referral_code FROM users WHERE referral_code = ?", (new_code,))
-            if cursor.fetchone() is None:
+            cursor_local.execute("SELECT referral_code FROM users WHERE referral_code = ?", (new_code,))
+            if cursor_local.fetchone() is None:
                 break
             new_code = generate_ref_code()
-        cursor.execute(
+        cursor_local.execute(
             "INSERT INTO users (chat_id, points, referral_code, referred_by) VALUES (?, ?, ?, ?)",
             (chat_id, 0, new_code, referred_by)
         )
-        conn.commit()
+        conn_local.commit()
+    cursor_local.close()
+    conn_local.close()
 
     # Показываем кнопку выбора языка
     bot.send_message(
@@ -344,7 +365,7 @@ def cmd_start(message):
     )
 
 # —————————————————————————————————————————————————————————————
-#   14. Callback: выбор языка
+#   15. Callback: выбор языка
 # —————————————————————————————————————————————————————————————
 @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("set_lang|"))
 def handle_set_lang(call):
@@ -381,8 +402,13 @@ def handle_set_lang(call):
     bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
 
     # Отправляем реферальную ссылку
-    cursor.execute("SELECT referral_code FROM users WHERE chat_id = ?", (chat_id,))
-    row = cursor.fetchone()
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    cursor_local.execute("SELECT referral_code FROM users WHERE chat_id = ?", (chat_id,))
+    row = cursor_local.fetchone()
+    cursor_local.close()
+    conn_local.close()
+
     if row:
         code = row[0]
         bot_username = bot.get_me().username
@@ -401,7 +427,7 @@ def handle_set_lang(call):
             )
 
 # —————————————————————————————————————————————————————————————
-#   15. Callback: выбор категории (показываем вкусы)
+#   16. Callback: выбор категории (показываем вкусы)
 # —————————————————————————————————————————————————————————————
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("category|"))
 def handle_category(call):
@@ -435,7 +461,7 @@ def handle_category(call):
     )
 
 # —————————————————————————————————————————————————————————————
-#   16. Callback: «Назад к категориям»
+#   17. Callback: «Назад к категориям»
 # —————————————————————————————————————————————————————————————
 @bot.callback_query_handler(func=lambda call: call.data == "go_back_to_categories")
 def handle_go_back_to_categories(call):
@@ -444,7 +470,7 @@ def handle_go_back_to_categories(call):
     bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
 
 # —————————————————————————————————————————————————————————————
-#   17. Callback: выбор вкуса
+#   18. Callback: выбор вкуса
 # —————————————————————————————————————————————————————————————
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("flavor|"))
 def handle_flavor(call):
@@ -496,7 +522,7 @@ def handle_flavor(call):
     bot.send_message(chat_id, t(chat_id, "choose_action"), reply_markup=kb)
 
 # —————————————————————————————————————————————————————————————
-#   18. Callback: добавить в корзину (без изменения stock)
+#   19. Callback: добавить в корзину (без изменения stock)
 # —————————————————————————————————————————————————————————————
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("add_to_cart|"))
 def handle_add_to_cart(call):
@@ -527,7 +553,7 @@ def handle_add_to_cart(call):
     )
 
 # —————————————————————————————————————————————————————————————
-#   19. Callback: «Просмотр корзины»
+#   20. Callback: «Просмотр корзины»
 # —————————————————————————————————————————————————————————————
 @bot.callback_query_handler(func=lambda call: call.data == "view_cart")
 def handle_view_cart(call):
@@ -572,7 +598,7 @@ def handle_view_cart(call):
     bot.send_message(chat_id, msg, reply_markup=kb)
 
 # —————————————————————————————————————————————————————————————
-#   20. Callback: «Удалить i» из корзины (без возврата stock)
+#   21. Callback: «Удалить i» из корзины (без возврата stock)
 # —————————————————————————————————————————————————————————————
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("remove_item|"))
 def handle_remove_item(call):
@@ -609,7 +635,7 @@ def handle_remove_item(call):
     handle_view_cart(call)
 
 # —————————————————————————————————————————————————————————————
-#   21. Callback: «Изменить i» в корзине → ввод количества (без возврата/списания stock)
+#   22. Callback: «Изменить i» в корзине → ввод количества (без возврата/списания stock)
 # —————————————————————————————————————————————————————————————
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("edit_item|"))
 def handle_edit_item_request(call):
@@ -688,7 +714,7 @@ def handle_enter_new_qty(message):
     user_data[chat_id] = data
 
 # —————————————————————————————————————————————————————————————
-#   22. Callback: «Очистить корзину» (без возврата stock)
+#   23. Callback: «Очистить корзину» (без возврата stock)
 # —————————————————————————————————————————————————————————————
 @bot.callback_query_handler(func=lambda call: call.data == "clear_cart")
 def handle_clear_cart(call):
@@ -700,7 +726,7 @@ def handle_clear_cart(call):
     user_data[chat_id] = data
 
 # —————————————————————————————————————————————————————————————
-#   23. Callback: завершить заказ (теперь с учётом проверки и списания stock)
+#   24. Callback: завершить заказ (теперь с учётом проверки и списания stock)
 # —————————————————————————————————————————————————————————————
 @bot.callback_query_handler(func=lambda call: call.data == "finish_order")
 def handle_finish_order(call):
@@ -715,9 +741,13 @@ def handle_finish_order(call):
 
     total_try = sum(item["price"] for item in cart)
 
-    # Берём текущее кол-во баллов пользователя
-    cursor.execute("SELECT points FROM users WHERE chat_id = ?", (chat_id,))
-    row = cursor.fetchone()
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    cursor_local.execute("SELECT points FROM users WHERE chat_id = ?", (chat_id,))
+    row = cursor_local.fetchone()
+    cursor_local.close()
+    conn_local.close()
+
     user_points = row[0] if row else 0
 
     if user_points > 0:
@@ -748,7 +778,7 @@ def handle_finish_order(call):
     user_data[chat_id] = data
 
 # —————————————————————————————————————————————————————————————
-#   24. Handler: ввод количества баллов для списания
+#   25. Handler: ввод количества баллов для списания
 # —————————————————————————————————————————————————————————————
 @bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_points"), content_types=['text'])
 def handle_points_input(message):
@@ -771,8 +801,12 @@ def handle_points_input(message):
 
     # Списываем баллы из БД (если points_to_spend > 0)
     if points_to_spend > 0:
-        cursor.execute("UPDATE users SET points = points - ? WHERE chat_id = ?", (points_to_spend, chat_id))
-        conn.commit()
+        conn_local = get_db_connection()
+        cursor_local = conn_local.cursor()
+        cursor_local.execute("UPDATE users SET points = points - ? WHERE chat_id = ?", (points_to_spend, chat_id))
+        conn_local.commit()
+        cursor_local.close()
+        conn_local.close()
 
     # Вычисляем скидку и сохраняем в data
     discount_try = points_to_spend * 1  # 1 балл = 1₺
@@ -803,7 +837,7 @@ def handle_points_input(message):
     user_data[chat_id] = data
 
 # —————————————————————————————————————————————————————————————
-#   25. Обработчик ввода адреса (без изменений)
+#   26. Обработчик ввода адреса (без изменений)
 # —————————————————————————————————————————————————————————————
 @bot.message_handler(
     func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_address"),
@@ -852,7 +886,7 @@ def handle_address_input(message):
     user_data[chat_id] = data
 
 # —————————————————————————————————————————————————————————————
-#   26. Обработчик ввода контакта (без изменений)
+#   27. Обработчик ввода контакта (без изменений)
 # —————————————————————————————————————————————————————————————
 @bot.message_handler(
     func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_contact"),
@@ -890,7 +924,7 @@ def handle_contact_input(message):
     user_data[chat_id] = data
 
 # —————————————————————————————————————————————————————————————
-#   27. Обработчик ввода комментария и сохранения заказа (с учётом скидки и списания stock)
+#   28. Обработчик ввода комментария и сохранения заказа (с учётом скидки и списания stock)
 # —————————————————————————————————————————————————————————————
 @bot.message_handler(
     func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_comment"),
@@ -952,29 +986,34 @@ def handle_comment_input(message):
         # Сохраняем заказ в БД
         items_json = json.dumps(cart, ensure_ascii=False)
         now = datetime.datetime.utcnow().isoformat()
-        cursor.execute(
+        conn_local = get_db_connection()
+        cursor_local = conn_local.cursor()
+        cursor_local.execute(
             "INSERT INTO orders (chat_id, items_json, total, timestamp) VALUES (?, ?, ?, ?)",
             (chat_id, items_json, total_after, now)
         )
-        conn.commit()
+        conn_local.commit()
 
-        # Начисление бонусных баллов (1 балл = 30₺ вместо 20₺)
+        # Начисление бонусных баллов (1 балл = 30₺)
         earned = total_after // 30
         if earned > 0:
-            cursor.execute("UPDATE users SET points = points + ? WHERE chat_id = ?", (earned, chat_id))
-            conn.commit()
+            cursor_local.execute("UPDATE users SET points = points + ? WHERE chat_id = ?", (earned, chat_id))
+            conn_local.commit()
             bot.send_message(chat_id, f"👍 Вы получили {earned} бонусных баллов за этот заказ.")
 
         # Начисление бонусного приглашения
-        cursor.execute("SELECT referred_by FROM users WHERE chat_id = ?", (chat_id,))
-        row = cursor.fetchone()
+        cursor_local.execute("SELECT referred_by FROM users WHERE chat_id = ?", (chat_id,))
+        row = cursor_local.fetchone()
         if row and row[0]:
             inviter = row[0]
-            cursor.execute("UPDATE users SET points = points + 200 WHERE chat_id = ?", (inviter,))
-            conn.commit()
+            cursor_local.execute("UPDATE users SET points = points + 200 WHERE chat_id = ?", (inviter,))
+            conn_local.commit()
             bot.send_message(inviter, "🎉 Вам начислено 200 бонусных баллов за приглашение нового клиента!")
-            cursor.execute("UPDATE users SET referred_by = NULL WHERE chat_id = ?", (chat_id,))
-            conn.commit()
+            cursor_local.execute("UPDATE users SET referred_by = NULL WHERE chat_id = ?", (chat_id,))
+            conn_local.commit()
+
+        cursor_local.close()
+        conn_local.close()
 
         # Отправляем админам
         summary_rus = "\n".join(f"{i['category']}: {i['flavor']} — {i['price']}₺" for i in cart)
@@ -1027,7 +1066,7 @@ def handle_comment_input(message):
         return
 
 # —————————————————————————————————————————————————————————————
-#   28. /change: перевод в режим редактирования меню (только на английском)
+#   29. /change: перевод в режим редактирования меню (только на английском)
 # —————————————————————————————————————————————————————————————
 @bot.message_handler(commands=['change'])
 def cmd_change(message):
@@ -1071,13 +1110,18 @@ def cmd_change(message):
     bot.send_message(chat_id, "Menu editing: choose action", reply_markup=edit_action_keyboard())
 
 # —————————————————————————————————————————————————————————————
-#   29. Хендлер /points (должен быть ДО универсального «ловца»)
+#   30. Хендлер /points (должен быть ДО универсального «ловца»)
 # —————————————————————————————————————————————————————————————
 @bot.message_handler(commands=['points'])
 def cmd_points(message):
     chat_id = message.chat.id
-    cursor.execute("SELECT points FROM users WHERE chat_id = ?", (chat_id,))
-    row = cursor.fetchone()
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    cursor_local.execute("SELECT points FROM users WHERE chat_id = ?", (chat_id,))
+    row = cursor_local.fetchone()
+    cursor_local.close()
+    conn_local.close()
+
     if row is None or row[0] == 0:
         bot.send_message(chat_id, "У вас пока нет бонусных баллов.")
     else:
@@ -1085,7 +1129,7 @@ def cmd_points(message):
         bot.send_message(chat_id, f"У вас сейчас {points} бонусных баллов.")
 
 # —————————————————————————————————————————————————————————————
-#   30. Хендлер /convert — курсы и конвертация суммы TRY
+#   31. Хендлер /convert — курсы и конвертация суммы TRY
 # —————————————————————————————————————————————————————————————
 @bot.message_handler(commands=['convert'])
 def cmd_convert(message):
@@ -1133,7 +1177,7 @@ def cmd_convert(message):
     bot.send_message(chat_id, "Использование: /convert 1300")
 
 # —————————————————————————————————————————————————————————————
-#   31. Универсальный хендлер (всё остальное)
+#   32. Универсальный хендлер (всё остальное)
 # —————————————————————————————————————————————————————————————
 @bot.message_handler(content_types=['text','location','venue','contact'])
 def universal_handler(message):
@@ -1411,7 +1455,7 @@ def universal_handler(message):
                 for itm in menu[text]["flavors"]:
                     flavor0 = itm["flavor"]
                     stock0 = itm.get("stock", 0)
-                    kb.add(f"{flavor0} [{stock0} шт]")
+                    kb.add(f"{flavor0} [{stock0} pcs]")
                 kb.add("⬅️ Back")
                 bot.send_message(chat_id, "Select flavor to update stock:", reply_markup=kb)
                 user_data[chat_id] = data
@@ -1754,29 +1798,34 @@ def universal_handler(message):
             # Сохраняем заказ в БД
             items_json = json.dumps(cart, ensure_ascii=False)
             now = datetime.datetime.utcnow().isoformat()
-            cursor.execute(
+            conn_local = get_db_connection()
+            cursor_local = conn_local.cursor()
+            cursor_local.execute(
                 "INSERT INTO orders (chat_id, items_json, total, timestamp) VALUES (?, ?, ?, ?)",
                 (chat_id, items_json, total_after, now)
             )
-            conn.commit()
+            conn_local.commit()
 
-            # Начисление бонусных баллов (1 балл = 30₺ вместо 20₺)
+            # Начисление бонусных баллов (1 балл = 30₺)
             earned = total_after // 30
             if earned > 0:
-                cursor.execute("UPDATE users SET points = points + ? WHERE chat_id = ?", (earned, chat_id))
-                conn.commit()
+                cursor_local.execute("UPDATE users SET points = points + ? WHERE chat_id = ?", (earned, chat_id))
+                conn_local.commit()
                 bot.send_message(chat_id, f"👍 Вы получили {earned} бонусных баллов за этот заказ.")
 
             # Начисление бонусного приглашения
-            cursor.execute("SELECT referred_by FROM users WHERE chat_id = ?", (chat_id,))
-            row = cursor.fetchone()
+            cursor_local.execute("SELECT referred_by FROM users WHERE chat_id = ?", (chat_id,))
+            row = cursor_local.fetchone()
             if row and row[0]:
                 inviter = row[0]
-                cursor.execute("UPDATE users SET points = points + 200 WHERE chat_id = ?", (inviter,))
-                conn.commit()
+                cursor_local.execute("UPDATE users SET points = points + 200 WHERE chat_id = ?", (inviter,))
+                conn_local.commit()
                 bot.send_message(inviter, "🎉 Вам начислено 200 бонусных баллов за приглашение нового клиента!")
-                cursor.execute("UPDATE users SET referred_by = NULL WHERE chat_id = ?", (chat_id,))
-                conn.commit()
+                cursor_local.execute("UPDATE users SET referred_by = NULL WHERE chat_id = ?", (chat_id,))
+                conn_local.commit()
+
+            cursor_local.close()
+            conn_local.close()
 
             # Отправляем админам
             summary_rus = "\n".join(f"{i['category']}: {i['flavor']} — {i['price']}₺" for i in cart)
@@ -1867,8 +1916,14 @@ def universal_handler(message):
             bot.send_message(chat_id, t(chat_id, "cart_empty"))
             return
         total_try = sum(i['price'] for i in cart)
-        cursor.execute("SELECT points FROM users WHERE chat_id = ?", (chat_id,))
-        row = cursor.fetchone()
+
+        conn_local = get_db_connection()
+        cursor_local = conn_local.cursor()
+        cursor_local.execute("SELECT points FROM users WHERE chat_id = ?", (chat_id,))
+        row = cursor_local.fetchone()
+        cursor_local.close()
+        conn_local.close()
+
         user_points = row[0] if row else 0
 
         if user_points > 0:
@@ -1930,11 +1985,16 @@ def universal_handler(message):
 
     # ——— /history ———
     if text == "/history":
-        cursor.execute(
+        conn_local = get_db_connection()
+        cursor_local = conn_local.cursor()
+        cursor_local.execute(
             "SELECT order_id, items_json, total, timestamp FROM orders WHERE chat_id = ? ORDER BY timestamp DESC",
             (chat_id,)
         )
-        rows = cursor.fetchall()
+        rows = cursor_local.fetchall()
+        cursor_local.close()
+        conn_local.close()
+
         if not rows:
             bot.send_message(chat_id, "У вас пока нет сохранённых заказов.")
             return
@@ -1978,23 +2038,32 @@ def universal_handler(message):
         if not found:
             bot.send_message(chat_id, "Вкус не найден. Убедитесь в корректном написании.")
             return
+
         now = datetime.datetime.utcnow().isoformat()
-        cursor.execute(
+        conn_local = get_db_connection()
+        cursor_local = conn_local.cursor()
+        cursor_local.execute(
             "INSERT INTO reviews (chat_id, category, flavor, rating, comment, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
             (chat_id, db_cat, db_flavor, rating, comment, now)
         )
-        conn.commit()
-        cursor.execute(
+        conn_local.commit()
+
+        cursor_local.execute(
             "SELECT AVG(rating) FROM reviews WHERE flavor = ?",
             (db_flavor,)
         )
-        avg_rating = cursor.fetchone()[0] or 0
+        avg_rating = cursor_local.fetchone()[0] or 0
+
         for itm in menu[db_cat]["flavors"]:
             if itm["flavor"] == db_flavor:
                 itm["rating"] = round(avg_rating, 1)
                 break
         with open(MENU_PATH, "w", encoding="utf-8") as f:
             json.dump(menu, f, ensure_ascii=False, indent=2)
+
+        cursor_local.close()
+        conn_local.close()
+
         bot.send_message(chat_id, f"Спасибо за отзыв! Текущий средний рейтинг «{db_flavor}»: {avg_rating:.1f}")
         return
 
@@ -2005,11 +2074,17 @@ def universal_handler(message):
             bot.send_message(chat_id, "Использование: /show_reviews <название_вкуса>")
             return
         flavor_query = parts[1]
-        cursor.execute(
+
+        conn_local = get_db_connection()
+        cursor_local = conn_local.cursor()
+        cursor_local.execute(
             "SELECT chat_id, rating, comment, timestamp FROM reviews WHERE flavor = ? ORDER BY timestamp DESC",
             (flavor_query,)
         )
-        rows = cursor.fetchall()
+        rows = cursor_local.fetchall()
+        cursor_local.close()
+        conn_local.close()
+
         if not rows:
             bot.send_message(chat_id, "Пока нет отзывов для этого вкуса.")
             return
@@ -2025,12 +2100,16 @@ def universal_handler(message):
         if chat_id != ADMIN_ID:
             bot.send_message(chat_id, "У вас нет доступа к этой команде.")
             return
-        cursor.execute("SELECT COUNT(*) FROM orders")
-        total_orders = cursor.fetchone()[0]
-        cursor.execute("SELECT SUM(total) FROM orders")
-        total_revenue = cursor.fetchone()[0] or 0
-        cursor.execute("SELECT items_json FROM orders")
-        all_items = cursor.fetchall()
+
+        conn_local = get_db_connection()
+        cursor_local = conn_local.cursor()
+        cursor_local.execute("SELECT COUNT(*) FROM orders")
+        total_orders = cursor_local.fetchone()[0]
+        cursor_local.execute("SELECT SUM(total) FROM orders")
+        total_revenue = cursor_local.fetchone()[0] or 0
+        cursor_local.execute("SELECT items_json FROM orders")
+        all_items = cursor_local.fetchall()
+
         counts = {}
         for (items_json,) in all_items:
             items = json.loads(items_json)
@@ -2039,17 +2118,21 @@ def universal_handler(message):
                 counts[key] = counts.get(key, 0) + 1
         top5 = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:5]
         top5_lines = [f"{flavor}: {qty} шт." for flavor, qty in top5] or ["Пока нет данных."]
+
         report = (
             f"📊 Статистика магазина:\n"
             f"Всего заказов: {total_orders}\n"
             f"Общая выручка: {total_revenue}₺\n\n"
             f"Топ-5 продаваемых вкусов:\n" + "\n".join(top5_lines)
         )
+        cursor_local.close()
+        conn_local.close()
+
         bot.send_message(chat_id, report)
         return
 
 # —————————————————————————————————————————————————————————————
-#   32. Запуск бота
+#   33. Запуск бота
 # —————————————————————————————————————————————————————————————
 if __name__ == "__main__":
     bot.delete_webhook()  # Сброс webhook перед polling
