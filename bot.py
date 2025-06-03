@@ -487,9 +487,15 @@ def handle_add_to_cart(call):
     price = menu[cat]["price"]
     cart.append({"category": cat, "flavor": flavor, "price": price})
 
+    # Формируем сообщение: «Категория — Вкус» + текст из перевода без кавористого «вкус» 
+    template = t(chat_id, "added_to_cart")
+    # template выглядит как "«{flavor}» добавлен(а) в корзину. В корзине {count} товар(ов)."
+    # Разделим на две части: после закрывающей кавычки
+    suffix = template.split("»", 1)[1].strip()
+    count = len(cart)
     bot.send_message(
         chat_id,
-        f"«{flavor}» {t(chat_id,'added_to_cart').format(flavor=flavor, count=len(cart))}",
+        f"«{cat} — {flavor}» {suffix.format(flavor=flavor, count=count)}",
         reply_markup=get_inline_main_menu(chat_id)
     )
 
@@ -743,7 +749,7 @@ def handle_points_input(message):
     user_data[chat_id] = data
 
 # —————————————————————————————————————————————————————————————
-#   25. Обработчик ввода адреса (без изменений, уже существующий)
+#   25. Обработчик ввода адреса (без изменений)
 # —————————————————————————————————————————————————————————————
 @bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_address"), content_types=['text','location','venue'])
 def handle_address_input(message):
@@ -868,8 +874,8 @@ def handle_comment_input(message):
         )
         conn.commit()
 
-        # Начисление бонусных баллов (1 балл = 10 ₺ как раньше)
-        earned = total_after // 10
+        # Начисление бонусных баллов (1 балл = 10₺ как раньше, но теперь выдаём в 2 раза меньше)
+        earned = total_after // 20
         if earned > 0:
             cursor.execute("UPDATE users SET points = points + ? WHERE chat_id = ?", (earned, chat_id))
             conn.commit()
@@ -1582,8 +1588,8 @@ def universal_handler(message):
             )
             conn.commit()
 
-            # Начисление бонусных баллов (1 балл = 10 ₺ как раньше)
-            earned = total_after // 10
+            # Начисление бонусных баллов (1 балл = 10₺ как раньше, но теперь выдаём в 2 раза меньше)
+            earned = total_after // 20
             if earned > 0:
                 cursor.execute("UPDATE users SET points = points + ? WHERE chat_id = ?", (earned, chat_id))
                 conn.commit()
@@ -1747,9 +1753,13 @@ def universal_handler(message):
                 label = f"{emoji} {flavor0} ({price}₺) [{it['stock']} шт]"
                 if text == label:
                     data['cart'].append({'category': cat0, 'flavor': flavor0, 'price': price})
+                    # Аналогично, показываем категорию и вкус
+                    template = t(chat_id, "added_to_cart")
+                    suffix = template.split("»", 1)[1].strip()
+                    count = len(data['cart'])
                     bot.send_message(
                         chat_id,
-                        f"«{flavor0}» {t(chat_id,'added_to_cart').format(flavor=flavor0, count=len(data['cart']))}",
+                        f"«{cat0} — {flavor0}» {suffix.format(flavor=flavor0, count=count)}",
                         reply_markup=get_inline_main_menu(chat_id)
                     )
                     user_data[chat_id] = data
