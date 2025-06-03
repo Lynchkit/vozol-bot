@@ -1971,6 +1971,25 @@ def universal_handler(message):
         )
         bot.send_message(chat_id, report)
         return
+# Вставьте этот код где-нибудь после всех существующих хендлеров, но до bot.polling()
+
+@bot.message_handler(commands=['points'])
+def cmd_points(message):
+    chat_id = message.chat.id
+
+    # Достаём текущее количество баллов из БД
+    cursor.execute("SELECT points FROM users WHERE chat_id = ?", (chat_id,))
+    row = cursor.fetchone()
+    if row is None:
+        bot.send_message(chat_id, "Вы ещё не делали ни одного заказа и у вас нет баллов.")
+        return
+
+    points = row[0]
+    if points > 0:
+        bot.send_message(chat_id, f"У вас сейчас {points} бонусных баллов.")
+    else:
+        bot.send_message(chat_id, "У вас пока нет бонусных баллов.")
+
 
 # —————————————————————————————————————————————————————————————
 #   30. Запуск бота
