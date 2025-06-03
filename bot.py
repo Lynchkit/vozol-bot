@@ -218,13 +218,13 @@ def comment_keyboard() -> types.ReplyKeyboardMarkup:
     return kb
 
 # —————————————————————————————————————————————————————————————
-#   11. Клавиатура редактирования меню (/change)
+#   11. Клавиатура редактирования меню (/change) — ВСЁ НА АНГЛИЙСКОМ
 # —————————————————————————————————————————————————————————————
 def edit_action_keyboard() -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add("➕ Add Category", "➖ Remove Category")
     kb.add("💲 Fix Price", "ALL IN", "🔄 Actual Flavor")
-    kb.add(t(None, "back"), "❌ Cancel")
+    kb.add("⬅️ Back", "❌ Cancel")
     return kb
 
 # —————————————————————————————————————————————————————————————
@@ -638,7 +638,7 @@ def handle_finish_order(call):
     data["wait_for_address"] = True
 
 # —————————————————————————————————————————————————————————————
-#   24. /change: перевод в режим редактирования меню
+#   24. /change: перевод в режим редактирования меню (только на английском)
 # —————————————————————————————————————————————————————————————
 @bot.message_handler(commands=['change'])
 def cmd_change(message):
@@ -673,6 +673,7 @@ def cmd_change(message):
         "edit_index": None,
         "edit_cart_phase": None
     })
+    # Только на английском: показываем меню редактирования
     bot.send_message(chat_id, "Menu editing: choose action", reply_markup=edit_action_keyboard())
 
 # —————————————————————————————————————————————————————————————
@@ -706,9 +707,9 @@ def universal_handler(message):
     if data.get('edit_phase'):
         phase = data['edit_phase']
 
-        # 1) Главное меню редактирования
+        # 1) Главное меню редактирования (весь текст — английский)
         if phase == 'choose_action':
-            if text == t(chat_id, "back"):
+            if text == "⬅️ Back":
                 data['edit_phase'] = None
                 data['edit_cat'] = None
                 data['edit_flavor'] = None
@@ -725,7 +726,7 @@ def universal_handler(message):
             if text == "➕ Add Category":
                 data['edit_phase'] = 'add_category'
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-                kb.add(t(None, "back"))
+                kb.add("⬅️ Back")
                 bot.send_message(chat_id, "Enter new category name:", reply_markup=kb)
                 return
 
@@ -734,7 +735,7 @@ def universal_handler(message):
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
                 for cat_key in menu:
                     kb.add(cat_key)
-                kb.add(t(None, "back"))
+                kb.add("⬅️ Back")
                 bot.send_message(chat_id, "Select category to remove:", reply_markup=kb)
                 return
 
@@ -743,7 +744,7 @@ def universal_handler(message):
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
                 for cat_key in menu:
                     kb.add(cat_key)
-                kb.add(t(None, "back"))
+                kb.add("⬅️ Back")
                 bot.send_message(chat_id, "Select category to fix price for:", reply_markup=kb)
                 return
 
@@ -752,7 +753,7 @@ def universal_handler(message):
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
                 for cat_key in menu:
                     kb.add(cat_key)
-                kb.add(t(None, "back"))
+                kb.add("⬅️ Back")
                 bot.send_message(chat_id, "Select category to replace full flavor list:", reply_markup=kb)
                 return
 
@@ -761,7 +762,7 @@ def universal_handler(message):
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
                 for cat_key in menu:
                     kb.add(cat_key)
-                kb.add(t(None, "back"))
+                kb.add("⬅️ Back")
                 bot.send_message(chat_id, "Select category to update flavor stock:", reply_markup=kb)
                 return
 
@@ -770,7 +771,7 @@ def universal_handler(message):
 
         # 2) Добавить категорию
         if phase == 'add_category':
-            if text == t(chat_id, "back"):
+            if text == "⬅️ Back":
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
                 return
@@ -778,7 +779,7 @@ def universal_handler(message):
             new_cat = text.strip()
             if not new_cat or new_cat in menu:
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-                kb.add(t(None, "back"))
+                kb.add("⬅️ Back")
                 bot.send_message(chat_id, "Invalid or existing name. Try again:", reply_markup=kb)
                 return
 
@@ -795,7 +796,7 @@ def universal_handler(message):
 
         # 3) Удалить категорию
         if phase == 'remove_category':
-            if text == t(chat_id, "back"):
+            if text == "⬅️ Back":
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
                 return
@@ -808,13 +809,13 @@ def universal_handler(message):
                 bot.send_message(chat_id, f"Category «{text}» removed.", reply_markup=edit_action_keyboard())
             else:
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-                kb.add(t(None, "back"))
+                kb.add("⬅️ Back")
                 bot.send_message(chat_id, "Select valid category.", reply_markup=kb)
             return
 
         # 4) Выбрать категорию для Fix Price
         if phase == 'choose_fix_price_cat':
-            if text == t(chat_id, "back"):
+            if text == "⬅️ Back":
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
                 return
@@ -823,17 +824,17 @@ def universal_handler(message):
                 data['edit_cat'] = text
                 data['edit_phase'] = 'enter_new_price'
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-                kb.add(t(None, "back"))
+                kb.add("⬅️ Back")
                 bot.send_message(chat_id, f"Enter new price in ₺ for category «{text}»:", reply_markup=kb)
             else:
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-                kb.add(t(None, "back"))
+                kb.add("⬅️ Back")
                 bot.send_message(chat_id, "Choose category from the list.", reply_markup=kb)
             return
 
         # 5) Ввод новой цены для категории
         if phase == 'enter_new_price':
-            if text == t(chat_id, "back"):
+            if text == "⬅️ Back":
                 data.pop('edit_cat', None)
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
@@ -844,7 +845,7 @@ def universal_handler(message):
                 new_price = float(text.strip())
             except:
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-                kb.add(t(None, "back"))
+                kb.add("⬅️ Back")
                 bot.send_message(chat_id, "Invalid price format. Enter a number, e.g. 1500:", reply_markup=kb)
                 return
 
@@ -859,7 +860,7 @@ def universal_handler(message):
 
         # 6) Выбрать категорию для ALL IN
         if phase == 'choose_all_in_cat':
-            if text == t(chat_id, "back"):
+            if text == "⬅️ Back":
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
                 return
@@ -871,7 +872,7 @@ def universal_handler(message):
                     current_list.append(f"{itm['flavor']} - {itm.get('stock',0)}")
                 joined = "\n".join(current_list) if current_list else "(empty)"
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-                kb.add(t(None, "back"))
+                kb.add("⬅️ Back")
                 bot.send_message(
                     chat_id,
                     f"Current flavors in «{text}» (one per line as \"Name - qty\"):\n\n{joined}\n\n"
@@ -881,13 +882,13 @@ def universal_handler(message):
                 data['edit_phase'] = 'replace_all_in'
             else:
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-                kb.add(t(None, "back"))
+                kb.add("⬅️ Back")
                 bot.send_message(chat_id, "Choose category from the list.", reply_markup=kb)
             return
 
         # 7) Заменить полный список вкусов (ALL IN)
         if phase == 'replace_all_in':
-            if text == t(chat_id, "back"):
+            if text == "⬅️ Back":
                 data.pop('edit_cat', None)
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
@@ -918,7 +919,7 @@ def universal_handler(message):
 
         # 8) Выбрать категорию для Actual Flavor
         if phase == 'choose_cat_actual':
-            if text == t(chat_id, "back"):
+            if text == "⬅️ Back":
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
                 return
@@ -931,17 +932,17 @@ def universal_handler(message):
                     flavor0 = itm["flavor"]
                     stock0 = itm.get("stock", 0)
                     kb.add(f"{flavor0} [{stock0} шт]")
-                kb.add(t(None, "back"))
+                kb.add("⬅️ Back")
                 bot.send_message(chat_id, "Select flavor to update stock:", reply_markup=kb)
             else:
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-                kb.add(t(None, "back"))
+                kb.add("⬅️ Back")
                 bot.send_message(chat_id, "Choose category from the list.", reply_markup=kb)
             return
 
         # 9) Выбрать вкус для Actual Flavor
         if phase == 'choose_flavor_actual':
-            if text == t(chat_id, "back"):
+            if text == "⬅️ Back":
                 data.pop('edit_cat', None)
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
@@ -954,8 +955,8 @@ def universal_handler(message):
                 data['edit_flavor'] = flavor_name
                 data['edit_phase'] = 'enter_actual_qty'
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-                kb.add(t(None, "back"))
-                bot.send_message(chat_id, "Введите актуальное количество штук!", reply_markup=kb)
+                kb.add("⬅️ Back")
+                bot.send_message(chat_id, "Enter new stock quantity:", reply_markup=kb)
             else:
                 bot.send_message(chat_id, "Flavor not found. Choose again:", reply_markup=edit_action_keyboard())
                 data['edit_phase'] = 'choose_action'
@@ -963,7 +964,7 @@ def universal_handler(message):
 
         # 10) Ввод актуального количества для Actual Flavor
         if phase == 'enter_actual_qty':
-            if text == t(chat_id, "back"):
+            if text == "⬅️ Back":
                 data.pop('edit_flavor', None)
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
@@ -973,7 +974,7 @@ def universal_handler(message):
             flavor0 = data.get('edit_flavor')
             if not text.isdigit():
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-                kb.add(t(None, "back"))
+                kb.add("⬅️ Back")
                 bot.send_message(chat_id, "Please enter a valid number!", reply_markup=kb)
                 return
 
@@ -1296,7 +1297,7 @@ def universal_handler(message):
             })
             return
 
-    # ——— Кнопка «⬅️ Назад» в любое время ———
+    # ——— Кнопка «⬅️ Назад» во всём остальном ———
     if text == t(chat_id, "back"):
         data.update({
             "current_category": None,
