@@ -25,19 +25,18 @@ if not TOKEN:
         "В Railway в разделе Variables настройте переменную TOKEN=<ваш-токен>."
     )
 
-ADMIN_ID        = int(os.getenv("ADMIN_ID", "0"))
-GROUP_CHAT_ID   = int(os.getenv("GROUP_CHAT_ID", "0"))
-PERSONAL_CHAT_ID= int(os.getenv("PERSONAL_CHAT_ID", "0"))
-RAILWAY_ENV     = os.getenv("RAILWAY_ENV", "development")
+ADMIN_ID         = int(os.getenv("ADMIN_ID", "0"))
+GROUP_CHAT_ID    = int(os.getenv("GROUP_CHAT_ID", "0"))
+PERSONAL_CHAT_ID = int(os.getenv("PERSONAL_CHAT_ID", "0"))
+RAILWAY_ENV      = os.getenv("RAILWAY_ENV", "development")
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 
 # —————————————————————————————————————————————————————————————
-#   2. Пути к JSON-файлам и (устаревший) путь к SQLite удалён
+#   2. Пути к JSON-файлам
 # —————————————————————————————————————————————————————————————
 MENU_PATH = "menu.json"
 LANG_PATH = "languages.json"
-# DATABASE_DB_PATH = "database.db"  # SQLite более не используется
 
 # —————————————————————————————————————————————————————————————
 #   3. Создание таблиц в PostgreSQL (users, orders, reviews)
@@ -109,7 +108,6 @@ translations = load_json(LANG_PATH)
 # —————————————————————————————————————————————————————————————
 #   5. Хранилище данных пользователей (in-memory)
 # —————————————————————————————————————————————————————————————
-# Здесь остаётся только то, что нам нужно для работы с меню/корзиной/ языком
 user_data = {}
 # Структура user_data[chat_id]:
 # {
@@ -194,7 +192,7 @@ def get_inline_language_buttons(chat_id: int) -> types.InlineKeyboardMarkup:
     return kb
 
 # —————————————————————————————————————————————————————————————
-#   8. Inline-кнопки для главного меню 
+#   8. Inline-кнопки для главного меню
 # —————————————————————————————————————————————————————————————
 def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=2)
@@ -216,10 +214,8 @@ def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
             emoji = item.get("emoji", "")
             flavor_name = item["flavor"]
             label = f"{emoji} {flavor_name} — {price}₺ [{item['stock']}шт]"
-            kb.add(types.InlineKeyboardButton(text=label,
-                                             callback_data=f"flavor|{cat}|{flavor_name}"))
-    kb.add(types.InlineKeyboardButton(text=f"⬅️ {t(chat_id, 'back_to_categories')}",
-                                     callback_data="go_back_to_categories"))
+            kb.add(types.InlineKeyboardButton(text=label, callback_data=f"flavor|{cat}|{flavor_name}"))
+    kb.add(types.InlineKeyboardButton(text=f"⬅️ {t(chat_id, 'back_to_categories')}", callback_data="go_back_to_categories"))
     return kb
 
 # —————————————————————————————————————————————————————————————
@@ -258,7 +254,7 @@ def edit_action_keyboard() -> types.ReplyKeyboardMarkup:
     return kb
 
 # —————————————————————————————————————————————————————————————
-#   12. Планировщик – еженедельный дайджест (необязательно работать)
+#   12. Планировщик – еженедельный дайджест
 # —————————————————————————————————————————————————————————————
 def send_weekly_digest():
     """
@@ -375,10 +371,10 @@ def cmd_start(message):
             new_code = generate_ref_code()
 
         # Вставляем нового пользователя (chat_id, points=0, referral_code, referred_by)
-        cur.execute("""
-            INSERT INTO users (chat_id, points, referral_code, referred_by)
-            VALUES (%s, %s, %s, %s);
-        """, (chat_id, 0, new_code, referred_by))
+        cur.execute(
+            "INSERT INTO users (chat_id, points, referral_code, referred_by) VALUES (%s, %s, %s, %s);",
+            (chat_id, 0, new_code, referred_by)
+        )
         conn.commit()
     cur.close()
     conn.close()
@@ -1567,16 +1563,13 @@ def universal_handler(message):
                     return
                 key_to_remove, _ = items_list[idx]
                 new_cart = [
-                    it for it in data['cart'] 
-                    if not (it['category'] == key_to_remove[0] 
-                            and it['flavor'] == key_to_remove[1] 
-                            and it['price'] == key_to_remove[2])
+                    it for it in data['cart']
+                    if not (it['category'] == key_to_remove[0] and it['flavor'] == key_to_remove[1] and it['price'] == key_to_remove[2])
                 ]
                 data['cart'] = new_cart
                 data['edit_cart_phase'] = None
                 data['edit_index'] = None
-                bot.send_message(chat_id, t(chat_id, "item_removed").format(flavor=key_to_remove[1]),
-                                 reply_markup=get_inline_main_menu(chat_id))
+                bot.send_message(chat_id, t(chat_id, "item_removed").format(flavor=key_to_remove[1]), reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1645,11 +1638,9 @@ def universal_handler(message):
             data['edit_cart_phase'] = None
             data['edit_index'] = None
             if new_qty == 0:
-                bot.send_message(chat_id, t(chat_id, "item_removed").format(flavor=flavor0),
-                                 reply_markup=get_inline_main_menu(chat_id))
+                bot.send_message(chat_id, t(chat_id, "item_removed").format(flavor=flavor0), reply_markup=get_inline_main_menu(chat_id))
             else:
-                bot.send_message(chat_id, t(chat_id, "qty_changed").format(flavor=flavor0, qty=new_qty),
-                                 reply_markup=get_inline_main_menu(chat_id))
+                bot.send_message(chat_id, t(chat_id, "qty_changed").format(flavor=flavor0, qty=new_qty), reply_markup=get_inline_main_menu(chat_id))
             user_data[chat_id] = data
             return
 
@@ -1860,7 +1851,7 @@ def universal_handler(message):
             )
             bot.send_message(PERSONAL_CHAT_ID, full_rus)
 
-            # Отправляем в группу – 영어 (англ.)
+            # Отправляем в группу – английская версия
             summary_en = "\n".join(f"{i['category']}: {i['flavor']} — {i['price']}₺" for i in cart)
             comment_ru = data.get('comment', '')
             comment_en = translate_to_en(comment_ru) if comment_ru else "—"
