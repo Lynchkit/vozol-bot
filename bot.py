@@ -1,4 +1,3 @@
-# bot.py
 # -*- coding: utf-8 -*-
 import os
 import json
@@ -16,7 +15,8 @@ from telebot import types
 # —————————————————————————————————————————————————————————————
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
-    raise RuntimeError("Переменная окружения TOKEN не задана! Запустите контейнер с -e TOKEN=<ваш_токен>.")
+    raise RuntimeError("Переменная окружения TOKEN не задана! "
+                       "Запустите контейнер с -e TOKEN=<ваш_токен>.")
 
 ADMIN_ID = int(os.getenv("ADMIN_ID", "424751188"))
 GROUP_CHAT_ID = int(os.getenv("GROUP_CHAT_ID", "0"))
@@ -82,15 +82,20 @@ def load_json(path):
 menu = load_json(MENU_PATH)
 translations = load_json(LANG_PATH)
 
+# *** ОТЛАДОЧНЫЙ ВЫВОД: покажем, что именно подгрузилось ***
+print("=== Loaded translations (languages.json) ===")
+print(translations)
+print("===========================================")
+
 # —————————————————————————————————————————————————————————————
 #   5. Хранилище данных пользователей (in-memory)
 # —————————————————————————————————————————————————————————————
 user_data = {}
 # Структура user_data[chat_id]:
 # {
-#   "lang": "ru"/"en",
-#   "cart": [ {"category":str,"flavor":str,"price":int}, ... ],
-#   "current_category": str or None,
+#   "lang": "ru"/"en",              # язык
+#   "cart": [ {...}, ... ],         # корзина
+#   "current_category": None / str,
 #   "wait_for_address": bool,
 #   "wait_for_contact": bool,
 #   "wait_for_comment": bool,
@@ -98,11 +103,11 @@ user_data = {}
 #   "contact": str,
 #   "comment": str,
 #   "pending_discount": int,
-#   "edit_phase": None or str,
-#   "edit_cat": None or str,
-#   "edit_flavor": None or str,
-#   "edit_index": None or int,
-#   "edit_cart_phase": None or str
+#   "edit_phase": None / str,
+#   "edit_cat": None / str,
+#   "edit_flavor": None / str,
+#   "edit_index": None / int,
+#   "edit_cart_phase": None / str
 # }
 
 # —————————————————————————————————————————————————————————————
@@ -111,7 +116,7 @@ user_data = {}
 def t(chat_id: int, key: str) -> str:
     """
     Получает перевод из languages.json по ключу.
-    Если перевод не найден — возвращает key.
+    Если перевод не найден — возвращает сам key.
     """
     lang = user_data.get(chat_id, {}).get("lang") or "ru"
     return translations.get(lang, {}).get(key, key)
@@ -175,6 +180,8 @@ def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
     """
     kb = types.InlineKeyboardMarkup(row_width=2)
     for cat in menu.keys():
+        # Названия категорий мы не переводим (они из menu.json), 
+        # но служебные подписи (view_cart, clear_cart, finish_order) берутся из translations.
         kb.add(types.InlineKeyboardButton(text=cat, callback_data=f"category|{cat}"))
     # Кнопка «Просмотр корзины»
     kb.add(types.InlineKeyboardButton(text=f"🛒 {t(chat_id,'view_cart')}", callback_data="view_cart"))
@@ -272,7 +279,8 @@ scheduler.start()
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     chat_id = message.chat.id
-    # Если пользователя нет, создаём запись с default-значениями (lang=None не затирается)
+
+    # Если пользователя нет, создаём запись с default-значениями (lang=None)
     if chat_id not in user_data:
         user_data[chat_id] = {
             "lang": None,
@@ -292,6 +300,7 @@ def cmd_start(message):
             "edit_cart_phase": None
         }
     data = user_data[chat_id]
+
     # Сбрасываем всё, кроме lang
     data.update({
         "cart": [],
@@ -331,6 +340,7 @@ def cmd_start(message):
         )
         conn.commit()
 
+    # Показываем кнопку выбора языка
     bot.send_message(
         chat_id,
         t(chat_id, "choose_language"),
@@ -344,20 +354,26 @@ def cmd_start(message):
 def handle_set_lang(call):
     chat_id = call.from_user.id
     _, lang_code = call.data.split("|", 1)
-    # Устанавливаем выбранный язык, не затирая остальные данные
+
+    # Устанавливаем выбранный язык (не затирая другие поля)
     if chat_id not in user_data:
         user_data[chat_id] = {"lang": lang_code, "cart": [], "current_category": None,
                               "wait_for_address": False, "wait_for_contact": False,
                               "wait_for_comment": False, "address": "", "contact": "",
-                              "comment": "", "pending_discount": 0, "edit_phase": None,
-                              "edit_cat": None, "edit_flavor": None, "edit_index": None,
+                              "comment": "", "pending_discount": 0,
+                              "edit_phase": None, "edit_cat": None,
+                              "edit_flavor": None, "edit_index": None,
                               "edit_cart_phase": None}
     else:
         user_data[chat_id]["lang"] = lang_code
 
+    # *** Отладочный вывод: язык установлен ***
+    print(f"[DEBUG] user_data[{chat_id}]['lang'] = {user_data[chat_id]['lang']}")
+
     bot.answer_callback_query(call.id, t(chat_id, "lang_set"))
     bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
 
+    # Отправляем реферальный код
     cursor.execute("SELECT referral_code FROM users WHERE chat_id = ?", (chat_id,))
     row = cursor.fetchone()
     if row:
