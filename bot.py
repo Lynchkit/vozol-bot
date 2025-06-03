@@ -15,11 +15,13 @@ from telebot import types
 # —————————————————————————————————————————————————————————————
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
-    raise RuntimeError("Переменная окружения TOKEN не задана! "
-                       "Запустите контейнер с -e TOKEN=<ваш_токен>.")
+    raise RuntimeError(
+        "Переменная окружения TOKEN не задана! "
+        "Запустите контейнер с -e TOKEN=<ваш_токен>."
+    )
 
 ADMIN_ID = int(os.getenv("ADMIN_ID", "424751188"))
-GROUP_CHAT_ID = int(os.getenv("GROUP_CHAT_ID", "0"))
+GROUP_CHAT_ID = int(os.getenv("GROUP_CHAT_ID", "0"))       # Например: -1002414380144
 PERSONAL_CHAT_ID = int(os.getenv("PERSONAL_CHAT_ID", "0"))
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
@@ -639,7 +641,10 @@ def handle_edit_item_request(call):
         reply_markup=types.ReplyKeyboardRemove()
     )
 
-@bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get("edit_cart_phase") == "enter_qty", content_types=['text'])
+@bot.message_handler(
+    func=lambda m: user_data.get(m.chat.id, {}).get("edit_cart_phase") == "enter_qty",
+    content_types=['text']
+)
 def handle_enter_new_qty(message):
     chat_id = message.chat.id
     data = user_data.get(chat_id, {})
@@ -800,7 +805,10 @@ def handle_points_input(message):
 # —————————————————————————————————————————————————————————————
 #   25. Обработчик ввода адреса (без изменений)
 # —————————————————————————————————————————————————————————————
-@bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_address"), content_types=['text','location','venue'])
+@bot.message_handler(
+    func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_address"),
+    content_types=['text','location','venue']
+)
 def handle_address_input(message):
     chat_id = message.chat.id
     data = user_data.get(chat_id, {})
@@ -846,7 +854,10 @@ def handle_address_input(message):
 # —————————————————————————————————————————————————————————————
 #   26. Обработчик ввода контакта (без изменений)
 # —————————————————————————————————————————————————————————————
-@bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_contact"), content_types=['text','contact'])
+@bot.message_handler(
+    func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_contact"),
+    content_types=['text','contact']
+)
 def handle_contact_input(message):
     chat_id = message.chat.id
     data = user_data.get(chat_id, {})
@@ -881,7 +892,10 @@ def handle_contact_input(message):
 # —————————————————————————————————————————————————————————————
 #   27. Обработчик ввода комментария и сохранения заказа (с учётом скидки и списания stock)
 # —————————————————————————————————————————————————————————————
-@bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_comment"), content_types=['text'])
+@bot.message_handler(
+    func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_comment"),
+    content_types=['text']
+)
 def handle_comment_input(message):
     chat_id = message.chat.id
     data = user_data.get(chat_id, {})
@@ -944,8 +958,8 @@ def handle_comment_input(message):
         )
         conn.commit()
 
-        # Начисление бонусных баллов (1 балл = 10₺ как раньше, но теперь выдаём в 2 раза меньше)
-        earned = total_after // 20
+        # Начисление бонусных баллов (1 балл = 30₺ вместо 20₺)
+        earned = total_after // 30
         if earned > 0:
             cursor.execute("UPDATE users SET points = points + ? WHERE chat_id = ?", (earned, chat_id))
             conn.commit()
@@ -1057,7 +1071,69 @@ def cmd_change(message):
     bot.send_message(chat_id, "Menu editing: choose action", reply_markup=edit_action_keyboard())
 
 # —————————————————————————————————————————————————————————————
-#   29. Универсальный хендлер (всё остальное)
+#   29. Хендлер /points (должен быть ДО универсального «ловца»)
+# —————————————————————————————————————————————————————————————
+@bot.message_handler(commands=['points'])
+def cmd_points(message):
+    chat_id = message.chat.id
+    cursor.execute("SELECT points FROM users WHERE chat_id = ?", (chat_id,))
+    row = cursor.fetchone()
+    if row is None or row[0] == 0:
+        bot.send_message(chat_id, "У вас пока нет бонусных баллов.")
+    else:
+        points = row[0]
+        bot.send_message(chat_id, f"У вас сейчас {points} бонусных баллов.")
+
+# —————————————————————————————————————————————————————————————
+#   30. Хендлер /convert — курсы и конвертация суммы TRY
+# —————————————————————————————————————————————————————————————
+@bot.message_handler(commands=['convert'])
+def cmd_convert(message):
+    chat_id = message.chat.id
+    parts = message.text.split()
+    rates = fetch_rates()
+    rub = rates.get("RUB", 0)
+    usd = rates.get("USD", 0)
+    uah = rates.get("UAH", 0)
+
+    if rub == 0 or usd == 0 or uah == 0:
+        bot.send_message(chat_id, "Курсы валют сейчас недоступны, попробуйте позже.")
+        return
+
+    # Если нет суммы: просто курс
+    if len(parts) == 1:
+        text = (
+            "📊 Курс лиры сейчас:\n"
+            f"1₺ = {rub:.2f} ₽\n"
+            f"1₺ = {usd:.2f} $\n"
+            f"1₺ = {uah:.2f} ₴\n\n"
+            "Для пересчёта напишите: /convert 1300"
+        )
+        bot.send_message(chat_id, text)
+        return
+
+    # Если введена сумма
+    if len(parts) == 2:
+        try:
+            amount = float(parts[1].replace(",", "."))
+        except Exception:
+            bot.send_message(chat_id, "Формат: /convert 1300 (или другую сумму в лирах)")
+            return
+        res_rub = amount * rub
+        res_usd = amount * usd
+        res_uah = amount * uah
+        text = (
+            f"{amount:.2f}₺ = {res_rub:.2f} ₽\n"
+            f"{amount:.2f}₺ = {res_usd:.2f} $\n"
+            f"{amount:.2f}₺ = {res_uah:.2f} ₴"
+        )
+        bot.send_message(chat_id, text)
+        return
+
+    bot.send_message(chat_id, "Использование: /convert 1300")
+
+# —————————————————————————————————————————————————————————————
+#   31. Универсальный хендлер (всё остальное)
 # —————————————————————————————————————————————————————————————
 @bot.message_handler(content_types=['text','location','venue','contact'])
 def universal_handler(message):
@@ -1684,8 +1760,8 @@ def universal_handler(message):
             )
             conn.commit()
 
-            # Начисление бонусных баллов
-            earned = total_after // 20
+            # Начисление бонусных баллов (1 балл = 30₺ вместо 20₺)
+            earned = total_after // 30
             if earned > 0:
                 cursor.execute("UPDATE users SET points = points + ? WHERE chat_id = ?", (earned, chat_id))
                 conn.commit()
@@ -1971,28 +2047,9 @@ def universal_handler(message):
         )
         bot.send_message(chat_id, report)
         return
-# Вставьте этот код где-нибудь после всех существующих хендлеров, но до bot.polling()
-
-@bot.message_handler(commands=['points'])
-def cmd_points(message):
-    chat_id = message.chat.id
-
-    # Достаём текущее количество баллов из БД
-    cursor.execute("SELECT points FROM users WHERE chat_id = ?", (chat_id,))
-    row = cursor.fetchone()
-    if row is None:
-        bot.send_message(chat_id, "Вы ещё не делали ни одного заказа и у вас нет баллов.")
-        return
-
-    points = row[0]
-    if points > 0:
-        bot.send_message(chat_id, f"У вас сейчас {points} бонусных баллов.")
-    else:
-        bot.send_message(chat_id, "У вас пока нет бонусных баллов.")
-
 
 # —————————————————————————————————————————————————————————————
-#   30. Запуск бота
+#   32. Запуск бота
 # —————————————————————————————————————————————————————————————
 if __name__ == "__main__":
     bot.delete_webhook()  # Сброс webhook перед polling
