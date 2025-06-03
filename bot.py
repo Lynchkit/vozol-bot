@@ -640,7 +640,7 @@ def handle_clear_cart(call):
     bot.send_message(chat_id, t(chat_id, "cart_cleared"), reply_markup=get_inline_main_menu(chat_id))
 
 # —————————————————————————————————————————————————————————————
-#   23. Callback: завершить заказ (теперь с учётом списания баллов)
+#   23. Callback: завершить заказ (теперь с учётом списания баллов, 1 балл = 1₺)
 # —————————————————————————————————————————————————————————————
 @bot.callback_query_handler(func=lambda call: call.data == "finish_order")
 def handle_finish_order(call):
@@ -661,12 +661,13 @@ def handle_finish_order(call):
     user_points = row[0] if row else 0
 
     if user_points > 0:
-        max_points = min(user_points, total_try // 10)
+        max_points = min(user_points, total_try)
+        # Показываем информацию о баллах и просим ввести, сколько потратить
+        points_try = user_points * 1  # 1 балл = 1₺
         msg = (
-            f"У вас {user_points} баллов (что эквивалентно {user_points*10}₺).\n"
-            f"Сколько баллов вы хотите потратить на этот заказ? (макс: {max_points})\n"
-            f"Введите число от 0 до {max_points}.\n"
-            f"0 — не списывать баллы."
+            t(chat_id, "points_info").format(points=user_points, points_try=points_try)
+            + "\n"
+            + t(chat_id, "enter_points").format(max_points=max_points)
         )
         bot.send_message(chat_id, msg, reply_markup=types.ReplyKeyboardRemove())
         data["wait_for_points"] = True
@@ -696,16 +697,16 @@ def handle_points_input(message):
     text = message.text.strip()
 
     if not text.isdigit():
-        bot.send_message(chat_id, "Пожалуйста, введите корректное число баллов (только цифры).")
+        bot.send_message(chat_id, t(chat_id, "invalid_points").format(max_points=data.get("temp_total_try", 0)))
         return
 
     points_to_spend = int(text)
     user_points = data.get("temp_user_points", 0)
     total_try = data.get("temp_total_try", 0)
-    max_points = min(user_points, total_try // 10)
+    max_points = min(user_points, total_try)
 
     if points_to_spend < 0 or points_to_spend > max_points:
-        bot.send_message(chat_id, f"Неверное значение. Введите число от 0 до {max_points}.")
+        bot.send_message(chat_id, t(chat_id, "invalid_points").format(max_points=max_points))
         return
 
     # Списываем баллы из БД (если points_to_spend > 0)
@@ -714,7 +715,7 @@ def handle_points_input(message):
         conn.commit()
 
     # Вычисляем скидку и сохраняем в data
-    discount_try = points_to_spend * 10
+    discount_try = points_to_spend * 1  # 1 балл = 1₺
     data["pending_discount"] = discount_try
     data["pending_points_spent"] = points_to_spend
 
@@ -867,7 +868,7 @@ def handle_comment_input(message):
         )
         conn.commit()
 
-        # Начисление бонусных баллов (1 балл = 10 ₺)
+        # Начисление бонусных баллов (1 балл = 10 ₺ как раньше)
         earned = total_after // 10
         if earned > 0:
             cursor.execute("UPDATE users SET points = points + ? WHERE chat_id = ?", (earned, chat_id))
@@ -1475,7 +1476,6 @@ def universal_handler(message):
         return
 
     # ——— Если ожидаем ввод адреса ———
-    # (Этот блок дублируется в соответствующем handler, можно оставить здесь fallback)
     if data.get('wait_for_address'):
         if text == t(chat_id, "back"):
             data['wait_for_address'] = False
@@ -1545,7 +1545,6 @@ def universal_handler(message):
         return
 
     # ——— Если ожидаем ввод комментария ———
-    # (Этот блок дублируется выше в отдельном handler)
     if data.get('wait_for_comment'):
         if text == t(chat_id, "back"):
             data['wait_for_contact'] = True
@@ -1583,7 +1582,7 @@ def universal_handler(message):
             )
             conn.commit()
 
-            # Начисление бонусных баллов (1 балл = 10 ₺)
+            # Начисление бонусных баллов (1 балл = 10 ₺ как раньше)
             earned = total_after // 10
             if earned > 0:
                 cursor.execute("UPDATE users SET points = points + ? WHERE chat_id = ?", (earned, chat_id))
@@ -1705,12 +1704,12 @@ def universal_handler(message):
         user_points = row[0] if row else 0
 
         if user_points > 0:
-            max_points = min(user_points, total_try // 10)
+            max_points = min(user_points, total_try)
+            points_try = user_points * 1
             msg = (
-                f"У вас {user_points} баллов (что эквивалентно {user_points*10}₺).\n"
-                f"Сколько баллов вы хотите потратить на этот заказ? (макс: {max_points})\n"
-                f"Введите число от 0 до {max_points}.\n"
-                f"0 — не списывать баллы."
+                t(chat_id, "points_info").format(points=user_points, points_try=points_try)
+                + "\n"
+                + t(chat_id, "enter_points").format(max_points=max_points)
             )
             bot.send_message(chat_id, msg, reply_markup=types.ReplyKeyboardRemove())
             data["wait_for_points"] = True
