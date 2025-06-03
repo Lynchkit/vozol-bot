@@ -410,7 +410,6 @@ def handle_category(call):
         return
     bot.answer_callback_query(call.id)
     user_data[chat_id]["current_category"] = cat
-    bot.send_message(chat_id, f"{t(chat_id, 'choose_flavor')} «{cat}»", reply_markup=get_inline_flavors(chat_id, cat))
 
 # —————————————————————————————————————————————————————————————
 #   16. Callback: «Назад к категориям»
