@@ -16,8 +16,7 @@ from telebot import types
 # —————————————————————————————————————————————————————————————
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
-    raise RuntimeError("Переменная окружения TOKEN не задана! "
-                       "Запустите контейнер с -e TOKEN=<ваш_токен>.")
+    raise RuntimeError("Переменная окружения TOKEN не задана! Запустите контейнер с -e TOKEN=<ваш_токен>.")
 
 ADMIN_ID = int(os.getenv("ADMIN_ID", "424751188"))
 GROUP_CHAT_ID = int(os.getenv("GROUP_CHAT_ID", "0"))
@@ -112,7 +111,7 @@ user_data = {}
 def t(chat_id: int, key: str) -> str:
     """
     Получает перевод из languages.json по ключу.
-    Если перевод не найден — возвращает ключ.
+    Если перевод не найден — возвращает key.
     """
     lang = user_data.get(chat_id, {}).get("lang") or "ru"
     return translations.get(lang, {}).get(key, key)
@@ -273,23 +272,27 @@ scheduler.start()
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     chat_id = message.chat.id
-    data = user_data.setdefault(chat_id, {
-        "lang": None,
-        "cart": [],
-        "current_category": None,
-        "wait_for_address": False,
-        "wait_for_contact": False,
-        "wait_for_comment": False,
-        "address": "",
-        "contact": "",
-        "comment": "",
-        "pending_discount": 0,
-        "edit_phase": None,
-        "edit_cat": None,
-        "edit_flavor": None,
-        "edit_index": None,
-        "edit_cart_phase": None
-    })
+    # Если пользователя нет, создаём запись с default-значениями (lang=None не затирается)
+    if chat_id not in user_data:
+        user_data[chat_id] = {
+            "lang": None,
+            "cart": [],
+            "current_category": None,
+            "wait_for_address": False,
+            "wait_for_contact": False,
+            "wait_for_comment": False,
+            "address": "",
+            "contact": "",
+            "comment": "",
+            "pending_discount": 0,
+            "edit_phase": None,
+            "edit_cat": None,
+            "edit_flavor": None,
+            "edit_index": None,
+            "edit_cart_phase": None
+        }
+    data = user_data[chat_id]
+    # Сбрасываем всё, кроме lang
     data.update({
         "cart": [],
         "current_category": None,
@@ -341,44 +344,18 @@ def cmd_start(message):
 def handle_set_lang(call):
     chat_id = call.from_user.id
     _, lang_code = call.data.split("|", 1)
-
-    data = user_data.setdefault(chat_id, {
-        "lang": None,
-        "cart": [],
-        "current_category": None,
-        "wait_for_address": False,
-        "wait_for_contact": False,
-        "wait_for_comment": False,
-        "address": "",
-        "contact": "",
-        "comment": "",
-        "pending_discount": 0,
-        "edit_phase": None,
-        "edit_cat": None,
-        "edit_flavor": None,
-        "edit_index": None,
-        "edit_cart_phase": None
-    })
-    data["lang"] = lang_code
-    data.update({
-        "cart": [],
-        "current_category": None,
-        "wait_for_address": False,
-        "wait_for_contact": False,
-        "wait_for_comment": False,
-        "address": "",
-        "contact": "",
-        "comment": "",
-        "edit_phase": None,
-        "edit_cat": None,
-        "edit_flavor": None,
-        "edit_index": None,
-        "edit_cart_phase": None
-    })
+    # Устанавливаем выбранный язык, не затирая остальные данные
+    if chat_id not in user_data:
+        user_data[chat_id] = {"lang": lang_code, "cart": [], "current_category": None,
+                              "wait_for_address": False, "wait_for_contact": False,
+                              "wait_for_comment": False, "address": "", "contact": "",
+                              "comment": "", "pending_discount": 0, "edit_phase": None,
+                              "edit_cat": None, "edit_flavor": None, "edit_index": None,
+                              "edit_cart_phase": None}
+    else:
+        user_data[chat_id]["lang"] = lang_code
 
     bot.answer_callback_query(call.id, t(chat_id, "lang_set"))
-
-    # Показываем только одно сообщение «Выберите категорию» с меню
     bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
 
     cursor.execute("SELECT referral_code FROM users WHERE chat_id = ?", (chat_id,))
@@ -399,8 +376,7 @@ def handle_category(call):
         return
     bot.answer_callback_query(call.id)
     user_data[chat_id]["current_category"] = cat
-    bot.send_message(chat_id, f"{t(chat_id, 'choose_flavor')} «{cat}»",
-                     reply_markup=get_inline_flavors(chat_id, cat))
+    bot.send_message(chat_id, f"{t(chat_id, 'choose_flavor')} «{cat}»", reply_markup=get_inline_flavors(chat_id, cat))
 
 # —————————————————————————————————————————————————————————————
 #   16. Callback: «Назад к категориям»
@@ -576,10 +552,11 @@ def handle_edit_item_request(call):
     bot.answer_callback_query(call.id)
     data["edit_cart_phase"] = "enter_qty"
     data["edit_index"] = idx
-    bot.send_message(chat_id,
-                     f"Текущий товар: {cat} — {flavor} — {price}₺ (в корзине {old_qty} шт).\n"
-                     f"{t(chat_id, 'enter_new_qty')}",
-                     reply_markup=types.ReplyKeyboardRemove())
+    bot.send_message(
+        chat_id,
+        f"Текущий товар: {cat} — {flavor} — {price}₺ (в корзине {old_qty} шт).\n{t(chat_id, 'enter_new_qty')}",
+        reply_markup=types.ReplyKeyboardRemove()
+    )
 
 @bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get("edit_cart_phase") == "enter_qty", content_types=['text'])
 def handle_enter_new_qty(message):
@@ -613,11 +590,9 @@ def handle_enter_new_qty(message):
     data["edit_cart_phase"] = None
     data.pop("edit_index", None)
     if new_qty == 0:
-        bot.send_message(chat_id, t(chat_id, "item_removed").format(flavor=flavor),
-                         reply_markup=get_inline_main_menu(chat_id))
+        bot.send_message(chat_id, t(chat_id, "item_removed").format(flavor=flavor), reply_markup=get_inline_main_menu(chat_id))
     else:
-        bot.send_message(chat_id, t(chat_id, "qty_changed").format(flavor=flavor, qty=new_qty),
-                         reply_markup=get_inline_main_menu(chat_id))
+        bot.send_message(chat_id, t(chat_id, "qty_changed").format(flavor=flavor, qty=new_qty), reply_markup=get_inline_main_menu(chat_id))
 
 # —————————————————————————————————————————————————————————————
 #   22. Callback: «Очистить корзину»
@@ -659,23 +634,25 @@ def handle_finish_order(call):
 @bot.message_handler(commands=['change'])
 def cmd_change(message):
     chat_id = message.chat.id
-    data = user_data.setdefault(chat_id, {
-        "lang": None,
-        "cart": [],
-        "current_category": None,
-        "wait_for_address": False,
-        "wait_for_contact": False,
-        "wait_for_comment": False,
-        "address": "",
-        "contact": "",
-        "comment": "",
-        "pending_discount": 0,
-        "edit_phase": None,
-        "edit_cat": None,
-        "edit_flavor": None,
-        "edit_index": None,
-        "edit_cart_phase": None
-    })
+    if chat_id not in user_data:
+        user_data[chat_id] = {
+            "lang": "ru",
+            "cart": [],
+            "current_category": None,
+            "wait_for_address": False,
+            "wait_for_contact": False,
+            "wait_for_comment": False,
+            "address": "",
+            "contact": "",
+            "comment": "",
+            "pending_discount": 0,
+            "edit_phase": None,
+            "edit_cat": None,
+            "edit_flavor": None,
+            "edit_index": None,
+            "edit_cart_phase": None
+        }
+    data = user_data[chat_id]
     data.update({
         "current_category": None,
         "wait_for_address": False,
@@ -696,23 +673,25 @@ def cmd_change(message):
 def universal_handler(message):
     chat_id = message.chat.id
     text = message.text or ""
-    data = user_data.setdefault(chat_id, {
-        "lang": "ru",
-        "cart": [],
-        "current_category": None,
-        "wait_for_address": False,
-        "wait_for_contact": False,
-        "wait_for_comment": False,
-        "address": "",
-        "contact": "",
-        "comment": "",
-        "pending_discount": 0,
-        "edit_phase": None,
-        "edit_cat": None,
-        "edit_flavor": None,
-        "edit_index": None,
-        "edit_cart_phase": None
-    })
+    if chat_id not in user_data:
+        user_data[chat_id] = {
+            "lang": "ru",
+            "cart": [],
+            "current_category": None,
+            "wait_for_address": False,
+            "wait_for_contact": False,
+            "wait_for_comment": False,
+            "address": "",
+            "contact": "",
+            "comment": "",
+            "pending_discount": 0,
+            "edit_phase": None,
+            "edit_cat": None,
+            "edit_flavor": None,
+            "edit_index": None,
+            "edit_cart_phase": None
+        }
+    data = user_data[chat_id]
 
     # ─── Режим редактирования меню (/change) ────────────────────────────────────────
     if data.get('edit_phase'):
@@ -1062,7 +1041,10 @@ def universal_handler(message):
                 data['edit_cart_phase'] = 'enter_qty'
                 key_chosen, count = items_list[idx]
                 cat0, flavor0, price0 = key_chosen
-                bot.send_message(chat_id, f"Текущий товар: {cat0} — {flavor0} — {price0}₺ (в корзине {count} шт).\nВведите новое количество (0 чтобы удалить):")
+                bot.send_message(
+                    chat_id,
+                    f"Текущий товар: {cat0} — {flavor0} — {price0}₺ (в корзине {count} шт).\nВведите новое количество (0 чтобы удалить):"
+                )
                 return
 
         if data['edit_cart_phase'] == 'enter_qty':
@@ -1089,7 +1071,7 @@ def universal_handler(message):
             key_chosen, old_count = items_list[idx]
             cat0, flavor0, price0 = key_chosen
 
-            data['cart'] = [it for it in data['cart'] if not (it['category']==cat0 and it['flavor']==flavor0 and it['price']==price0)]
+            data['cart'] = [it for it in data['cart'] if not (it['category'] == cat0 and it['flavor'] == flavor0 and it['price'] == price0)]
             for _ in range(new_qty):
                 data['cart'].append({'category': cat0, 'flavor': flavor0, 'price': price0})
 
@@ -1353,8 +1335,7 @@ def universal_handler(message):
     # ——— Выбор категории (Reply-клавиатура fallback) ———
     if text in menu:
         data['current_category'] = text
-        bot.send_message(chat_id, f"{t(chat_id, 'choose_flavor')} «{text}»",
-                         reply_markup=get_inline_flavors(chat_id, text))
+        bot.send_message(chat_id, f"{t(chat_id, 'choose_flavor')} «{text}»", reply_markup=get_inline_flavors(chat_id, text))
         return
 
     # ——— Выбор вкуса (Reply-клавиатура fallback) ———
