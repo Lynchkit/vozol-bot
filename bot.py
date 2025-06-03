@@ -1860,10 +1860,10 @@ def universal_handler(message):
         return
 
     # ——— /stats ———
-    if text == "/stats":
-        if chat_id != ADMIN_ID:
-            bot.send_message(chat_id, "У вас нет доступа к этой команде.")
-            return
+    ALLOWED_ADMINS = {424751188, 748250885}  # здесь можно указать несколько chat_id
+if chat_id not in ALLOWED_ADMINS:
+    bot.send_message(chat_id, "У вас нет доступа к этой команде.")
+    return
         cursor.execute("SELECT COUNT(*) FROM orders")
         total_orders = cursor.fetchone()[0]
         cursor.execute("SELECT SUM(total) FROM orders")
