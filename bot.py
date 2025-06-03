@@ -43,14 +43,14 @@ LANG_PATH = "languages.json"
 # —————————————————————————————————————————————————————————————
 def init_postgres_tables():
     """
-    При старте бота проверяем, что таблицы users, orders и reviews есть.
+    При старте бота проверяем, что таблицы users, orders и reviews существуют.
     Если их нет – создаём.
     """
     conn = get_connection()
     conn.autocommit = True
     cur = conn.cursor()
 
-    # 3.1. Таблица users (если ещё нет) – здесь храним chat_id и points и ссылки для рефералов
+    # 3.1. Таблица users (храним chat_id, баллы, реферальный код и кто пригласил)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             chat_id        BIGINT PRIMARY KEY,
@@ -60,7 +60,7 @@ def init_postgres_tables():
         );
     """)
 
-    # 3.2. Таблица orders (чтобы не терять историю заказов)
+    # 3.2. Таблица orders (история заказов)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS orders (
             order_id    SERIAL PRIMARY KEY,
@@ -71,7 +71,7 @@ def init_postgres_tables():
         );
     """)
 
-    # 3.3. Таблица reviews (чтобы хранить отзывы)
+    # 3.3. Таблица reviews (отзывы по вкусам)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS reviews (
             review_id   SERIAL PRIMARY KEY,
@@ -143,10 +143,16 @@ def t(chat_id: int, key: str) -> str:
     lang = user_data.get(chat_id, {}).get("lang") or "ru"
     return translations.get(lang, {}).get(key, key)
 
-def generate_ref_code(length=6):
+
+def generate_ref_code(length=6) -> str:
     return "".join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
-def fetch_rates():
+
+def fetch_rates() -> dict:
+    """
+    Получаем курсы конвертации TRY → (RUB, USD, UAH) из двух возможных API. 
+    Если оба упадут — вернём нули.
+    """
     sources = [
         ("https://api.exchangerate.host/latest", {"base": "TRY", "symbols": "RUB,USD,UAH"}),
         ("https://open.er-api.com/v6/latest/TRY", {})
@@ -162,7 +168,12 @@ def fetch_rates():
             continue
     return {"RUB": 0, "USD": 0, "UAH": 0}
 
+
 def translate_to_en(text: str) -> str:
+    """
+    Переводит текст с русского на английский через публичный Google Translate.
+    Если что-то пойдёт не так — возвращает исходный текст.
+    """
     if not text:
         return ""
     try:
@@ -192,7 +203,7 @@ def get_inline_language_buttons(chat_id: int) -> types.InlineKeyboardMarkup:
     return kb
 
 # —————————————————————————————————————————————————————————————
-#   8. Inline-кнопки для главного меню
+#   8. Inline-кнопки для главного меню (категорий + «Корзина» + «Очистить корзину» + «Завершить заказ»)
 # —————————————————————————————————————————————————————————————
 def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=2)
@@ -214,8 +225,10 @@ def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
             emoji = item.get("emoji", "")
             flavor_name = item["flavor"]
             label = f"{emoji} {flavor_name} — {price}₺ [{item['stock']}шт]"
-            kb.add(types.InlineKeyboardButton(text=label, callback_data=f"flavor|{cat}|{flavor_name}"))
-    kb.add(types.InlineKeyboardButton(text=f"⬅️ {t(chat_id, 'back_to_categories')}", callback_data="go_back_to_categories"))
+            kb.add(types.InlineKeyboardButton(text=label,
+                                             callback_data=f"flavor|{cat}|{flavor_name}"))
+    kb.add(types.InlineKeyboardButton(text=f"⬅️ {t(chat_id, 'back_to_categories')}",
+                                     callback_data="go_back_to_categories"))
     return kb
 
 # —————————————————————————————————————————————————————————————
@@ -229,12 +242,14 @@ def address_keyboard() -> types.ReplyKeyboardMarkup:
     kb.add(t(None, "back"))
     return kb
 
+
 def contact_keyboard() -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add(types.KeyboardButton(t(None, "share_contact"), request_contact=True))
     kb.add(t(None, "enter_nickname"))
     kb.add(t(None, "back"))
     return kb
+
 
 def comment_keyboard() -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -254,11 +269,11 @@ def edit_action_keyboard() -> types.ReplyKeyboardMarkup:
     return kb
 
 # —————————————————————————————————————————————————————————————
-#   12. Планировщик – еженедельный дайджест
+#   12. Планировщик – еженедельный дайджест (необязательно работать)
 # —————————————————————————————————————————————————————————————
 def send_weekly_digest():
     """
-    Собираем топ-3 самых продаваемых вкусов за неделю и раздаём всем клиентам.
+    Собираем топ-3 самых продаваемых вкусов за неделю и рассылаем всем клиентам.
     """
     conn = get_connection()
     cur = conn.cursor()
@@ -371,10 +386,10 @@ def cmd_start(message):
             new_code = generate_ref_code()
 
         # Вставляем нового пользователя (chat_id, points=0, referral_code, referred_by)
-        cur.execute(
-            "INSERT INTO users (chat_id, points, referral_code, referred_by) VALUES (%s, %s, %s, %s);",
-            (chat_id, 0, new_code, referred_by)
-        )
+        cur.execute("""
+            INSERT INTO users (chat_id, points, referral_code, referred_by)
+            VALUES (%s, %s, %s, %s);
+        """, (chat_id, 0, new_code, referred_by))
         conn.commit()
     cur.close()
     conn.close()
@@ -425,7 +440,7 @@ def handle_set_lang(call):
     # Отправляем главное меню после выбора языка
     bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
 
-    # Отправляем реферальную ссылку (код взят из базы)
+    # Отправляем реферальную ссылку (код берём из базы)
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT referral_code FROM users WHERE chat_id = %s;", (chat_id,))
@@ -753,7 +768,7 @@ def handle_finish_order(call):
 
     total_try = sum(item["price"] for item in cart)
 
-    # Берём текущее кол-во баллов пользователя
+    # Берём текущее количество баллов пользователя
     user_points = get_points(chat_id)
 
     if user_points > 0:
@@ -1118,7 +1133,7 @@ def cmd_points(message):
         bot.send_message(chat_id, f"У вас сейчас {points} бонусных баллов.")
 
 # —————————————————————————————————————————————————————————————
-#   30. /addpoints — ручной добавление баллов (только для теста)
+#   30. /addpoints — ручное добавление баллов (только для теста)
 # —————————————————————————————————————————————————————————————
 @bot.message_handler(commands=['addpoints'])
 def cmd_addpoints(message):
@@ -1563,13 +1578,16 @@ def universal_handler(message):
                     return
                 key_to_remove, _ = items_list[idx]
                 new_cart = [
-                    it for it in data['cart']
-                    if not (it['category'] == key_to_remove[0] and it['flavor'] == key_to_remove[1] and it['price'] == key_to_remove[2])
+                    it for it in data['cart'] 
+                    if not (it['category'] == key_to_remove[0] 
+                            and it['flavor'] == key_to_remove[1] 
+                            and it['price'] == key_to_remove[2])
                 ]
                 data['cart'] = new_cart
                 data['edit_cart_phase'] = None
                 data['edit_index'] = None
-                bot.send_message(chat_id, t(chat_id, "item_removed").format(flavor=key_to_remove[1]), reply_markup=get_inline_main_menu(chat_id))
+                bot.send_message(chat_id, t(chat_id, "item_removed").format(flavor=key_to_remove[1]),
+                                 reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1638,9 +1656,11 @@ def universal_handler(message):
             data['edit_cart_phase'] = None
             data['edit_index'] = None
             if new_qty == 0:
-                bot.send_message(chat_id, t(chat_id, "item_removed").format(flavor=flavor0), reply_markup=get_inline_main_menu(chat_id))
+                bot.send_message(chat_id, t(chat_id, "item_removed").format(flavor=flavor0),
+                                 reply_markup=get_inline_main_menu(chat_id))
             else:
-                bot.send_message(chat_id, t(chat_id, "qty_changed").format(flavor=flavor0, qty=new_qty), reply_markup=get_inline_main_menu(chat_id))
+                bot.send_message(chat_id, t(chat_id, "qty_changed").format(flavor=flavor0, qty=new_qty),
+                                 reply_markup=get_inline_main_menu(chat_id))
             user_data[chat_id] = data
             return
 
@@ -2048,7 +2068,7 @@ def universal_handler(message):
         cur.execute("SELECT AVG(rating) FROM reviews WHERE flavor = %s;", (db_flavor,))
         avg_rating = cur.fetchone()[0] or 0
 
-        # Обновляем рейтинг внутри menu.json для этого вкуса (чтобы отображался среднего)
+        # Обновляем рейтинг внутри menu.json для этого вкуса (чтобы отображался средний)
         for itm in menu[db_cat]["flavors"]:
             if itm["flavor"] == db_flavor:
                 itm["rating"] = round(avg_rating, 1)

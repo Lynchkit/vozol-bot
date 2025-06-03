@@ -1,52 +1,53 @@
-# points_db.py
-import sqlite3
 import os
+import psycopg2
 
-# Путь к той же самой БД, что и в bot.py
-DB_PATH = os.path.join(os.path.dirname(__file__), "database.db")
 
 def get_connection():
     """
-    Возвращает соединение с SQLite-базой.
+    Открывает соединение с базой данных PostgreSQL по переменной окружения DATABASE_URL.
+    В Railway обычно доступна именно эта переменная.
     """
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
+    DATABASE_URL = os.getenv("DATABASE_URL")
+    if not DATABASE_URL:
+        raise RuntimeError("Переменная окружения DATABASE_URL не задана!")
+    # Включаем sslmode=require, чтобы корректно подключаться в продакшн-среде Railway
+    return psycopg2.connect(DATABASE_URL, sslmode="require")
 
-def get_points(user_id: int) -> int:
+
+def get_points(chat_id: int) -> int:
     """
-    Возвращает текущее число бонусных баллов (points) для пользователя с chat_id = user_id.
-    Если пользователя нет в таблице users, вернёт 0.
+    Возвращает текущее количество баллов у пользователя (chat_id).
+    Если пользователя нет в таблице, возвращает 0.
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT points FROM users WHERE chat_id = ?", (user_id,))
+    cur.execute("SELECT points FROM users WHERE chat_id = %s;", (chat_id,))
     row = cur.fetchone()
+    cur.close()
     conn.close()
     return row[0] if row else 0
 
-def set_points(user_id: int, new_value: int) -> None:
+
+def set_points(chat_id: int, points: int) -> None:
     """
-    Устанавливает точное количество баллов для пользователя (chat_id = user_id) в значение new_value.
-    Если пользователя ещё нет в таблице users, создаёт запись с этими баллами.
+    Устанавливает точное количество баллов у пользователя (chat_id).
     """
     conn = get_connection()
     cur = conn.cursor()
-    # Если записи нет — создать её
-    cur.execute("INSERT OR IGNORE INTO users (chat_id, points) VALUES (?, ?)", (user_id, new_value))
-    # Обновить количество баллов
-    cur.execute("UPDATE users SET points = ? WHERE chat_id = ?", (new_value, user_id))
+    cur.execute("UPDATE users SET points = %s WHERE chat_id = %s;", (points, chat_id))
     conn.commit()
+    cur.close()
     conn.close()
 
-def add_points(user_id: int, delta: int) -> None:
+
+def add_points(chat_id: int, delta: int) -> None:
     """
-    Прибавляет к существующим баллам пользователя delta (может быть отрицательным или положительным).
-    Если пользователя нет в таблице, создаёт его с initial points = delta.
+    Прибавляет delta баллов к существующим (может быть отрицательным значением).
+    Если пользователя нет, ничего не делает.
     """
     conn = get_connection()
     cur = conn.cursor()
-    # Если пользователя ещё нет — вставить его с нулём (или с delta, ниже поправим)
-    cur.execute("INSERT OR IGNORE INTO users (chat_id, points) VALUES (?, 0)", (user_id,))
-    # Прибавить delta
-    cur.execute("UPDATE users SET points = points + ? WHERE chat_id = ?", (delta, user_id))
+    cur.execute("UPDATE users SET points = points + %s WHERE chat_id = %s;", (delta, chat_id))
     conn.commit()
+    cur.close()
     conn.close()
