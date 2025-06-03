@@ -32,7 +32,10 @@
     "send_order": "📤 Отправить заказ",
     "order_accepted": "Ваш заказ принят! Спасибо.",
     "error_invalid": "Неверный ввод. Попробуйте снова.",
-    "comment_saved": "Комментарий сохранён."
+    "comment_saved": "Комментарий сохранён.",
+    "points_info": "У вас {points} баллов (что эквивалентно {points_try}₺).",
+    "enter_points": "Сколько баллов вы хотите потратить на этот заказ? (макс: {max_points})\nВведите число от 0 до {max_points}.\n0 — не списывать баллы.",
+    "invalid_points": "Пожалуйста, введите корректное число баллов от 0 до {max_points}."
   },
   "en": {
     "choose_language": "Choose your language / Выберите язык:",
@@ -67,6 +70,9 @@
     "send_order": "📤 Send order",
     "order_accepted": "Your order is accepted! Thank you.",
     "error_invalid": "Invalid input. Please try again.",
-    "comment_saved": "Comment saved."
+    "comment_saved": "Comment saved.",
+    "points_info": "You have {points} points (equivalent to {points_try}₺).",
+    "enter_points": "How many points would you like to spend on this order? (max: {max_points})\nEnter a number from 0 to {max_points}.\n0 — do not spend any points.",
+    "invalid_points": "Please enter a valid number of points between 0 and {max_points}."
   }
 }
