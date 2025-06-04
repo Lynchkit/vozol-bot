@@ -33,7 +33,6 @@ MENU_PATH = "menu.json"
 LANG_PATH = "languages.json"
 DB_PATH = "/data/database.db"
 
-
 # —————————————————————————————————————————————————————————————
 #   3. Функция для получения локального подключения к БД
 # —————————————————————————————————————————————————————————————
@@ -106,10 +105,10 @@ user_data = {}
 #   "wait_for_points": False,
 #   "wait_for_address": False,
 #   "wait_for_contact": False,
-#   "wait_for_comment": False,
+#   "wait_for_order_comment": False,
 #   "address": str,
 #   "contact": str,
-#   "comment": str,
+#   "order_comment": str,
 #   "pending_discount": int,
 #   "pending_points_spent": int,
 #   "temp_total_try": int,
@@ -120,10 +119,11 @@ user_data = {}
 #   "edit_index": None / int,
 #   "edit_cart_phase": None / str,
 #   # Новые поля для /review
-#   "pending_review_flavor": None,  # вкус, который пользователь хочет оценить
-#   "wait_for_rating": False,
-#   "pending_rating": None,
-#   "wait_for_comment": False
+#   "pending_review_flavor": None,
+#   "pending_review_category": None,
+#   "wait_for_review_rating": False,
+#   "pending_review_rating": None,
+#   "wait_for_review_comment": False
 # }
 
 # —————————————————————————————————————————————————————————————
@@ -296,10 +296,10 @@ def cmd_start(message):
             "wait_for_points": False,
             "wait_for_address": False,
             "wait_for_contact": False,
-            "wait_for_comment": False,
+            "wait_for_order_comment": False,
             "address": "",
             "contact": "",
-            "comment": "",
+            "order_comment": "",
             "pending_discount": 0,
             "pending_points_spent": 0,
             "temp_total_try": 0,
@@ -311,9 +311,10 @@ def cmd_start(message):
             "edit_cart_phase": None,
             # Новые поля для /review
             "pending_review_flavor": None,
-            "wait_for_rating": False,
-            "pending_rating": None,
-            "wait_for_comment": False
+            "pending_review_category": None,
+            "wait_for_review_rating": False,
+            "pending_review_rating": None,
+            "wait_for_review_comment": False
         }
     data = user_data[chat_id]
 
@@ -324,10 +325,10 @@ def cmd_start(message):
         "wait_for_points": False,
         "wait_for_address": False,
         "wait_for_contact": False,
-        "wait_for_comment": False,
+        "wait_for_order_comment": False,
         "address": "",
         "contact": "",
-        "comment": "",
+        "order_comment": "",
         "pending_discount": 0,
         "pending_points_spent": 0,
         "temp_total_try": 0,
@@ -339,9 +340,10 @@ def cmd_start(message):
         "edit_cart_phase": None,
         # Сбросить review-поля
         "pending_review_flavor": None,
-        "wait_for_rating": False,
-        "pending_rating": None,
-        "wait_for_comment": False
+        "pending_review_category": None,
+        "wait_for_review_rating": False,
+        "pending_review_rating": None,
+        "wait_for_review_comment": False
     })
 
     # Проверяем наличие пользователя в БД и создаём, если нет
@@ -396,10 +398,10 @@ def handle_set_lang(call):
             "wait_for_points": False,
             "wait_for_address": False,
             "wait_for_contact": False,
-            "wait_for_comment": False,
+            "wait_for_order_comment": False,
             "address": "",
             "contact": "",
-            "comment": "",
+            "order_comment": "",
             "pending_discount": 0,
             "pending_points_spent": 0,
             "temp_total_try": 0,
@@ -411,9 +413,10 @@ def handle_set_lang(call):
             "edit_cart_phase": None,
             # Новые поля для /review
             "pending_review_flavor": None,
-            "wait_for_rating": False,
-            "pending_rating": None,
-            "wait_for_comment": False
+            "pending_review_category": None,
+            "wait_for_review_rating": False,
+            "pending_review_rating": None,
+            "wait_for_review_comment": False
         }
     else:
         user_data[chat_id]["lang"] = lang_code
@@ -421,7 +424,7 @@ def handle_set_lang(call):
     bot.answer_callback_query(call.id, t(chat_id, "lang_set"))
     bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
 
-    # Отправляем реферальную ссылку
+    # Отправляем реферальную ссылку с предложением "Зарабатывай баллы"
     conn_local = get_db_connection()
     cursor_local = conn_local.cursor()
     cursor_local.execute("SELECT referral_code FROM users WHERE chat_id = ?", (chat_id,))
@@ -434,15 +437,17 @@ def handle_set_lang(call):
         bot_username = bot.get_me().username
         ref_link = f"https://t.me/{bot_username}?start=ref={code}"
         if user_data[chat_id]["lang"] == "en":
+            # English message remains as before
             bot.send_message(
                 chat_id,
                 f"Your referral code: {code}\n"
                 f"Share this link with friends:\n{ref_link}"
             )
         else:
+            # Russian: добавляем "Зарабатывай баллы!" перед текстом
             bot.send_message(
                 chat_id,
-                f"Ваш реферальный код: {code}\n"
+                f"Зарабатывай баллы!\nВаш реферальный код: {code}\n"
                 f"Поделитесь этой ссылкой с друзьями:\n{ref_link}"
             )
 
@@ -938,26 +943,26 @@ def handle_contact_input(message):
 
     data['contact'] = contact
     data['wait_for_contact'] = False
-    data['wait_for_comment'] = True
+    data['wait_for_order_comment'] = True
     kb = comment_keyboard()
     bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=kb)
     user_data[chat_id] = data
 
 # —————————————————————————————————————————————————————————————
-#   28. Handler: ввод комментария и сохранение заказа (списание stock)
+#   28. Handler: ввод комментария к заказу и сохранение заказа (списание stock)
 # —————————————————————————————————————————————————————————————
 @bot.message_handler(
-    func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_comment"),
+    func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_order_comment"),
     content_types=['text']
 )
-def handle_comment_input(message):
+def handle_order_comment_input(message):
     chat_id = message.chat.id
     data = user_data.get(chat_id, {})
     text = message.text or ""
 
     if text == t(chat_id, "back"):
         data['wait_for_contact'] = True
-        data['wait_for_comment'] = False
+        data['wait_for_order_comment'] = False
         bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=contact_keyboard())
         user_data[chat_id] = data
         return
@@ -967,7 +972,7 @@ def handle_comment_input(message):
         return
 
     if message.content_type == 'text' and text != t(None, "send_order"):
-        data['comment'] = text.strip()
+        data['order_comment'] = text.strip()
         bot.send_message(chat_id, t(chat_id, "comment_saved"), reply_markup=comment_keyboard())
         user_data[chat_id] = data
         return
@@ -1050,11 +1055,11 @@ def handle_comment_input(message):
             f"Итог: {total_after}₺ {conv}\n"
             f"📍 Адрес: {data.get('address', '—')}\n"
             f"📱 Контакт: {data.get('contact', '—')}\n"
-            f"💬 Комментарий: {data.get('comment', '—')}"
+            f"💬 Комментарий: {data.get('order_comment', '—')}"
         )
         bot.send_message(PERSONAL_CHAT_ID, full_rus)
 
-        comment_ru = data.get('comment', '')
+        comment_ru = data.get('order_comment', '')
         comment_en = translate_to_en(comment_ru) if comment_ru else "—"
         full_en = (
             f"📥 New order from @{message.from_user.username or message.from_user.first_name}:\n\n"
@@ -1080,7 +1085,7 @@ def handle_comment_input(message):
             "current_category": None,
             "wait_for_address": False,
             "wait_for_contact": False,
-            "wait_for_comment": False
+            "wait_for_order_comment": False
         })
         user_data[chat_id] = data
         return
@@ -1099,10 +1104,10 @@ def cmd_change(message):
             "wait_for_points": False,
             "wait_for_address": False,
             "wait_for_contact": False,
-            "wait_for_comment": False,
+            "wait_for_order_comment": False,
             "address": "",
             "contact": "",
-            "comment": "",
+            "order_comment": "",
             "pending_discount": 0,
             "pending_points_spent": 0,
             "temp_total_try": 0,
@@ -1114,9 +1119,10 @@ def cmd_change(message):
             "edit_cart_phase": None,
             # Новые поля для /review
             "pending_review_flavor": None,
-            "wait_for_rating": False,
-            "pending_rating": None,
-            "wait_for_comment": False
+            "pending_review_category": None,
+            "wait_for_review_rating": False,
+            "pending_review_rating": None,
+            "wait_for_review_comment": False
         }
     data = user_data[chat_id]
     data.update({
@@ -1124,7 +1130,7 @@ def cmd_change(message):
         "wait_for_points": False,
         "wait_for_address": False,
         "wait_for_contact": False,
-        "wait_for_comment": False,
+        "wait_for_order_comment": False,
         "edit_phase": "choose_action",
         "edit_cat": None,
         "edit_flavor": None,
@@ -1222,7 +1228,7 @@ def cmd_review_start(message):
             if itm["flavor"].lower() == flavor_query:
                 found = True
                 db_cat = cat_key
-                db_flavor = itm["flavor"]  # точное имя из меню
+                db_flavor = itm["flavor"]
                 break
         if found:
             break
@@ -1231,17 +1237,18 @@ def cmd_review_start(message):
         bot.send_message(chat_id, "Flavor not found. Make sure you spelled it exactly (case-insensitive).")
         return
 
-    # Сохраняем, что ждём от пользователя рейтинг
+    # Сохраняем, что ждём от пользователя рейтинг ревью
     data = user_data.setdefault(chat_id, {})
     data["pending_review_flavor"] = db_flavor
-    data["wait_for_rating"] = True
-    data["pending_rating"] = None
-    data["wait_for_comment"] = False
+    data["pending_review_category"] = db_cat
+    data["wait_for_review_rating"] = True
+    data["pending_review_rating"] = None
+    data["wait_for_review_comment"] = False
 
     bot.send_message(chat_id, f"Please rate «{db_flavor}» from 1 to 5 (send a number).")
     user_data[chat_id] = data
 
-@bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_rating"), content_types=['text'])
+@bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_review_rating"), content_types=['text'])
 def handle_review_rating(message):
     chat_id = message.chat.id
     data = user_data.get(chat_id, {})
@@ -1256,15 +1263,15 @@ def handle_review_rating(message):
         bot.send_message(chat_id, "Rating must be between 1 and 5. Try again.")
         return
 
-    # Сохраняем рейтинг и переключаемся на ожидание комментария
-    data["pending_rating"] = rating
-    data["wait_for_rating"] = False
-    data["wait_for_comment"] = True
+    # Сохраняем рейтинг и переключаемся на ожидание комментария ревью
+    data["pending_review_rating"] = rating
+    data["wait_for_review_rating"] = False
+    data["wait_for_review_comment"] = True
 
     bot.send_message(chat_id, "You can leave an optional comment about your experience, or send /skip to finish.")
     user_data[chat_id] = data
 
-@bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_comment"), content_types=['text'])
+@bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_review_comment"), content_types=['text'])
 def handle_review_comment(message):
     chat_id = message.chat.id
     data = user_data.get(chat_id, {})
@@ -1276,16 +1283,16 @@ def handle_review_comment(message):
     else:
         comment = text
 
-    # Теперь записываем отзыв в БД
     db_flavor = data.get("pending_review_flavor")
-    rating = data.get("pending_rating")
+    db_category = data.get("pending_review_category")
+    rating = data.get("pending_review_rating")
     now = datetime.datetime.utcnow().isoformat()
 
     conn_local = get_db_connection()
     cursor_local = conn_local.cursor()
     cursor_local.execute(
         "INSERT INTO reviews (chat_id, category, flavor, rating, comment, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
-        (chat_id, None, db_flavor, rating, comment, now)
+        (chat_id, db_category, db_flavor, rating, comment, now)
     )
     conn_local.commit()
 
@@ -1311,8 +1318,9 @@ def handle_review_comment(message):
 
     # Сброс флагов
     data["pending_review_flavor"] = None
-    data["pending_rating"] = None
-    data["wait_for_comment"] = False
+    data["pending_review_category"] = None
+    data["pending_review_rating"] = None
+    data["wait_for_review_comment"] = False
 
     bot.send_message(chat_id, f"Thank you! Your rating for «{db_flavor}» is recorded. Current average rating: {avg_rating:.1f}")
     user_data[chat_id] = data
@@ -1392,10 +1400,10 @@ def universal_handler(message):
             "wait_for_points": False,
             "wait_for_address": False,
             "wait_for_contact": False,
-            "wait_for_comment": False,
+            "wait_for_order_comment": False,
             "address": "",
             "contact": "",
-            "comment": "",
+            "order_comment": "",
             "pending_discount": 0,
             "pending_points_spent": 0,
             "temp_total_try": 0,
@@ -1407,9 +1415,10 @@ def universal_handler(message):
             "edit_cart_phase": None,
             # Новые поля для /review
             "pending_review_flavor": None,
-            "wait_for_rating": False,
-            "pending_rating": None,
-            "wait_for_comment": False
+            "pending_review_category": None,
+            "wait_for_review_rating": False,
+            "pending_review_rating": None,
+            "wait_for_review_comment": False
         }
     data = user_data[chat_id]
 
@@ -1761,6 +1770,7 @@ def universal_handler(message):
                 if idx < 0 or idx >= len(items_list):
                     bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=get_inline_main_menu(chat_id))
                     data['edit_cart_phase'] = None
+                    data['edit_index'] = None
                     user_data[chat_id] = data
                     return
                 key_to_remove, _ = items_list[idx]
@@ -1944,7 +1954,7 @@ def universal_handler(message):
 
         data['contact'] = contact
         data['wait_for_contact'] = False
-        data['wait_for_comment'] = True
+        data['wait_for_order_comment'] = True
         kb = comment_keyboard()
         bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=kb)
         user_data[chat_id] = data
@@ -1957,7 +1967,7 @@ def universal_handler(message):
             "wait_for_points": False,
             "wait_for_address": False,
             "wait_for_contact": False,
-            "wait_for_comment": False
+            "wait_for_order_comment": False
         })
         bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
         user_data[chat_id] = data
@@ -1970,7 +1980,7 @@ def universal_handler(message):
         data["wait_for_points"] = False
         data["wait_for_address"] = False
         data["wait_for_contact"] = False
-        data["wait_for_comment"] = False
+        data["wait_for_order_comment"] = False
         bot.send_message(chat_id, t(chat_id, "cart_cleared"), reply_markup=get_inline_main_menu(chat_id))
         user_data[chat_id] = data
         return
@@ -2080,10 +2090,7 @@ def universal_handler(message):
         bot.send_message(chat_id, "\n\n".join(texts))
         return
 
-    # ——— /show_reviews, /reviewtop обрабатываются ранее ———
-
     # Если ничего не подошло, бот молчит
-    # (или можно отправлять сообщение "Неверная команда", но здесь просто игнорируем)
 
 # —————————————————————————————————————————————————————————————
 #   36. Запуск бота
