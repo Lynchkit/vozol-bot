@@ -426,7 +426,6 @@ def handle_set_lang(call):
         code = row[0]
         bot_username = bot.get_me().username
         ref_link = f"https://t.me/{bot_username}?start=ref={code}"
-        # Объединяем всё в одно сообщение:
         bot.send_message(
             chat_id,
             f"{t(chat_id, 'earn_points')}\n"
@@ -435,7 +434,8 @@ def handle_set_lang(call):
         )
 
 
-        }
+
+        
     else:
         user_data[chat_id]["lang"] = lang_code
 
