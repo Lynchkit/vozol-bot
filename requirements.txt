@@ -1,0 +1,6 @@
+pyTelegramBotAPI
+requests
+apscheduler
+pandas
+matplotlib
+psycopg2-binary

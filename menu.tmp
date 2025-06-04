@@ -1,0 +1,134 @@
+{
+  "VOZOL Power — 20.000 puffs": {
+    "price": 1300,
+    "flavors": [
+      {
+        "emoji": "🍑❄️",
+        "flavor": "Peach ice",
+        "stock": 1,
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
+      },
+      {
+        "emoji": "🍓🥭",
+        "flavor": "Strawberry mango",
+        "stock": 1,
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
+      },
+      {
+        "emoji": "🍓🥝",
+        "flavor": "Strawberry kiwi",
+        "stock": 2,
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
+      },
+      {
+        "emoji": "🍓🍉",
+        "flavor": "Strawberry watermelon",
+        "stock": 1,
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
+      }
+    ]
+  },
+  "VOZOL Shisha — 25.000 puffs": {
+    "price": 1400,
+    "flavors": [
+      {
+        "emoji": "🍏🍎",
+        "flavor": "Double apple",
+        "stock": 2,
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
+      },
+      {
+        "emoji": "🍒🥤",
+        "flavor": "Cherry cola",
+        "stock": 2,
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
+      },
+      {
+        "emoji": "🍒❄️",
+        "flavor": "Cherry ice",
+        "stock": 1,
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
+      },
+      {
+        "emoji": "🥭🍑",
+        "flavor": "Mango peach",
+        "stock": 1,
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
+      }
+    ]
+  },
+  "VOZOL Vista — 20.000 puffs": {
+    "price": 1000,
+    "flavors": [
+      {
+        "emoji": "🥭❄️",
+        "flavor": "Mango ice",
+        "stock": 1,
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
+      },
+      {
+        "emoji": "⚡️",
+        "flavor": "Vzbull",
+        "stock": 2,
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
+      },
+      {
+        "emoji": "🍇❄️",
+        "flavor": "Grape ice",
+        "stock": 1,
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
+      },
+      {
+        "emoji": "🍑❄️",
+        "flavor": "Peach ice",
+        "stock": 1,
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
+      },
+      {
+        "emoji": "🍓🥭",
+        "flavor": "Strawberry mango",
+        "stock": 1,
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": ""
+      }
+    ]
+  }
+}
