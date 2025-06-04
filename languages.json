@@ -35,7 +35,10 @@
     "comment_saved": "Комментарий сохранён.",
     "points_info": "У вас {points} баллов (что эквивалентно {points_try}₺).",
     "enter_points": "Сколько баллов вы хотите потратить на этот заказ? (макс: {max_points})\nВведите число от 0 до {max_points}.\n0 — не списывать баллы.",
-    "invalid_points": "Пожалуйста, введите корректное число баллов от 0 до {max_points}."
+    "invalid_points": "Пожалуйста, введите корректное число баллов от 0 до {max_points}.",
+    "review_prompt_rate": "Пожалуйста, оцените «{flavor}» от 1 до 5:",
+    "review_prompt_comment": "Комментарий? Напишите его или отправьте /skip, чтобы пропустить:",
+    "review_thanks": "Спасибо за отзыв! Текущий средний рейтинг для «{flavor}»: {avg} ⭐"
   },
   "en": {
     "choose_language": "Choose your language / Выберите язык:",
@@ -73,6 +76,9 @@
     "comment_saved": "Comment saved.",
     "points_info": "You have {points} points (equivalent to {points_try}₺).",
     "enter_points": "How many points would you like to spend on this order? (max: {max_points})\nEnter a number from 0 to {max_points}.\n0 — do not spend any points.",
-    "invalid_points": "Please enter a valid number of points between 0 and {max_points}."
+    "invalid_points": "Please enter a valid number of points between 0 and {max_points}.",
+    "review_prompt_rate": "Please rate “{flavor}” from 1 to 5:",
+    "review_prompt_comment": "Any comment? Type it now, or send /skip to skip:",
+    "review_thanks": "Thank you for your review! Current average for “{flavor}” is {avg} ⭐"
   }
 }
