@@ -435,7 +435,7 @@ def handle_set_lang(call):
 
 
 
-        
+        }
     else:
         user_data[chat_id]["lang"] = lang_code
 
