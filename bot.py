@@ -433,6 +433,34 @@ def handle_set_lang(call):
             f"{t(chat_id, 'share_link')}: {ref_link}"
         )
 
+
+
+        }
+    else:
+        user_data[chat_id]["lang"] = lang_code
+
+    bot.answer_callback_query(call.id, t(chat_id, "lang_set"))
+    bot.send_message(chat_id, t(chat_id, "welcome"), reply_markup=get_inline_main_menu(chat_id))
+
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    cursor_local.execute("SELECT referral_code FROM users WHERE chat_id = ?", (chat_id,))
+    row = cursor_local.fetchone()
+    cursor_local.close()
+    conn_local.close()
+
+    if row:
+        code = row[0]
+        bot_username = bot.get_me().username
+        ref_link = f"https://t.me/{bot_username}?start=ref={code}"
+            bot.send_message(
+        chat_id,
+        f"{t(chat_id, 'earn_points')}\n"
+        f"{t(chat_id, 'your_referral_code')}: {code}\n"
+        f"{t(chat_id, 'share_link')}: {ref_link}"
+    )
+
+
 # —————————————————————————————————————————————————————————————
 #   16. Callback: выбор категории (показываем вкусы)
 # —————————————————————————————————————————————————————————————
@@ -1482,7 +1510,7 @@ def universal_handler(message):
                 with open(MENU_PATH, "w", encoding="utf-8") as f:
                     json.dump(menu, f, ensure_ascii=False, indent=2)
                 data['edit_phase'] = 'choose_action'
-                bot.send_message(chat_id, t(chat_id, "category_removed").format(category=text), reply_markup=edit_action_keyboard())
+                bot.send_message(chat_id, t(chat_id, "category_added").format(category=text), reply_markup=edit_action_keyboard())
                 user_data[chat_id] = data
             else:
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -1503,7 +1531,7 @@ def universal_handler(message):
                 data['edit_phase'] = 'enter_new_price'
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
                 kb.add("⬅️ Back")
-                bot.send_message(chat_id, t(chat_id, "enter_new_price"), reply_markup=kb)
+                bot.send_message(chat_id, t(chat_id, "invalid_price_format"), reply_markup=kb)
                 user_data[chat_id] = data
             else:
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
