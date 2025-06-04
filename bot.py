@@ -426,6 +426,32 @@ def handle_set_lang(call):
         code = row[0]
         bot_username = bot.get_me().username
         ref_link = f"https://t.me/{bot_username}?start=ref={code}"
+        # Объединяем в одно сообщение:
+        bot.send_message(
+            chat_id,
+            f"{t(chat_id, 'earn_points')}\n"
+            f"{t(chat_id, 'your_referral_code')}: {code}\n"
+            f"{t(chat_id, 'share_link')}: {ref_link}"
+        )
+
+        }
+    else:
+        user_data[chat_id]["lang"] = lang_code
+
+    bot.answer_callback_query(call.id, t(chat_id, "lang_set"))
+    bot.send_message(chat_id, t(chat_id, "welcome"), reply_markup=get_inline_main_menu(chat_id))
+
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    cursor_local.execute("SELECT referral_code FROM users WHERE chat_id = ?", (chat_id,))
+    row = cursor_local.fetchone()
+    cursor_local.close()
+    conn_local.close()
+
+    if row:
+        code = row[0]
+        bot_username = bot.get_me().username
+        ref_link = f"https://t.me/{bot_username}?start=ref={code}"
             bot.send_message(
         chat_id,
         f"{t(chat_id, 'earn_points')}\n"
