@@ -426,12 +426,13 @@ def handle_set_lang(call):
         code = row[0]
         bot_username = bot.get_me().username
         ref_link = f"https://t.me/{bot_username}?start=ref={code}"
-        bot.send_message(chat_id, t(chat_id, "earn_points"))
-        bot.send_message(
-            chat_id,
-            f"{t(chat_id, 'your_referral_code')} {code}\n"
-            f"{t(chat_id, 'share_link')} {ref_link}"
-        )
+            bot.send_message(
+        chat_id,
+        f"{t(chat_id, 'earn_points')}\n"
+        f"{t(chat_id, 'your_referral_code')} {code}\n"
+        f"{t(chat_id, 'share_link')} {ref_link}"
+    )
+
 
 # —————————————————————————————————————————————————————————————
 #   16. Callback: выбор категории (показываем вкусы)
