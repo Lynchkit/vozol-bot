@@ -415,8 +415,7 @@ def handle_set_lang(call):
     bot.answer_callback_query(call.id, t(chat_id, "lang_set"))
     bot.send_message(chat_id, t(chat_id, "welcome"), reply_markup=get_inline_main_menu(chat_id))
 
-    # Выводим «Зарабатывай баллы» и реферальную ссылку
-    conn_local = get_db_connection()
+   conn_local = get_db_connection()
     cursor_local = conn_local.cursor()
     cursor_local.execute("SELECT referral_code FROM users WHERE chat_id = ?", (chat_id,))
     row = cursor_local.fetchone()
@@ -430,8 +429,8 @@ def handle_set_lang(call):
         bot.send_message(chat_id, t(chat_id, "earn_points"))
         bot.send_message(
             chat_id,
-            f"your_referral_code {code}\nshare_link:\n{ref_link}"
-        )
+            f"{t(chat_id, 'your_referral_code')} {code}\n"
+            f"{t(chat_id, 'share_link')} {ref_link}"
 
 # —————————————————————————————————————————————————————————————
 #   16. Callback: выбор категории (показываем вкусы)
