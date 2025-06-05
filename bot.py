@@ -19,7 +19,6 @@ if not TOKEN:
         "Environment variable TOKEN is not set! "
         "Run the container with -e TOKEN=<your_token>."
     )
-
 ADMIN_ID = int(os.getenv("ADMIN_ID", "424751188"))
 GROUP_CHAT_ID = int(os.getenv("GROUP_CHAT_ID", "0"))
 PERSONAL_CHAT_ID = int(os.getenv("PERSONAL_CHAT_ID", "0"))
@@ -96,32 +95,7 @@ translations = load_json(LANG_PATH)
 # -----------------------------------------------------------------------------
 #   6. Хранилище данных пользователей (in-memory)
 # -----------------------------------------------------------------------------
-user_data = {}
-# Структура user_data[chat_id] содержит:
-#   "lang": str
-#   "cart": list
-#   "current_category": str
-#   "wait_for_points": bool
-#   "wait_for_address": bool
-#   "wait_for_contact": bool
-#   "wait_for_comment": bool
-#   "address": str
-#   "contact": str
-#   "comment": str
-#   "pending_discount": int
-#   "pending_points_spent": int
-#   "temp_total_try": int
-#   "temp_user_points": int
-#   "edit_phase": str
-#   "edit_cat": str
-#   "edit_flavor": str
-#   "edit_index": int
-#   "edit_cart_phase": str
-#   "awaiting_review_flavor": str
-#   "awaiting_review_rating": bool
-#   "awaiting_review_comment": bool
-#   "temp_review_flavor": str
-#   "temp_review_rating": int
+user_data = {}  # Структура user_data[chat_id] содержит множество флагов и временных данных
 
 # -----------------------------------------------------------------------------
 #   7. Утилиты
@@ -183,7 +157,7 @@ def get_inline_language_buttons(chat_id: int) -> types.InlineKeyboardMarkup:
     return kb
 
 # -----------------------------------------------------------------------------
-#   9. Inline-кнопки для главного меню 
+#   9. Inline-кнопки для главного меню  
 #      (категории + «Корзина» + «Очистить корзину» + «Завершить заказ»)
 # -----------------------------------------------------------------------------
 def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
@@ -217,7 +191,8 @@ def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
         if item.get("stock", 0) > 0:
             emoji = item.get("emoji", "")
             flavor_name = item["flavor"]
-            label = f"{emoji} {flavor_name} — {price}₺ [{item['stock']}шт]"
+            # Используем короткое тире "-" вместо длинного "—"
+            label = f"{emoji} {flavor_name} - {price}₺ [{item['stock']}шт]"
             kb.add(types.InlineKeyboardButton(text=label, callback_data=f"flavor|{cat}|{flavor_name}"))
     # Кнопка «⬅️ Назад к категориям»
     kb.add(types.InlineKeyboardButton(text=f"⬅️ {t(chat_id,'back_to_categories')}", callback_data="go_back_to_categories"))
@@ -489,7 +464,6 @@ def handle_category(call):
 def handle_go_back_to_categories(call):
     chat_id = call.from_user.id
     bot.answer_callback_query(call.id)
-    # Убираем любую Reply-клавиатуру
     bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
 
 # -----------------------------------------------------------------------------
@@ -515,7 +489,7 @@ def handle_flavor(call):
     description = item_obj.get(f"description_{user_lang}", "") or ""
     price = menu[cat]["price"]
 
-    caption = f"<b>{flavor}</b> — {cat}\n"
+    caption = f"<b>{flavor}</b> - {cat}\n"
     if description:
         caption += f"{description}\n"
     caption += f"📌 {price}₺"
@@ -523,6 +497,7 @@ def handle_flavor(call):
     bot.send_message(chat_id, caption, parse_mode="HTML")
 
     kb = types.InlineKeyboardMarkup(row_width=1)
+    # Используем короткое тире "-" в тексте кнопки
     kb.add(
         types.InlineKeyboardButton(
             text=f"➕ {t(chat_id,'add_to_cart')}",
@@ -568,7 +543,7 @@ def handle_add_to_cart(call):
     count = len(cart)
     bot.send_message(
         chat_id,
-        f"«{cat} — {flavor}» {suffix.format(flavor=flavor, count=count)}",
+        f"«{cat} - {flavor}» {suffix.format(flavor=flavor, count=count)}",
         reply_markup=get_inline_main_menu(chat_id)
     )
 
@@ -590,9 +565,10 @@ def handle_view_cart(call):
         key = (item["category"], item["flavor"], item["price"])
         grouped[key] = grouped.get(key, 0) + 1
 
-    text_lines = [f"🛒 {t(chat_id, 'view_cart')}:"] 
+    text_lines = [f"🛒 {t(chat_id, 'view_cart')}:"]
+
     for idx, ((cat, flavor, price), qty) in enumerate(grouped.items(), start=1):
-        text_lines.append(f"{idx}. {cat} — {flavor} — {price}₺ x {qty}")
+        text_lines.append(f"{idx}. {cat} - {flavor} - {price}₺ x {qty}")
     msg = "\n".join(text_lines)
 
     kb = types.InlineKeyboardMarkup(row_width=2)
@@ -678,7 +654,7 @@ def handle_edit_item_request(call):
     data["edit_flavor"] = flavor
     bot.send_message(
         chat_id,
-        f"Current item: {cat} — {flavor} — {price}₺ (in cart {old_qty} pcs).\n{t(chat_id, 'enter_new_qty')}",
+        f"Current item: {cat} - {flavor} - {price}₺ (in cart {old_qty} pcs).\n{t(chat_id, 'enter_new_qty')}",
         reply_markup=types.ReplyKeyboardRemove()
     )
 
@@ -781,7 +757,7 @@ def handle_finish_order(call):
         bot.send_message(
             chat_id,
             f"🛒 {t(chat_id, 'view_cart')}:\n\n" +
-            "\n".join(f"{item['category']}: {item['flavor']} — {item['price']}₺" for item in cart) +
+            "\n".join(f"{item['category']}: {item['flavor']} - {item['price']}₺" for item in cart) +
             f"\n\n{t(chat_id, 'enter_address')}",
             reply_markup=kb
         )
@@ -828,7 +804,7 @@ def handle_points_input(message):
     total_after = total_try - discount_try
     kb = address_keyboard()
 
-    summary_lines = [f"{item['category']}: {item['flavor']} — {item['price']}₺" for item in cart]
+    summary_lines = [f"{item['category']}: {item['flavor']} - {item['price']}₺" for item in cart]
     summary = "\n".join(summary_lines)
     msg = (
         f"🛒 {t(chat_id, 'view_cart')}:\n\n"
@@ -1017,7 +993,7 @@ def handle_comment_input(message):
         cursor_local.close()
         conn_local.close()
 
-        summary = "\n".join(f"{i['category']}: {i['flavor']} — {i['price']}₺" for i in cart)
+        summary = "\n".join(f"{i['category']}: {i['flavor']} - {i['price']}₺" for i in cart)
         rates = fetch_rates()
         rub = round(total_after * rates.get("RUB", 0) + 500, 2)
         usd = round(total_after * rates.get("USD", 0) + 2, 2)
@@ -1106,7 +1082,7 @@ def cmd_change(message):
         "edit_index": None,
         "edit_cart_phase": None
     })
-    # Убираем Reply-клавиатуру (если была) и отображаем меню редактирования
+    # Снимаем Reply-клавиатуру (если была) и отображаем меню редактирования
     bot.send_message(chat_id, "Menu editing: choose action", reply_markup=edit_action_keyboard())
     user_data[chat_id] = data
 
@@ -1338,8 +1314,13 @@ def universal_handler(message):
                 data['edit_phase'] = None
                 data['edit_cat'] = None
                 data['edit_flavor'] = None
-                # Снимаем Reply-клавиатуру и возвращаемся в главное меню
-                bot.send_message(chat_id, "Editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
+                # Снимаем любую Reply-клавиатуру и возвращаемся в главное меню
+                bot.send_message(
+                    chat_id,
+                    "Editing cancelled.",
+                    reply_markup=types.ReplyKeyboardRemove()
+                )
+                bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1348,7 +1329,12 @@ def universal_handler(message):
                 data['edit_phase'] = None
                 data['edit_cat'] = None
                 data['edit_flavor'] = None
-                bot.send_message(chat_id, "Returned to main menu.", reply_markup=get_inline_main_menu(chat_id))
+                bot.send_message(
+                    chat_id,
+                    "Returned to main menu.",
+                    reply_markup=types.ReplyKeyboardRemove()
+                )
+                bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1639,7 +1625,7 @@ def universal_handler(message):
                 stripped = line.strip()
                 if not stripped or stripped.lower() == "(empty)":
                     continue
-                # Парсим по короткому дефису ' - '
+                # Парсим по короткому дефису '-'
                 if '-' in stripped:
                     parts = stripped.rsplit('-', 1)
                 else:
@@ -1759,7 +1745,7 @@ def universal_handler(message):
         return
     # ────────────────────────────────────────────────────────────────────────────────
 
-    # ——— Режим редактирования корзины —
+    # ——— Режим редактирования корзины —    
     if data.get('edit_cart_phase'):
         if data['edit_cart_phase'] == 'choose_action':
             if text == t(chat_id, "back"):
@@ -1822,7 +1808,7 @@ def universal_handler(message):
                 cat0, flavor0, price0 = key_chosen
                 bot.send_message(
                     chat_id,
-                    f"Current item: {cat0} — {flavor0} — {price0}₺ (in cart {count} pcs).\n{t(chat_id, 'enter_new_qty')}"
+                    f"Current item: {cat0} - {flavor0} - {price0}₺ (in cart {count} pcs).\n{t(chat_id, 'enter_new_qty')}"
                 )
                 user_data[chat_id] = data
                 return
@@ -2051,7 +2037,7 @@ def universal_handler(message):
             cursor_local.close()
             conn_local.close()
 
-            summary = "\n".join(f"{i['category']}: {i['flavor']} — {i['price']}₺" for i in cart)
+            summary = "\n".join(f"{i['category']}: {i['flavor']} - {i['price']}₺" for i in cart)
             rates = fetch_rates()
             rub = round(total_after * rates.get("RUB", 0) + 500, 2)
             usd = round(total_after * rates.get("USD", 0) + 2, 2)
@@ -2195,7 +2181,7 @@ def universal_handler(message):
             bot.send_message(
                 chat_id,
                 f"🛒 {t(chat_id, 'view_cart')}:\n\n" +
-                "\n".join(f"{i['category']}: {i['flavor']} — {i['price']}₺" for i in data['cart']) +
+                "\n".join(f"{i['category']}: {i['flavor']} - {i['price']}₺" for i in data['cart']) +
                 f"\n\n{t(chat_id, 'enter_address')}",
                 reply_markup=kb
             )
@@ -2218,7 +2204,8 @@ def universal_handler(message):
             if it.get("stock", 0) > 0:
                 emoji = it.get("emoji", "")
                 flavor0 = it["flavor"]
-                label = f"{emoji} {flavor0} — {price}₺ [{it['stock']} шт]"
+                # Ждём короткий дефис '-' между flavor и price
+                label = f"{emoji} {flavor0} - {price}₺ [{it['stock']} шт]"
                 if text == label:
                     data['cart'].append({'category': cat0, 'flavor': flavor0, 'price': price})
                     template = t(chat_id, "added_to_cart")
@@ -2226,7 +2213,7 @@ def universal_handler(message):
                     count = len(data['cart'])
                     bot.send_message(
                         chat_id,
-                        f"«{cat0} — {flavor0}» {suffix.format(flavor=flavor0, count=count)}",
+                        f"«{cat0} - {flavor0}» {suffix.format(flavor=flavor0, count=count)}",
                         reply_markup=get_inline_main_menu(chat_id)
                     )
                     user_data[chat_id] = data
@@ -2252,7 +2239,7 @@ def universal_handler(message):
         texts = []
         for order_id, items_json, total, timestamp in rows[:10]:
             items = json.loads(items_json)
-            summary = "\n".join(f"{i['flavor']} — {i['price']}₺" for i in items)
+            summary = "\n".join(f"{i['flavor']} - {i['price']}₺" for i in items)
             date = timestamp.split("T")[0]
             texts.append(f"Заказ #{order_id} ({date}):\n{summary}\nИтого: {total}₺")
         bot.send_message(chat_id, "\n\n".join(texts))
