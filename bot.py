@@ -112,7 +112,7 @@ user_data = {}
 def t(chat_id: int, key: str) -> str:
     """
     Получает перевод из languages.json по ключу.
-    Если перевод не найден — возвращает сам key.
+    Если перевод не найден — возвращает сам ключ.
     """
     lang = user_data.get(chat_id, {}).get("lang") or "ru"
     return translations.get(lang, {}).get(key, key)
@@ -168,11 +168,22 @@ def get_inline_language_buttons(chat_id: int) -> types.InlineKeyboardMarkup:
 # —————————————————————————————————————————————————————————————
 #   9. Inline-кнопки для главного меню 
 #      (категории + «Корзина» + «Очистить корзину» + «Завершить заказ»)
+#      Теперь учитывается, если в категории нет товаров в наличии.
 # —————————————————————————————————————————————————————————————
 def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=2)
+    lang = user_data.get(chat_id, {}).get("lang") or "ru"
     for cat in menu.keys():
-        kb.add(types.InlineKeyboardButton(text=cat, callback_data=f"category|{cat}"))
+        # Определяем суммарный stock по всем вкусам в категории
+        total_stock = sum(item.get("stock", 0) for item in menu[cat]["flavors"])
+        if total_stock == 0:
+            if lang == "en":
+                label = f"{cat} (out of stock)"
+            else:
+                label = f"{cat} (нет в наличии)"
+        else:
+            label = cat
+        kb.add(types.InlineKeyboardButton(text=label, callback_data=f"category|{cat}"))
     kb.add(types.InlineKeyboardButton(text=f"🛒 {t(chat_id,'view_cart')}", callback_data="view_cart"))
     kb.add(types.InlineKeyboardButton(text=f"🗑️ {t(chat_id,'clear_cart')}", callback_data="clear_cart"))
     kb.add(types.InlineKeyboardButton(text=f"✅ {t(chat_id,'finish_order')}", callback_data="finish_order"))
