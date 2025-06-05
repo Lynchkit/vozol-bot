@@ -361,7 +361,8 @@ def cmd_start(message):
         )
         conn_local.commit()
     cursor_local.close()
-    conn_local.close()
+    conn_init.commit()
+    conn_init.close()
 
     bot.send_message(
         chat_id,
@@ -429,7 +430,7 @@ def handle_set_lang(call):
         else:
             bot.send_message(
                 chat_id,
-                f"Зарабатывайте баллы! Ваш реферальный код: {code}\nПоделитесь этой ссылкой с друзьями:\n{ref_link}"
+                f"Ваш реферальный код: {code}\nПоделитесь этой ссылкой с друзьями:\n{ref_link}"
             )
 
 # —————————————————————————————————————————————————————————————
@@ -821,7 +822,7 @@ def handle_points_input(message):
     user_data[chat_id] = data
 
 # —————————————————————————————————————————————————————————————
-#   26. Обработчик ввода адреса (без изменений)
+#   26. Обработчик ввода адреса (с удалением клавиатуры при выходе)
 # —————————————————————————————————————————————————————————————
 @bot.message_handler(
     func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_address"),
@@ -835,6 +836,8 @@ def handle_address_input(message):
     if text == t(chat_id, "back"):
         data['wait_for_address'] = False
         data['current_category'] = None
+        # Удаляем клавиатуру выбора адреса и возвращаем главное меню
+        bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=types.ReplyKeyboardRemove())
         bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
         user_data[chat_id] = data
         return
@@ -1271,8 +1274,44 @@ def handle_review_comment(message):
     user_data[chat_id] = data
 
 # —————————————————————————————————————————————————————————————
-#   35. Универсальный хендлер (всё остальное)
+#   35. Универсальный хендлер (всё остальное), включая /stats до edit_phase
 # —————————————————————————————————————————————————————————————
+@bot.message_handler(commands=['stats'])
+def cmd_stats(message):
+    chat_id = message.chat.id
+    if chat_id != ADMIN_ID:
+        bot.send_message(chat_id, "У вас нет доступа к этой команде.")
+        return
+
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    cursor_local.execute("SELECT COUNT(*) FROM orders")
+    total_orders = cursor_local.fetchone()[0]
+    cursor_local.execute("SELECT SUM(total) FROM orders")
+    total_revenue = cursor_local.fetchone()[0] or 0
+    cursor_local.execute("SELECT items_json FROM orders")
+    all_items = cursor_local.fetchall()
+
+    counts = {}
+    for (items_json,) in all_items:
+        items = json.loads(items_json)
+        for i in items:
+            key = i["flavor"]
+            counts[key] = counts.get(key, 0) + 1
+    top5 = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:5]
+    top5_lines = [f"{flavor}: {qty} шт." for flavor, qty in top5] or ["Пока нет данных."]
+
+    report = (
+        f"📊 Статистика магазина:\n"
+        f"Всего заказов: {total_orders}\n"
+        f"Общая выручка: {total_revenue}₺\n\n"
+        f"Топ-5 продаваемых вкусов:\n" + "\n".join(top5_lines)
+    )
+    cursor_local.close()
+    conn_local.close()
+
+    bot.send_message(chat_id, report)
+
 @bot.message_handler(content_types=['text','location','venue','contact'])
 def universal_handler(message):
     chat_id = message.chat.id
@@ -1316,7 +1355,9 @@ def universal_handler(message):
                 data['edit_phase'] = None
                 data['edit_cat'] = None
                 data['edit_flavor'] = None
-                bot.send_message(chat_id, "Returned to main menu.", reply_markup=get_inline_main_menu(chat_id))
+                # Удаляем Reply-клавиатуру и выводим главное меню
+                bot.send_message(chat_id, "Returned to main menu.", reply_markup=types.ReplyKeyboardRemove())
+                bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1324,7 +1365,9 @@ def universal_handler(message):
                 data['edit_phase'] = None
                 data['edit_cat'] = None
                 data['edit_flavor'] = None
-                bot.send_message(chat_id, "Menu editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
+                # Удаляем Reply-клавиатуру и выводим главное меню
+                bot.send_message(chat_id, "Menu editing cancelled.", reply_markup=types.ReplyKeyboardRemove())
+                bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1871,6 +1914,8 @@ def universal_handler(message):
         if text == t(chat_id, "back"):
             data['wait_for_address'] = False
             data['current_category'] = None
+            # Удаляем клавиатуру и возвращаем главное меню
+            bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=types.ReplyKeyboardRemove())
             bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
             user_data[chat_id] = data
             return
@@ -2215,42 +2260,6 @@ def universal_handler(message):
             date = ts.split("T")[0]
             texts.append(f"👤 {uid} [{rating}⭐]\n🕒 {date}\n«{comment}»")
         bot.send_message(chat_id, "\n\n".join(texts))
-        return
-
-    # ——— /stats ———
-    if text == "/stats":
-        if chat_id != ADMIN_ID:
-            bot.send_message(chat_id, "У вас нет доступа к этой команде.")
-            return
-
-        conn_local = get_db_connection()
-        cursor_local = conn_local.cursor()
-        cursor_local.execute("SELECT COUNT(*) FROM orders")
-        total_orders = cursor_local.fetchone()[0]
-        cursor_local.execute("SELECT SUM(total) FROM orders")
-        total_revenue = cursor_local.fetchone()[0] or 0
-        cursor_local.execute("SELECT items_json FROM orders")
-        all_items = cursor_local.fetchall()
-
-        counts = {}
-        for (items_json,) in all_items:
-            items = json.loads(items_json)
-            for i in items:
-                key = i["flavor"]
-                counts[key] = counts.get(key, 0) + 1
-        top5 = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:5]
-        top5_lines = [f"{flavor}: {qty} шт." for flavor, qty in top5] or ["Пока нет данных."]
-
-        report = (
-            f"📊 Статистика магазина:\n"
-            f"Всего заказов: {total_orders}\n"
-            f"Общая выручка: {total_revenue}₺\n\n"
-            f"Топ-5 продаваемых вкусов:\n" + "\n".join(top5_lines)
-        )
-        cursor_local.close()
-        conn_local.close()
-
-        bot.send_message(chat_id, report)
         return
 
 # —————————————————————————————————————————————————————————————
