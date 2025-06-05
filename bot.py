@@ -11,22 +11,13 @@ import telebot
 from telebot import types
 
 # —————————————————————————————————————————————————————————————
-#   Создаём папку data, если её нет (для меню и БД)
-# —————————————————————————————————————————————————————————————
-if not os.path.exists("data"):
-    os.makedirs("data")
-
-# —————————————————————————————————————————————————————————————
 #   1. Загрузка переменных окружения
 # —————————————————————————————————————————————————————————————
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
     raise RuntimeError(
         "Переменная окружения TOKEN не задана! "
-        "Перед запуском введите в консоли:\n"
-        "  export TOKEN=<ваш_токен>   (для Git Bash или Linux)\n"
-        "  $env:TOKEN=\"<ваш_токен>\"  (для PowerShell)\n"
-        "  set TOKEN=<ваш_токен>      (для cmd.exe)\n"
+        "Запустите контейнер с -e TOKEN=<ваш_токен>."
     )
 
 ADMIN_ID = int(os.getenv("ADMIN_ID", "424751188"))
@@ -36,11 +27,12 @@ PERSONAL_CHAT_ID = int(os.getenv("PERSONAL_CHAT_ID", "0"))
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 
 # —————————————————————————————————————————————————————————————
-#   2. Пути к JSON-файлам и БД (относительно текущей папки)
+#   2. Пути к JSON-файлам и БД
 # —————————————————————————————————————————————————————————————
-MENU_PATH = "data/menu.json"
+MENU_PATH = "menu.json"
 LANG_PATH = "languages.json"
-DB_PATH = "data/database.db"
+DB_PATH = "/data/database.db"
+
 
 # —————————————————————————————————————————————————————————————
 #   3. Функция для получения локального подключения к БД
@@ -48,6 +40,7 @@ DB_PATH = "data/database.db"
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     return conn
+
 
 # —————————————————————————————————————————————————————————————
 #   4. Инициализация SQLite и создание таблиц (при старте)
@@ -119,7 +112,7 @@ user_data = {}
 def t(chat_id: int, key: str) -> str:
     """
     Получает перевод из languages.json по ключу.
-    Если перевод не найден — возвращает сам key.
+    Если перевод не найден — возвращает сам ключ.
     """
     lang = user_data.get(chat_id, {}).get("lang") or "ru"
     return translations.get(lang, {}).get(key, key)
@@ -308,6 +301,7 @@ def cmd_start(message):
             "edit_flavor": None,
             "edit_index": None,
             "edit_cart_phase": None,
+            # новые флаги для отзывов
             "awaiting_review_flavor": None,
             "awaiting_review_rating": False,
             "awaiting_review_comment": False,
@@ -435,7 +429,7 @@ def handle_set_lang(call):
         else:
             bot.send_message(
                 chat_id,
-                f"Ваш реферальный код: {code}\nПоделитесь этой ссылкой с друзьями:\n{ref_link}"
+                f"Зарабатывайте баллы! Ваш реферальный код: {code}\nПоделитесь этой ссылкой с друзьями:\n{ref_link}"
             )
 
 # —————————————————————————————————————————————————————————————
@@ -827,7 +821,7 @@ def handle_points_input(message):
     user_data[chat_id] = data
 
 # —————————————————————————————————————————————————————————————
-#   26. Обработчик ввода адреса (с удалением клавиатуры при выходе)
+#   26. Обработчик ввода адреса (без изменений)
 # —————————————————————————————————————————————————————————————
 @bot.message_handler(
     func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_address"),
@@ -841,8 +835,6 @@ def handle_address_input(message):
     if text == t(chat_id, "back"):
         data['wait_for_address'] = False
         data['current_category'] = None
-        # Удаляем клавиатуру выбора адреса и возвращаем главное меню
-        bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=types.ReplyKeyboardRemove())
         bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
         user_data[chat_id] = data
         return
@@ -878,7 +870,7 @@ def handle_address_input(message):
     user_data[chat_id] = data
 
 # —————————————————————————————————————————————————————————————
-#   27. Обработчик ввода контакта
+#   27. Обработчик ввода контакта (без изменений)
 # —————————————————————————————————————————————————————————————
 @bot.message_handler(
     func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_contact"),
@@ -916,7 +908,7 @@ def handle_contact_input(message):
     user_data[chat_id] = data
 
 # —————————————————————————————————————————————————————————————
-#   28. Обработчик ввода комментария и сохранения заказа
+#   28. Обработчик ввода комментария и сохранения заказа (с учётом скидки и списания stock)
 # —————————————————————————————————————————————————————————————
 @bot.message_handler(
     func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_comment"),
@@ -1040,8 +1032,8 @@ def handle_comment_input(message):
         )
 
         data.update({
-            "cart": [],  
-            "current_category": None,  
+            "cart": [],
+            "current_category": None,
             "wait_for_address": False,
             "wait_for_contact": False,
             "wait_for_comment": False
@@ -1254,7 +1246,7 @@ def handle_review_comment(message):
     )
     avg_rating = cursor_local.fetchone()[0] or 0
 
-    # Обновим средний рейтинг в menu.json (если есть поле "rating")
+    # Обновим средний рейтинг в меню.json (если есть поле "rating")
     for cat_key, cat_data in menu.items():
         for itm in cat_data["flavors"]:
             if itm["flavor"] == flavor_name:
@@ -1279,44 +1271,8 @@ def handle_review_comment(message):
     user_data[chat_id] = data
 
 # —————————————————————————————————————————————————————————————
-#   35. Обработчики /stats и «всё остальное»
+#   35. Универсальный хендлер (всё остальное)
 # —————————————————————————————————————————————————————————————
-@bot.message_handler(commands=['stats'])
-def cmd_stats(message):
-    chat_id = message.chat.id
-    if chat_id != ADMIN_ID:
-        bot.send_message(chat_id, "У вас нет доступа к этой команде.")
-        return
-
-    conn_local = get_db_connection()
-    cursor_local = conn_local.cursor()
-    cursor_local.execute("SELECT COUNT(*) FROM orders")
-    total_orders = cursor_local.fetchone()[0]
-    cursor_local.execute("SELECT SUM(total) FROM orders")
-    total_revenue = cursor_local.fetchone()[0] or 0
-    cursor_local.execute("SELECT items_json FROM orders")
-    all_items = cursor_local.fetchall()
-
-    counts = {}
-    for (items_json,) in all_items:
-        items = json.loads(items_json)
-        for i in items:
-            key = i["flavor"]
-            counts[key] = counts.get(key, 0) + 1
-    top5 = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:5]
-    top5_lines = [f"{flavor}: {qty} шт." for flavor, qty in top5] or ["Пока нет данных."]
-
-    report = (
-        f"📊 Статистика магазина:\n"
-        f"Всего заказов: {total_orders}\n"
-        f"Общая выручка: {total_revenue}₺\n\n"
-        f"Топ-5 продаваемых вкусов:\n" + "\n".join(top5_lines)
-    )
-    cursor_local.close()
-    conn_local.close()
-
-    bot.send_message(chat_id, report)
-
 @bot.message_handler(content_types=['text','location','venue','contact'])
 def universal_handler(message):
     chat_id = message.chat.id
@@ -1360,9 +1316,7 @@ def universal_handler(message):
                 data['edit_phase'] = None
                 data['edit_cat'] = None
                 data['edit_flavor'] = None
-                # Удаляем Reply-клавиатуру и выводим главное меню
-                bot.send_message(chat_id, "Returned to main menu.", reply_markup=types.ReplyKeyboardRemove())
-                bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
+                bot.send_message(chat_id, "Returned to main menu.", reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1370,9 +1324,7 @@ def universal_handler(message):
                 data['edit_phase'] = None
                 data['edit_cat'] = None
                 data['edit_flavor'] = None
-                # Удаляем Reply-клавиатуру и выводим главное меню
-                bot.send_message(chat_id, "Menu editing cancelled.", reply_markup=types.ReplyKeyboardRemove())
-                bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
+                bot.send_message(chat_id, "Menu editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1919,8 +1871,6 @@ def universal_handler(message):
         if text == t(chat_id, "back"):
             data['wait_for_address'] = False
             data['current_category'] = None
-            # Удаляем клавиатуру и возвращаем главное меню
-            bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=types.ReplyKeyboardRemove())
             bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
             user_data[chat_id] = data
             return
@@ -2096,12 +2046,12 @@ def universal_handler(message):
                 chat_id,
                 t(chat_id, "order_accepted"),
                 reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-                                  .add(f"➕ {t(chat_id, 'add_more')}")  
+                                  .add(f"➕ {t(chat_id, 'add_more')}")
             )
 
             data.update({
-                "cart": [],  
-                "current_category": None,  
+                "cart": [],
+                "current_category": None,
                 "wait_for_address": False,
                 "wait_for_contact": False,
                 "wait_for_comment": False
@@ -2265,6 +2215,42 @@ def universal_handler(message):
             date = ts.split("T")[0]
             texts.append(f"👤 {uid} [{rating}⭐]\n🕒 {date}\n«{comment}»")
         bot.send_message(chat_id, "\n\n".join(texts))
+        return
+
+    # ——— /stats ———
+    if text == "/stats":
+        if chat_id != ADMIN_ID:
+            bot.send_message(chat_id, "У вас нет доступа к этой команде.")
+            return
+
+        conn_local = get_db_connection()
+        cursor_local = conn_local.cursor()
+        cursor_local.execute("SELECT COUNT(*) FROM orders")
+        total_orders = cursor_local.fetchone()[0]
+        cursor_local.execute("SELECT SUM(total) FROM orders")
+        total_revenue = cursor_local.fetchone()[0] or 0
+        cursor_local.execute("SELECT items_json FROM orders")
+        all_items = cursor_local.fetchall()
+
+        counts = {}
+        for (items_json,) in all_items:
+            items = json.loads(items_json)
+            for i in items:
+                key = i["flavor"]
+                counts[key] = counts.get(key, 0) + 1
+        top5 = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:5]
+        top5_lines = [f"{flavor}: {qty} шт." for flavor, qty in top5] or ["Пока нет данных."]
+
+        report = (
+            f"📊 Статистика магазина:\n"
+            f"Всего заказов: {total_orders}\n"
+            f"Общая выручка: {total_revenue}₺\n\n"
+            f"Топ-5 продаваемых вкусов:\n" + "\n".join(top5_lines)
+        )
+        cursor_local.close()
+        conn_local.close()
+
+        bot.send_message(chat_id, report)
         return
 
 # —————————————————————————————————————————————————————————————
