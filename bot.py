@@ -30,7 +30,7 @@ bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 #   2. Пути к JSON-файлам и БД
 # —————————————————————————————————————————————————————————————
 MENU_PATH = "/data/menu.json"
-LANG_PATH = "languages.json"
+LANG_PATH = "/data/languages.json"
 DB_PATH = "/data/database.db"
 
 
