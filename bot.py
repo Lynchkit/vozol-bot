@@ -6,6 +6,7 @@ import sqlite3
 import datetime
 import random
 import string
+import re
 from apscheduler.schedulers.background import BackgroundScheduler
 import telebot
 from telebot import types
@@ -172,7 +173,6 @@ def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
                 label = f"{cat} (нет в наличии)"
         else:
             label = cat
-        # Кнопка содержит точное имя категории
         kb.add(types.InlineKeyboardButton(text=label, callback_data=f"category|{cat}"))
     kb.add(types.InlineKeyboardButton(text=f"🛒 {t(chat_id,'view_cart')}", callback_data="view_cart"))
     kb.add(types.InlineKeyboardButton(text=f"🗑️ {t(chat_id,'clear_cart')}", callback_data="clear_cart"))
@@ -185,16 +185,24 @@ def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
 def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=1)
     price = menu[cat]["price"]
-    # Дебаг: вывести содержимое списка
-    print("DEBUG: get_inline_flavors for cat:", repr(cat), "; flavors:", menu[cat]["flavors"])
+
+    # DEBUG: выводим текущее состояние списка вкусов в консоль
+    print(f"DEBUG: now flavors for '{cat}':")
+    for itm in menu[cat]["flavors"]:
+        print("    →", itm)
+
     for item in menu[cat]["flavors"]:
-        if item.get("stock", 0) > 0:
+        stock = item.get("stock", 0)
+        # Если stock — строка, а не int, попробуем привести
+        if isinstance(stock, str) and stock.isdigit():
+            stock = int(stock)
+            item["stock"] = stock
+
+        if isinstance(stock, int) and stock > 0:
             emoji = item.get("emoji", "")
             flavor_name = item["flavor"]
-            # Используем короткое тире "-" вместо длинного "—"
-            label = f"{emoji} {flavor_name} - {price}₺ [{item['stock']}шт]"
+            label = f"{emoji} {flavor_name} - {price}₺ [{stock}шт]"
             kb.add(types.InlineKeyboardButton(text=label, callback_data=f"flavor|{cat}|{flavor_name}"))
-    # Кнопка «⬅️ Назад к категориям»
     kb.add(types.InlineKeyboardButton(text=f"⬅️ {t(chat_id,'back_to_categories')}", callback_data="go_back_to_categories"))
     return kb
 
@@ -497,7 +505,6 @@ def handle_flavor(call):
     bot.send_message(chat_id, caption, parse_mode="HTML")
 
     kb = types.InlineKeyboardMarkup(row_width=1)
-    # Используем короткое тире "-" в тексте кнопки
     kb.add(
         types.InlineKeyboardButton(
             text=f"➕ {t(chat_id,'add_to_cart')}",
@@ -1082,7 +1089,6 @@ def cmd_change(message):
         "edit_index": None,
         "edit_cart_phase": None
     })
-    # Снимаем Reply-клавиатуру (если была) и отображаем меню редактирования
     bot.send_message(chat_id, "Menu editing: choose action", reply_markup=edit_action_keyboard())
     user_data[chat_id] = data
 
@@ -1314,7 +1320,6 @@ def universal_handler(message):
                 data['edit_phase'] = None
                 data['edit_cat'] = None
                 data['edit_flavor'] = None
-                # Снимаем любую Reply-клавиатуру и возвращаемся в главное меню
                 bot.send_message(
                     chat_id,
                     "Editing cancelled.",
@@ -1625,7 +1630,6 @@ def universal_handler(message):
                 stripped = line.strip()
                 if not stripped or stripped.lower() == "(empty)":
                     continue
-                # Парсим по короткому дефису '-'
                 if '-' in stripped:
                     parts = stripped.rsplit('-', 1)
                 else:
@@ -1676,8 +1680,11 @@ def universal_handler(message):
                     "Please send the full updated flavor list for this category, one per line, in the format:\n"
                     "<code>Name - quantity</code>\n"
                     "Example:\n"
-                    "Peach ice - 2\n"
-                    "Strawberry kivi - 3\n\n"
+                    "Mango ice - 1\n"
+                    "Lemon lime - 1\n"
+                    "Dragon strawberry - 1\n"
+                    "Juicy peach ice - 1\n"
+                    "Blueberry storm - 2\n\n"
                     "If you want to clear all flavors, send “(empty)”.",
                     parse_mode="HTML",
                     reply_markup=kb
@@ -1702,18 +1709,18 @@ def universal_handler(message):
             lines = text.strip().splitlines()
             new_flavors = []
             for line in lines:
-                stripped = line.strip()
-                if not stripped or stripped.lower() == "(empty)":
+                stripped_line = line.strip()
+                if not stripped_line or stripped_line.lower() == "(empty)":
                     continue
-                if '-' in stripped:
-                    parts = stripped.rsplit('-', 1)
-                else:
+
+                # Ловим любые виды тире: ASCII, en-dash, em-dash
+                m = re.match(r'^(.*?)\s*[-–—]\s*(\d+)\s*$', stripped_line)
+                if not m:
                     continue
-                name = parts[0].strip()
-                qty_part = parts[-1].strip()
-                if not qty_part.isdigit() or not name:
-                    continue
-                qty = int(qty_part)
+
+                name = m.group(1).strip()
+                qty = int(m.group(2))
+
                 new_flavors.append({
                     "emoji": "",
                     "flavor": name,
@@ -2204,7 +2211,6 @@ def universal_handler(message):
             if it.get("stock", 0) > 0:
                 emoji = it.get("emoji", "")
                 flavor0 = it["flavor"]
-                # Ждём короткий дефис '-' между flavor и price
                 label = f"{emoji} {flavor0} - {price}₺ [{it['stock']} шт]"
                 if text == label:
                     data['cart'].append({'category': cat0, 'flavor': flavor0, 'price': price})
