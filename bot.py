@@ -236,7 +236,7 @@ def edit_action_keyboard() -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add("➕ Add Category", "➖ Remove Category")
     kb.add("💲 Fix Price", "ALL IN", "🔄 Actual Flavor")
-    kb.add("🖼️ Add Category Picture")
+    kb.add("🖼️ Add Category Picture", "Set Category Flavor to 0")
     kb.add("⬅️ Back", "❌ Cancel")
     return kb
 
@@ -1386,6 +1386,16 @@ def universal_handler(message):
                 user_data[chat_id] = data
                 return
 
+            if text == "Set Category Flavor to 0":
+                data['edit_phase'] = 'choose_cat_zero'
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                for cat_key in menu:
+                    kb.add(cat_key)
+                kb.add("⬅️ Back")
+                bot.send_message(chat_id, "Select category to set all flavors to zero stock:", reply_markup=kb)
+                user_data[chat_id] = data
+                return
+
             bot.send_message(chat_id, "Choose action:", reply_markup=edit_action_keyboard())
             return
 
@@ -1465,7 +1475,31 @@ def universal_handler(message):
             user_data[chat_id] = data
             return
 
-        # 5) Удалить категорию
+        # 5) Установить все вкусы категории на ноль
+        if phase == 'choose_cat_zero':
+            if text == "⬅️ Back":
+                data['edit_phase'] = 'choose_action'
+                bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
+                user_data[chat_id] = data
+                return
+
+            if text in menu:
+                cat0 = text
+                for itm in menu[cat0]["flavors"]:
+                    itm["stock"] = 0
+                with open(MENU_PATH, "w", encoding="utf-8") as f:
+                    json.dump(menu, f, ensure_ascii=False, indent=2)
+                bot.send_message(chat_id, f"All flavors in category «{cat0}» set to 0 stock.", reply_markup=edit_action_keyboard())
+                data.pop('edit_cat', None)
+                data['edit_phase'] = 'choose_action'
+                user_data[chat_id] = data
+            else:
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("⬅️ Back")
+                bot.send_message(chat_id, "Select valid category to zero out:", reply_markup=kb)
+            return
+
+        # 6) Удалить категорию
         if phase == 'remove_category':
             if text == "⬅️ Back":
                 data['edit_phase'] = 'choose_action'
@@ -1486,7 +1520,7 @@ def universal_handler(message):
                 bot.send_message(chat_id, "Select valid category.", reply_markup=kb)
             return
 
-        # 6) Выбрать категорию для Fix Price
+        # 7) Выбрать категорию для Fix Price
         if phase == 'choose_fix_price_cat':
             if text == "⬅️ Back":
                 data['edit_phase'] = 'choose_action'
@@ -1507,7 +1541,7 @@ def universal_handler(message):
                 bot.send_message(chat_id, "Choose category from the list.", reply_markup=kb)
             return
 
-        # 7) Ввод новой цены для категории
+        # 8) Ввод новой цены для категории
         if phase == 'enter_new_price':
             if text == "⬅️ Back":
                 data.pop('edit_cat', None)
@@ -1535,7 +1569,7 @@ def universal_handler(message):
             user_data[chat_id] = data
             return
 
-        # 8) Выбрать категорию для ALL IN
+        # 9) Выбрать категорию для ALL IN
         if phase == 'choose_all_in_cat':
             if text == "⬅️ Back":
                 data['edit_phase'] = 'choose_action'
@@ -1565,7 +1599,7 @@ def universal_handler(message):
                 bot.send_message(chat_id, "Choose category from the list.", reply_markup=kb)
             return
 
-        # 9) Заменить полный список вкусов (ALL IN)
+        # 10) Заменить полный список вкусов (ALL IN)
         if phase == 'replace_all_in':
             if text == "⬅️ Back":
                 data.pop('edit_cat', None)
@@ -1598,7 +1632,7 @@ def universal_handler(message):
             user_data[chat_id] = data
             return
 
-        # 10) Выбрать категорию для Actual Flavor
+        # 11) Выбрать категорию для Actual Flavor
         if phase == 'choose_cat_actual':
             if text == "⬅️ Back":
                 data['edit_phase'] = 'choose_action'
@@ -1623,7 +1657,7 @@ def universal_handler(message):
                 bot.send_message(chat_id, "Choose category from the list.", reply_markup=kb)
             return
 
-        # 11) Выбрать вкус для Actual Flavor
+        # 12) Выбрать вкус для Actual Flavor
         if phase == 'choose_flavor_actual':
             if text == "⬅️ Back":
                 data.pop('edit_cat', None)
@@ -1648,7 +1682,7 @@ def universal_handler(message):
                 user_data[chat_id] = data
             return
 
-        # 12) Ввод актуального количества для Actual Flavor
+        # 13) Ввод актуального количества для Actual Flavor
         if phase == 'enter_actual_qty':
             if text == "⬅️ Back":
                 data.pop('edit_flavor', None)
