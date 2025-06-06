@@ -2301,5 +2301,6 @@ def universal_handler(message):
 #   36. Запуск бота
 # ------------------------------------------------------------------------
 if __name__ == "__main__":
-    bot.delete_webhook()                      # ← снимаем любой webhook
+    bot.delete_webhook()                 # снимаем любой webhook
+    time.sleep(2)                        # даём Telegram 2 секунды на сброс предыдущего polling/webhook
     bot.polling(skip_pending=True, none_stop=True)
