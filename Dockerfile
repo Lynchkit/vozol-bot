@@ -15,30 +15,23 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # -----------------------------------------------------------------------------
-# 4) Копируем код бота и шаблоны JSON-файлов внутрь образа
+# 4) Копируем код бота и шаблон menu.json внутрь образа
 #
-#    - /app/bot.py                   — основной скрипт бота
-#    - /app/_menu_template.json      — шаблон menu.json
-#    - /app/_languages_template.json — шаблон languages.json
+#    - /app/bot.py   — основной скрипт бота
+#    - /app/menu.json — ваш готовый menu.json (будет использоваться как шаблон)
 # -----------------------------------------------------------------------------
-COPY bot.py                     /app/bot.py
-COPY menu.json                  /app/_menu_template.json
-COPY languages.json             /app/_languages_template.json
+COPY bot.py      /app/bot.py
+COPY menu.json   /app/menu.json
 
 # -----------------------------------------------------------------------------
-# 5) ENTRYPOINT: при старте контейнера проверяем, есть ли в /data
-#    файлы menu.json и languages.json; если их нет — копируем шаблоны.
-#    После этого запускаем бота.
+# 5) ENTRYPOINT: при старте контейнера проверяем, есть ли в /data/menu.json;
+#    если его нет — копируем из /app/menu.json. После этого запускаем бота.
 #
 #    Railway автоматически монтирует /data как персистентный том, так что
-#    всё, что бот запишет в /data/menu.json или /data/languages.json, сохранится
-#    между деплоями. 
+#    всё, что бот запишет в /data/menu.json, сохранится между деплоями.
 # -----------------------------------------------------------------------------
 ENTRYPOINT [ "sh", "-c", "\
     if [ ! -f /data/menu.json ]; then \
-      cp /app/_menu_template.json /data/menu.json; \
-    fi && \
-    if [ ! -f /data/languages.json ]; then \
-      cp /app/_languages_template.json /data/languages.json; \
+      cp /app/menu.json /data/menu.json; \
     fi && \
     python /app/bot.py" ]
