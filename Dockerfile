@@ -21,7 +21,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 #    - /app/menu.json — ваш готовый menu.json (будет использоваться как шаблон)
 # -----------------------------------------------------------------------------
 COPY bot.py      /app/bot.py
-COPY data/menu.json   /app/menu.json
+COPY menu.json   /app/menu.json
 
 # -----------------------------------------------------------------------------
 # 5) ENTRYPOINT: при старте контейнера проверяем, есть ли в /data/menu.json;
