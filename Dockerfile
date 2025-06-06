@@ -4,42 +4,46 @@
 FROM python:3.11-slim
 
 # -----------------------------------------------------------------------------
-# 2) Переключаемся в рабочую директорию /app внутри контейнера
+# 2) Рабочая директория /app
 # -----------------------------------------------------------------------------
 WORKDIR /app
 
 # -----------------------------------------------------------------------------
-# 3) Копируем файл с зависимостями и устанавливаем их
+# 3) Копируем requirements и ставим зависимости
 # -----------------------------------------------------------------------------
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # -----------------------------------------------------------------------------
-# 4) Копируем код бота и шаблоны JSON внутрь образа
+# 4) Копируем код бота плюс (опциональные) шаблоны JSON
 #
-#    - /app/bot.py        — основной скрипт бота
-#    - /app/menu.json     — шаблон menu.json
-#    - /app/languages.json — шаблон languages.json
+#    Если в репозитории есть menu.json / languages.json — они попадут в /app/
+#    Если их нет, просто пропустится копирование, но ENTRYPOINT их создаст.
 # -----------------------------------------------------------------------------
 COPY bot.py            /app/bot.py
-COPY menu.json         /app/menu.json
-COPY languages.json    /app/languages.json
+# Если у вас есть готовый шаблон menu.json, раскомментируйте следующую строку:
+# COPY menu.json      /app/menu.json
+# Если у вас есть готовый шаблон languages.json, раскомментируйте эту:
+# COPY languages.json /app/languages.json
 
 # -----------------------------------------------------------------------------
-# 5) ENTRYPOINT: при старте контейнера проверяем, есть ли в /data/menu.json
-#    и /data/languages.json; если их нет — копируем из /app/.
-#    После этого запускаем бота.
-#
-#    Railway автоматически монтирует /data как персистентный том, так что
-#    всё, что бот запишет в /data/menu.json и /data/languages.json, сохранится
-#    между деплоями.
+# 5) ENTRYPOINT: создаём /data, инициализируем файл menu.json и languages.json
+#    (копируем из /app, если там есть, иначе создаём пустой "{}"), затем запускаем bot.py
 # -----------------------------------------------------------------------------
 ENTRYPOINT [ "sh", "-c", "\
     mkdir -p /data && \
     if [ ! -f /data/menu.json ]; then \
-      cp /app/menu.json /data/menu.json; \
+      if [ -f /app/menu.json ]; then \
+        cp /app/menu.json /data/menu.json; \
+      else \
+        echo '{}' > /data/menu.json; \
+      fi; \
     fi && \
     if [ ! -f /data/languages.json ]; then \
-      cp /app/languages.json /data/languages.json; \
+      if [ -f /app/languages.json ]; then \
+        cp /app/languages.json /data/languages.json; \
+      else \
+        echo '{}' > /data/languages.json; \
+      fi; \
     fi && \
     python /app/bot.py" ]
