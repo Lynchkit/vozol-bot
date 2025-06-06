@@ -1380,7 +1380,7 @@ def universal_handler(message):
                 for cat_key in menu:
                     kb.add(cat_key)
                 kb.add("⬅️ Back", "❌ Cancel")
-                bot.send_message(chat_id, "Select category to update full flavor list:", reply_markup=kb)
+                bot.send_message(chat_id, "Select category to update individual flavor stock:", reply_markup=kb)
                 user_data[chat_id] = data
                 return
 
@@ -1660,27 +1660,38 @@ def universal_handler(message):
                 return
 
             if text in menu:
+                # Сохраняем выбранную категорию и переходим к выбору вкуса
                 data['edit_cat'] = text
-                current_list = []
-                for itm in menu[text]["flavors"]:
-                    current_list.append(f"{itm['flavor']} - {itm.get('stock',0)}")
-                joined = "\n".join(current_list) if current_list else "(empty)"
+                data['edit_phase'] = 'choose_flavor_actual'
+
+                # Формируем клавиатуру с теми вкусами, в которых stock > 0
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                any_in_stock = False
+                for itm in menu[text]["flavors"]:
+                    stock = itm.get("stock", 0)
+                    if isinstance(stock, str) and stock.isdigit():
+                        stock = int(stock)
+                        itm["stock"] = stock
+                    if isinstance(stock, int) and stock > 0:
+                        any_in_stock = True
+                        kb.add(f"{itm['flavor']} (current: {stock})")
+                if not any_in_stock:
+                    bot.send_message(
+                        chat_id,
+                        f"No flavors with stock > 0 in category '{text}'.",
+                        reply_markup=edit_action_keyboard()
+                    )
+                    data.pop('edit_cat', None)
+                    data['edit_phase'] = 'choose_action'
+                    user_data[chat_id] = data
+                    return
+
                 kb.add("⬅️ Back", "❌ Cancel")
                 bot.send_message(
                     chat_id,
-                    f"Current flavors in category '{text}':\n\n{joined}\n\n"
-                    "Please send the full updated flavor list for this category, one per line, in the format:\n"
-                    "<code>Name - quantity</code>\n"
-                    "Example:\n"
-                    "Mango ice - 1\n"
-                    "Lemon lime - 1\n"
-                    "Raspberry apple watermelon pineapple - 2\n"
-                    "If you want to clear all flavors, send “(empty)”.",
-                    parse_mode="HTML",
+                    f"Select a flavor from category '{text}' to update its stock:",
                     reply_markup=kb
                 )
-                data['edit_phase'] = 'replace_actual_flavors'
                 user_data[chat_id] = data
             else:
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -1688,8 +1699,8 @@ def universal_handler(message):
                 bot.send_message(chat_id, "Choose a valid category from the list:", reply_markup=kb)
             return
 
-        # 12) Фаза 'replace_actual_flavors' — получаем многострочный ввод и заменяем список
-        if phase == 'replace_actual_flavors':
+        # 12) Фаза 'choose_flavor_actual' — получаем выбор одного вкуса и запрашиваем новую qty
+        if phase == 'choose_flavor_actual':
             if text in ["⬅️ Back", "❌ Cancel"]:
                 data.pop('edit_cat', None)
                 data['edit_phase'] = 'choose_action'
@@ -1697,51 +1708,87 @@ def universal_handler(message):
                 user_data[chat_id] = data
                 return
 
-            lines = text.strip().splitlines()
-            new_flavors = []
-            for line in lines:
-                stripped_line = line.strip()
-                if not stripped_line or stripped_line.lower() == "(empty)":
-                    continue
-
-                # Разбиваем по последнему ASCII-дефису '-'
-                parts = stripped_line.rsplit('-', 1)
-                if len(parts) != 2:
-                    continue
-
-                name_part = parts[0].strip()
-                qty_part  = parts[1].strip()
-                if not qty_part.isdigit():
-                    continue
-
-                name = name_part
-                qty  = int(qty_part)
-
-                new_flavors.append({
-                    "emoji": "",
-                    "flavor": name,
-                    "stock": qty,
-                    "tags": [],
-                    "description_ru": "",
-                    "description_en": "",
-                    "photo_url": ""
-                })
-
             cat0 = data.get('edit_cat')
-            if cat0:
-                menu[cat0]["flavors"] = new_flavors
-                # Сохраняем сразу в JSON, чтобы изменения не потерялись
+            if not cat0 or cat0 not in menu:
+                bot.send_message(chat_id, "Error: category not found.", reply_markup=edit_action_keyboard())
+                data.pop('edit_cat', None)
+                data['edit_phase'] = 'choose_action'
+                user_data[chat_id] = data
+                return
+
+            # Пытаемся сопоставить введённый текст с форматом "Flavor (current: X)"
+            chosen_flavor = None
+            for itm in menu[cat0]["flavors"]:
+                name = itm["flavor"]
+                display_label = f"{name} (current: {itm.get('stock',0)})"
+                if text == display_label:
+                    chosen_flavor = name
+                    break
+
+            if not chosen_flavor:
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                for itm in menu[cat0]["flavors"]:
+                    if itm.get("stock", 0) > 0:
+                        kb.add(f"{itm['flavor']} (current: {itm['stock']})")
+                kb.add("⬅️ Back", "❌ Cancel")
+                bot.send_message(chat_id, "Select a valid flavor (in stock > 0):", reply_markup=kb)
+                return
+
+            # Сохраняем выбранный вкус и просим ввести новую quantity
+            data['edit_flavor'] = chosen_flavor
+            data['edit_phase'] = 'enter_actual_qty'
+            bot.send_message(
+                chat_id,
+                f"Enter the new stock quantity for '{chosen_flavor}':",
+                reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                          .add("⬅️ Back", "❌ Cancel")
+            )
+            user_data[chat_id] = data
+            return
+
+        # 13) Фаза 'enter_actual_qty' — получаем новую qty и обновляем stock
+        if phase == 'enter_actual_qty':
+            if text in ["⬅️ Back", "❌ Cancel"]:
+                data.pop('edit_cat', None)
+                data.pop('edit_flavor', None)
+                data['edit_phase'] = 'choose_action'
+                bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
+                user_data[chat_id] = data
+                return
+
+            # Проверяем, что введён неотрицательный integer
+            if not text.isdigit():
+                bot.send_message(chat_id, "Invalid number. Please enter a non-negative integer:")
+                return
+
+            new_qty = int(text)
+            cat0 = data.get('edit_cat')
+            flavor0 = data.get('edit_flavor')
+
+            # Находим и обновляем соответствующий объект вкуса
+            updated = False
+            for itm in menu.get(cat0, {}).get("flavors", []):
+                if itm["flavor"] == flavor0:
+                    itm["stock"] = new_qty
+                    updated = True
+                    break
+
+            if not updated:
+                bot.send_message(chat_id, f"Error: flavor '{flavor0}' not found in '{cat0}'.", reply_markup=edit_action_keyboard())
+            else:
+                # Сохраняем JSON на диск
                 with open(MENU_PATH, "w", encoding="utf-8") as f:
                     json.dump(menu, f, ensure_ascii=False, indent=2)
+
                 bot.send_message(
                     chat_id,
-                    f"✅ Full flavor list for category '{cat0}' has been updated.",
+                    f"Stock for '{flavor0}' in category '{cat0}' has been updated to {new_qty}.",
                     reply_markup=edit_action_keyboard()
                 )
-            else:
-                bot.send_message(chat_id, "Error: category not found.", reply_markup=edit_action_keyboard())
 
+            # Очищаем данные и возвращаемся в главное меню редактирования
             data.pop('edit_cat', None)
+            data.pop('edit_flavor', None)
             data['edit_phase'] = 'choose_action'
             user_data[chat_id] = data
             return
@@ -1756,7 +1803,7 @@ def universal_handler(message):
     # Остальной universal_handler (cart-функции, /history, /stats, /help и т.д.)
     # ... (тот же код, что и ранее, без изменений) ...
 
-    # ——— Режим редактирования корзины —
+    # ——— Режим редактирования корзины — (оставляем без изменений) ———
     if data.get('edit_cart_phase'):
         if data['edit_cart_phase'] == 'choose_action':
             if text == t(chat_id, "back"):
@@ -2077,7 +2124,7 @@ def universal_handler(message):
                 f"📱 Contact: {data.get('contact', '—')}\n"
                 f"💬 Comment: {comment_en}"
             )
-            bot.send_message(GROUP_CHAT_ID, full_en, parse_mode=None)
+            bot.send_message(GROUP_CHAT_ID, full_en)
 
             bot.send_message(
                 chat_id,
