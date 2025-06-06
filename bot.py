@@ -2305,6 +2305,9 @@ def universal_handler(message):
 #   36. Запуск бота
 # ------------------------------------------------------------------------
 if __name__ == "__main__":
-    bot.delete_webhook()                 # снимаем любой webhook
-    time.sleep(2)                        # даём Telegram 2 секунды на сброс предыдущего polling/webhook
+    # Удаляем любой существующий вебхук и сбрасываем висящие обновления
+    bot.delete_webhook(drop_pending_updates=True)
+    # Дадим Telegram чуть-чуть времени, чтобы гарантированно обработать deleteWebhook
+    time.sleep(2)
+    # Запускаем polling, пропуская старые (если остались) апдейты
     bot.polling(skip_pending=True, none_stop=True)
