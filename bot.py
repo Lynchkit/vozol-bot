@@ -739,8 +739,10 @@ def handle_finish_order(call):
         bot.send_message(chat_id, t(chat_id, "cart_empty"))
         return
 
+    # Считаем полную сумму без скидок:
     total_try = sum(item["price"] for item in cart)
 
+    # Смотрим, сколько баллов у пользователя:
     conn_local = get_db_connection()
     cursor_local = conn_local.cursor()
     cursor_local.execute("SELECT points FROM users WHERE chat_id = ?", (chat_id,))
@@ -751,29 +753,41 @@ def handle_finish_order(call):
     user_points = row[0] if row else 0
 
     if user_points > 0:
+        # Максимально допустимое списание = min(баллы, total_try)
         max_points = min(user_points, total_try)
-        points_try = user_points * 1
-        msg = (
-            t(chat_id, "points_info").format(points=user_points, points_try=points_try)
-            + "\n"
-            + t(chat_id, "enter_points").format(max_points=max_points)
+
+        # Делаем небольшой “превью”:
+        #  • Показываем, сколько у пользователя баллов
+        #  • Если он спишет максимальное количество, сумма станет total_try – max_points
+        #  • Просим ввести, сколько он реально хочет списать (не больше max_points)
+
+        preview_text = (
+            f"🛒 Ваш заказ:\n"
+            + "\n".join(f"{item['category']}: {item['flavor']} — {item['price']}₺" for item in cart)
+            + f"\n\n<b>Итоговая сумма без скидки:</b> {total_try}₺\n"
+            f"У вас накоплено: {user_points} баллов (1 балл = 1₺).\n"
+            f"Максимально можно списать: {max_points} баллов (тогда сумма будет {total_try - max_points}₺).\n\n"
+            "Сколько баллов вы хотите списать? (введите число, не больше указанного)"
         )
-        bot.send_message(chat_id, msg, reply_markup=types.ReplyKeyboardRemove())
+        bot.send_message(chat_id, preview_text, parse_mode="HTML", reply_markup=types.ReplyKeyboardRemove())
+
         data["wait_for_points"] = True
         data["temp_total_try"] = total_try
         data["temp_user_points"] = user_points
+        user_data[chat_id] = data
     else:
+        # Если у пользователя нет баллов, сразу спрашиваем адрес:
         kb = address_keyboard()
         bot.send_message(
             chat_id,
-            f"🛒 {t(chat_id, 'view_cart')}:\n\n" +
-            "\n".join(f"{item['category']}: {item['flavor']} — {item['price']}₺" for item in cart) +
-            f"\n\n{t(chat_id, 'enter_address')}",
+            f"🛒 Ваш заказ:\n"
+            + "\n".join(f"{item['category']}: {item['flavor']} — {item['price']}₺" for item in cart)
+            + f"\n\nИтоговая сумма: {total_try}₺\n\n"
+            + t(chat_id, "enter_address"),
             reply_markup=kb
         )
         data["wait_for_address"] = True
-
-    user_data[chat_id] = data
+        user_data[chat_id] = data
 
 # ------------------------------------------------------------------------
 #   25. Handler: ввод количества баллов для списания
