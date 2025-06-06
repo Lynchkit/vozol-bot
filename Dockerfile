@@ -1,49 +1,48 @@
 # -----------------------------------------------------------------------------
-# 1) Базовый образ с Python 3.11
+# 1) Базовый образ c Python 3.11
 # -----------------------------------------------------------------------------
 FROM python:3.11-slim
 
 # -----------------------------------------------------------------------------
-# 2) Рабочая директория /app
+# 2) Будем работать в /usr/src/app (Railway монтирует репозиторий в /app, 
+#    поэтому /usr/src/app останется свободным внутри образа)
 # -----------------------------------------------------------------------------
-WORKDIR /app
+WORKDIR /usr/src/app
 
 # -----------------------------------------------------------------------------
-# 3) Копируем requirements и ставим зависимости
+# 3) Копируем зависимости и устанавливаем их
 # -----------------------------------------------------------------------------
-COPY requirements.txt .
+COPY requirements.txt ./ 
 RUN pip install --no-cache-dir -r requirements.txt
 
 # -----------------------------------------------------------------------------
-# 4) Копируем код бота плюс (опциональные) шаблоны JSON
-#
-#    Если в репозитории есть menu.json / languages.json — они попадут в /app/
-#    Если их нет, просто пропустится копирование, но ENTRYPOINT их создаст.
+# 4) Копируем код бота и шаблоны JSON в /usr/src/app
 # -----------------------------------------------------------------------------
-COPY bot.py            /app/bot.py
-# Если у вас есть готовый шаблон menu.json, раскомментируйте следующую строку:
-# COPY menu.json      /app/menu.json
-# Если у вас есть готовый шаблон languages.json, раскомментируйте эту:
-# COPY languages.json /app/languages.json
+COPY bot.py            ./bot.py
+COPY menu.json         ./menu.json
+COPY languages.json    ./languages.json
 
 # -----------------------------------------------------------------------------
-# 5) ENTRYPOINT: создаём /data, инициализируем файл menu.json и languages.json
-#    (копируем из /app, если там есть, иначе создаём пустой "{}"), затем запускаем bot.py
+# 5) ENTRYPOINT:
+#    — работаем с /data (Railway монтирует туда volume автоматически);
+#    — если в /data нет menu.json/languages.json, копируем их из /usr/src/app,
+#      иначе создаём пустые файловки;
+#    — запускаем бота из /usr/src/app
 # -----------------------------------------------------------------------------
 ENTRYPOINT [ "sh", "-c", "\
     mkdir -p /data && \
     if [ ! -f /data/menu.json ]; then \
-      if [ -f /app/menu.json ]; then \
-        cp /app/menu.json /data/menu.json; \
+      if [ -f /usr/src/app/menu.json ]; then \
+        cp /usr/src/app/menu.json /data/menu.json; \
       else \
         echo '{}' > /data/menu.json; \
       fi; \
     fi && \
     if [ ! -f /data/languages.json ]; then \
-      if [ -f /app/languages.json ]; then \
-        cp /app/languages.json /data/languages.json; \
+      if [ -f /usr/src/app/languages.json ]; then \
+        cp /usr/src/app/languages.json /data/languages.json; \
       else \
         echo '{}' > /data/languages.json; \
       fi; \
     fi && \
-    python /app/bot.py" ]
+    python /usr/src/app/bot.py" ]
