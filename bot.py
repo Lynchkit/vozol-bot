@@ -96,7 +96,7 @@ translations = load_json(LANG_PATH)
 # ------------------------------------------------------------------------
 #   6. Хранилище данных пользователей (in-memory)
 # ------------------------------------------------------------------------
-user_data = {}
+user_data = {}  # структура объяснялась ранее
 
 # ------------------------------------------------------------------------
 #   7. Утилиты
@@ -183,18 +183,27 @@ def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
 #   10. Inline-кнопки для выбора вкусов
 # ------------------------------------------------------------------------
 def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
+    # === ОТЛАДКА ===
+    print(f"DEBUG: вызван get_inline_flavors для категории '{cat}'")
+    print(f"DEBUG: menu['{cat}']['flavors'] = {menu[cat]['flavors']}")
+    # ================
+
     kb = types.InlineKeyboardMarkup(row_width=1)
     price = menu[cat]["price"]
+
     for item in menu[cat]["flavors"]:
         stock = item.get("stock", 0)
+        # Если stock хранится как строка, но состоит из цифр — приводим к int
         if isinstance(stock, str) and stock.isdigit():
             stock = int(stock)
             item["stock"] = stock
+
         if isinstance(stock, int) and stock > 0:
             emoji = item.get("emoji", "")
             flavor_name = item["flavor"]
             label = f"{emoji} {flavor_name} - {price}₺ [{stock}шт]"
             kb.add(types.InlineKeyboardButton(text=label, callback_data=f"flavor|{cat}|{flavor_name}"))
+
     kb.add(types.InlineKeyboardButton(text=f"⬅️ {t(chat_id,'back_to_categories')}", callback_data="go_back_to_categories"))
     return kb
 
@@ -240,6 +249,7 @@ def edit_action_keyboard() -> types.ReplyKeyboardMarkup:
 def send_weekly_digest():
     conn_local = get_db_connection()
     cursor_local = conn_local.cursor()
+
     one_week_ago = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).isoformat()
     cursor_local.execute("SELECT items_json FROM orders WHERE timestamp >= ?", (one_week_ago,))
     recent = cursor_local.fetchall()
@@ -259,6 +269,7 @@ def send_weekly_digest():
     users = cursor_local.fetchall()
     for (uid,) in users:
         bot.send_message(uid, text)
+
     cursor_local.close()
     conn_local.close()
 
@@ -272,6 +283,7 @@ scheduler.start()
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     chat_id = message.chat.id
+
     if chat_id not in user_data:
         user_data[chat_id] = {
             "lang": None,
@@ -300,16 +312,26 @@ def cmd_start(message):
             "temp_review_rating": 0
         }
     data = user_data[chat_id]
+
     # Сбрасываем всё, кроме lang
     data.update({
-        "cart": [], "current_category": None,
-        "wait_for_points": False, "wait_for_address": False,
-        "wait_for_contact": False, "wait_for_comment": False,
-        "address": "", "contact": "", "comment": "",
-        "pending_discount": 0, "pending_points_spent": 0,
-        "temp_total_try": 0, "temp_user_points": 0,
-        "edit_phase": None, "edit_cat": None,
-        "edit_flavor": None, "edit_index": None,
+        "cart": [],
+        "current_category": None,
+        "wait_for_points": False,
+        "wait_for_address": False,
+        "wait_for_contact": False,
+        "wait_for_comment": False,
+        "address": "",
+        "contact": "",
+        "comment": "",
+        "pending_discount": 0,
+        "pending_points_spent": 0,
+        "temp_total_try": 0,
+        "temp_user_points": 0,
+        "edit_phase": None,
+        "edit_cat": None,
+        "edit_flavor": None,
+        "edit_index": None,
         "edit_cart_phase": None,
         "awaiting_review_flavor": None,
         "awaiting_review_rating": False,
@@ -344,9 +366,6 @@ def cmd_start(message):
     cursor_local.close()
     conn_local.close()
 
-    # Удаляем любую оставшуюся Reply-клавиатуру
-    bot.send_message(chat_id, " ", reply_markup=types.ReplyKeyboardRemove())
-
     bot.send_message(
         chat_id,
         t(chat_id, "choose_language"),
@@ -360,17 +379,27 @@ def cmd_start(message):
 def handle_set_lang(call):
     chat_id = call.from_user.id
     _, lang_code = call.data.split("|", 1)
+
     if chat_id not in user_data:
         user_data[chat_id] = {
             "lang": lang_code,
-            "cart": [], "current_category": None,
-            "wait_for_points": False, "wait_for_address": False,
-            "wait_for_contact": False, "wait_for_comment": False,
-            "address": "", "contact": "", "comment": "",
-            "pending_discount": 0, "pending_points_spent": 0,
-            "temp_total_try": 0, "temp_user_points": 0,
-            "edit_phase": None, "edit_cat": None,
-            "edit_flavor": None, "edit_index": None,
+            "cart": [],
+            "current_category": None,
+            "wait_for_points": False,
+            "wait_for_address": False,
+            "wait_for_contact": False,
+            "wait_for_comment": False,
+            "address": "",
+            "contact": "",
+            "comment": "",
+            "pending_discount": 0,
+            "pending_points_spent": 0,
+            "temp_total_try": 0,
+            "temp_user_points": 0,
+            "edit_phase": None,
+            "edit_cat": None,
+            "edit_flavor": None,
+            "edit_index": None,
             "edit_cart_phase": None,
             "awaiting_review_flavor": None,
             "awaiting_review_rating": False,
@@ -382,10 +411,6 @@ def handle_set_lang(call):
         user_data[chat_id]["lang"] = lang_code
 
     bot.answer_callback_query(call.id, t(chat_id, "lang_set"))
-
-    # Удаляем Reply-клавиатуру перед показом Inline
-    bot.send_message(call.from_user.id, " ", reply_markup=types.ReplyKeyboardRemove())
-
     bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
 
     conn_local = get_db_connection()
@@ -417,6 +442,12 @@ def handle_set_lang(call):
 def handle_category(call):
     chat_id = call.from_user.id
     _, cat = call.data.split("|", 1)
+
+    # === ОТЛАДКА ===
+    print(f"DEBUG: нажата категория → '{cat}'")
+    print(f"DEBUG: ключи menu сейчас = {list(menu.keys())}")
+    # ================
+
     if cat not in menu:
         bot.answer_callback_query(call.id, t(chat_id, "error_invalid"))
         return
@@ -444,8 +475,6 @@ def handle_category(call):
 def handle_go_back_to_categories(call):
     chat_id = call.from_user.id
     bot.answer_callback_query(call.id)
-    # Убираем Reply-клавиатуру перед показом Inline
-    bot.send_message(chat_id, " ", reply_markup=types.ReplyKeyboardRemove())
     bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
 
 # ------------------------------------------------------------------------
@@ -455,6 +484,7 @@ def handle_go_back_to_categories(call):
 def handle_flavor(call):
     _, cat, flavor = call.data.split("|", 2)
     chat_id = call.from_user.id
+
     if cat not in menu:
         bot.answer_callback_query(call.id, t(chat_id, "error_invalid"))
         return
@@ -465,6 +495,7 @@ def handle_flavor(call):
         return
 
     bot.answer_callback_query(call.id)
+
     user_lang = user_data.get(chat_id, {}).get("lang", "ru")
     description = item_obj.get(f"description_{user_lang}", "") or ""
     price = menu[cat]["price"]
@@ -473,6 +504,7 @@ def handle_flavor(call):
     if description:
         caption += f"{description}\n"
     caption += f"📌 {price}₺"
+
     bot.send_message(chat_id, caption, parse_mode="HTML")
 
     kb = types.InlineKeyboardMarkup(row_width=1)
@@ -503,6 +535,7 @@ def handle_flavor(call):
 def handle_add_to_cart(call):
     chat_id = call.from_user.id
     _, cat, flavor = call.data.split("|", 2)
+
     item_obj = next((i for i in menu[cat]["flavors"] if i["flavor"] == flavor), None)
     if not item_obj or item_obj.get("stock", 0) <= 0:
         bot.answer_callback_query(call.id, t(chat_id, "error_out_of_stock"))
@@ -511,6 +544,7 @@ def handle_add_to_cart(call):
     bot.answer_callback_query(call.id)
     data = user_data.setdefault(chat_id, {})
     cart = data.setdefault("cart", [])
+
     price = menu[cat]["price"]
     cart.append({"category": cat, "flavor": flavor, "price": price})
 
@@ -589,6 +623,7 @@ def handle_remove_item(call):
         return
 
     (cat, flavor, price), qty = items_list[idx]
+
     removed = False
     new_cart = []
     for it in cart:
@@ -627,7 +662,6 @@ def handle_edit_item_request(call):
     data["edit_index"] = idx
     data["edit_cat"] = cat
     data["edit_flavor"] = flavor
-    # Убираем Reply-клавиатуру перед запросом нового количества
     bot.send_message(
         chat_id,
         f"Current item: {cat} — {flavor} — {price}₺ (in cart {old_qty} pcs).\n{t(chat_id, 'enter_new_qty')}",
@@ -661,6 +695,7 @@ def handle_enter_new_qty(message):
         return
 
     (cat, flavor, price), old_qty = items_list[idx]
+
     new_cart = [it for it in cart if not (it["category"] == cat and it["flavor"] == flavor and it["price"] == price)]
     for _ in range(new_qty):
         new_cart.append({"category": cat, "flavor": flavor, "price": price})
@@ -705,6 +740,7 @@ def handle_finish_order(call):
         return
 
     total_try = sum(item["price"] for item in cart)
+
     conn_local = get_db_connection()
     cursor_local = conn_local.cursor()
     cursor_local.execute("SELECT points FROM users WHERE chat_id = ?", (chat_id,))
@@ -722,15 +758,12 @@ def handle_finish_order(call):
             + "\n"
             + t(chat_id, "enter_points").format(max_points=max_points)
         )
-        # Убираем Inline-клавиатуру перед вводом текста
-        bot.send_message(chat_id, " ", reply_markup=types.ReplyKeyboardRemove())
         bot.send_message(chat_id, msg, reply_markup=types.ReplyKeyboardRemove())
         data["wait_for_points"] = True
         data["temp_total_try"] = total_try
         data["temp_user_points"] = user_points
     else:
         kb = address_keyboard()
-        # Убираем Inline и показываем Reply-клавиатуру адреса
         bot.send_message(
             chat_id,
             f"🛒 {t(chat_id, 'view_cart')}:\n\n" +
@@ -811,8 +844,6 @@ def handle_address_input(message):
     if text == t(chat_id, "back"):
         data['wait_for_address'] = False
         data['current_category'] = None
-        # Убираем Reply-клавиатуру перед показом Inline
-        bot.send_message(chat_id, " ", reply_markup=types.ReplyKeyboardRemove())
         bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
         user_data[chat_id] = data
         return
@@ -862,8 +893,6 @@ def handle_contact_input(message):
     if text == t(chat_id, "back"):
         data['wait_for_address'] = True
         data['wait_for_contact'] = False
-        # Убираем текущую Reply-клавиатуру (контакт)
-        bot.send_message(chat_id, " ", reply_markup=types.ReplyKeyboardRemove())
         bot.send_message(chat_id, t(chat_id, "enter_address"), reply_markup=address_keyboard())
         user_data[chat_id] = data
         return
@@ -902,8 +931,6 @@ def handle_comment_input(message):
     if text == t(chat_id, "back"):
         data['wait_for_contact'] = True
         data['wait_for_comment'] = False
-        # Убираем Reply-клавиатуру комментария
-        bot.send_message(chat_id, " ", reply_markup=types.ReplyKeyboardRemove())
         bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=contact_keyboard())
         user_data[chat_id] = data
         return
@@ -1007,9 +1034,6 @@ def handle_comment_input(message):
         )
         bot.send_message(GROUP_CHAT_ID, full_en)
 
-        # Убираем Reply-клавиатуру перед финальным сообщением
-        bot.send_message(chat_id, " ", reply_markup=types.ReplyKeyboardRemove())
-
         bot.send_message(
             chat_id,
             t(chat_id, "order_accepted"),
@@ -1033,14 +1057,23 @@ def cmd_change(message):
     if chat_id not in user_data:
         user_data[chat_id] = {
             "lang": "ru",
-            "cart": [], "current_category": None,
-            "wait_for_points": False, "wait_for_address": False,
-            "wait_for_contact": False, "wait_for_comment": False,
-            "address": "", "contact": "", "comment": "",
-            "pending_discount": 0, "pending_points_spent": 0,
-            "temp_total_try": 0, "temp_user_points": 0,
-            "edit_phase": None, "edit_cat": None,
-            "edit_flavor": None, "edit_index": None,
+            "cart": [],
+            "current_category": None,
+            "wait_for_points": False,
+            "wait_for_address": False,
+            "wait_for_contact": False,
+            "wait_for_comment": False,
+            "address": "",
+            "contact": "",
+            "comment": "",
+            "pending_discount": 0,
+            "pending_points_spent": 0,
+            "temp_total_try": 0,
+            "temp_user_points": 0,
+            "edit_phase": None,
+            "edit_cat": None,
+            "edit_flavor": None,
+            "edit_index": None,
             "edit_cart_phase": None,
             "awaiting_review_flavor": None,
             "awaiting_review_rating": False,
@@ -1050,15 +1083,17 @@ def cmd_change(message):
         }
     data = user_data[chat_id]
     data.update({
-        "current_category": None, "wait_for_points": False,
-        "wait_for_address": False, "wait_for_contact": False,
-        "wait_for_comment": False, "edit_phase": "choose_action",
-        "edit_cat": None, "edit_flavor": None, "edit_index": None,
+        "current_category": None,
+        "wait_for_points": False,
+        "wait_for_address": False,
+        "wait_for_contact": False,
+        "wait_for_comment": False,
+        "edit_phase": "choose_action",
+        "edit_cat": None,
+        "edit_flavor": None,
+        "edit_index": None,
         "edit_cart_phase": None
     })
-
-    # Убираем Reply-клавиатуру, если она есть
-    bot.send_message(chat_id, " ", reply_markup=types.ReplyKeyboardRemove())
     bot.send_message(chat_id, "Menu editing: choose action", reply_markup=edit_action_keyboard())
     user_data[chat_id] = data
 
@@ -1203,6 +1238,7 @@ def handle_review_comment(message):
 
     flavor_name = data.get("temp_review_flavor")
     rating = data.get("temp_review_rating")
+
     now = datetime.datetime.utcnow().isoformat()
     conn_local = get_db_connection()
     cursor_local = conn_local.cursor()
@@ -1251,14 +1287,24 @@ def universal_handler(message):
     text = message.text or ""
     if chat_id not in user_data:
         user_data[chat_id] = {
-            "lang": "ru", "cart": [], "current_category": None,
-            "wait_for_points": False, "wait_for_address": False,
-            "wait_for_contact": False, "wait_for_comment": False,
-            "address": "", "contact": "", "comment": "",
-            "pending_discount": 0, "pending_points_spent": 0,
-            "temp_total_try": 0, "temp_user_points": 0,
-            "edit_phase": None, "edit_cat": None,
-            "edit_flavor": None, "edit_index": None,
+            "lang": "ru",
+            "cart": [],
+            "current_category": None,
+            "wait_for_points": False,
+            "wait_for_address": False,
+            "wait_for_contact": False,
+            "wait_for_comment": False,
+            "address": "",
+            "contact": "",
+            "comment": "",
+            "pending_discount": 0,
+            "pending_points_spent": 0,
+            "temp_total_try": 0,
+            "temp_user_points": 0,
+            "edit_phase": None,
+            "edit_cat": None,
+            "edit_flavor": None,
+            "edit_index": None,
             "edit_cart_phase": None,
             "awaiting_review_flavor": None,
             "awaiting_review_rating": False,
@@ -1278,8 +1324,6 @@ def universal_handler(message):
             if text == "❌ Cancel":
                 data['edit_phase'] = None
                 data['edit_cat'] = None
-                # Убираем Reply-клавиатуру перед возвратом в основной интерфейс
-                bot.send_message(chat_id, " ", reply_markup=types.ReplyKeyboardRemove())
                 bot.send_message(chat_id, "Editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
@@ -1660,6 +1704,7 @@ def universal_handler(message):
                 if not stripped_line or stripped_line.lower() == "(empty)":
                     continue
 
+                # Разбиваем по последнему ASCII-дефису '-'
                 parts = stripped_line.rsplit('-', 1)
                 if len(parts) != 2:
                     continue
@@ -1671,6 +1716,7 @@ def universal_handler(message):
 
                 name = name_part
                 qty  = int(qty_part)
+
                 new_flavors.append({
                     "emoji": "",
                     "flavor": name,
@@ -1684,6 +1730,7 @@ def universal_handler(message):
             cat0 = data.get('edit_cat')
             if cat0:
                 menu[cat0]["flavors"] = new_flavors
+                # Сохраняем сразу в JSON, чтобы изменения не потерялись
                 with open(MENU_PATH, "w", encoding="utf-8") as f:
                     json.dump(menu, f, ensure_ascii=False, indent=2)
                 bot.send_message(
@@ -1706,14 +1753,15 @@ def universal_handler(message):
         return
     # ────────────────────────────────────────────────────────────────────────────────
 
+    # Остальной universal_handler (cart-функции, /history, /stats, /help и т.д.)
+    # ... (тот же код, что и ранее, без изменений) ...
+
     # ——— Режим редактирования корзины —
     if data.get('edit_cart_phase'):
         if data['edit_cart_phase'] == 'choose_action':
             if text == t(chat_id, "back"):
                 data['edit_cart_phase'] = None
                 data['edit_index'] = None
-                # Убираем любые Reply-клавиатуры
-                bot.send_message(chat_id, " ", reply_markup=types.ReplyKeyboardRemove())
                 bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
@@ -1773,11 +1821,9 @@ def universal_handler(message):
                 data['edit_cart_phase'] = 'enter_qty'
                 key_chosen, count = items_list[idx]
                 cat0, flavor0, price0 = key_chosen
-                # Убираем Reply-клавиатуру перед запросом нового количества
                 bot.send_message(
                     chat_id,
-                    f"Current item: {cat0} — {flavor0} — {price0}₺ (in cart {count} pcs).\n{t(chat_id, 'enter_new_qty')}",
-                    reply_markup=types.ReplyKeyboardRemove()
+                    f"Current item: {cat0} — {flavor0} — {price0}₺ (in cart {count} pcs).\n{t(chat_id, 'enter_new_qty')}"
                 )
                 user_data[chat_id] = data
                 return
@@ -1786,8 +1832,6 @@ def universal_handler(message):
             if text == t(chat_id, "back"):
                 data['edit_cart_phase'] = None
                 data['edit_index'] = None
-                # Убираем Reply-клавиатуру и возвращаем в главное меню
-                bot.send_message(chat_id, " ", reply_markup=types.ReplyKeyboardRemove())
                 bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
@@ -1865,8 +1909,6 @@ def universal_handler(message):
         if text == t(chat_id, "back"):
             data['wait_for_address'] = False
             data['current_category'] = None
-            # Убираем Reply-клавиатуру перед показом Inline
-            bot.send_message(chat_id, " ", reply_markup=types.ReplyKeyboardRemove())
             bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
             user_data[chat_id] = data
             return
@@ -1907,8 +1949,6 @@ def universal_handler(message):
         if text == t(chat_id, "back"):
             data['wait_for_address'] = True
             data['wait_for_contact'] = False
-            # Убираем Reply-клавиатуру перед показом адреса
-            bot.send_message(chat_id, " ", reply_markup=types.ReplyKeyboardRemove())
             bot.send_message(chat_id, t(chat_id, "enter_address"), reply_markup=address_keyboard())
             user_data[chat_id] = data
             return
@@ -1938,8 +1978,6 @@ def universal_handler(message):
         if text == t(chat_id, "back"):
             data['wait_for_contact'] = True
             data['wait_for_comment'] = False
-            # Убираем Reply-клавиатуру комментария
-            bot.send_message(chat_id, " ", reply_markup=types.ReplyKeyboardRemove())
             bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=contact_keyboard())
             user_data[chat_id] = data
             return
@@ -2041,9 +2079,6 @@ def universal_handler(message):
             )
             bot.send_message(GROUP_CHAT_ID, full_en)
 
-            # Убираем Reply-клавиатуру перед финальным сообщением
-            bot.send_message(chat_id, " ", reply_markup=types.ReplyKeyboardRemove())
-
             bot.send_message(
                 chat_id,
                 t(chat_id, "order_accepted"),
@@ -2073,8 +2108,6 @@ def universal_handler(message):
             "/stats           — Store statistics (ADMIN only)\n"
             "/help            — This help message\n"
         )
-        # Убираем Reply-клавиатуру перед показом текста
-        bot.send_message(chat_id, " ", reply_markup=types.ReplyKeyboardRemove())
         bot.send_message(chat_id, commands_text, parse_mode="HTML")
         return
 
@@ -2103,8 +2136,6 @@ def universal_handler(message):
             "wait_for_contact": False,
             "wait_for_comment": False
         })
-        # Убираем любую оставшуюся Reply-клавиатуру
-        bot.send_message(chat_id, " ", reply_markup=types.ReplyKeyboardRemove())
         bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
         user_data[chat_id] = data
         return
@@ -2117,8 +2148,6 @@ def universal_handler(message):
         data["wait_for_address"] = False
         data["wait_for_contact"] = False
         data["wait_for_comment"] = False
-        # Убираем Reply-клавиатуру перед показом Inline
-        bot.send_message(chat_id, " ", reply_markup=types.ReplyKeyboardRemove())
         bot.send_message(chat_id, t(chat_id, "cart_cleared"), reply_markup=get_inline_main_menu(chat_id))
         user_data[chat_id] = data
         return
@@ -2126,8 +2155,6 @@ def universal_handler(message):
     # ——— «Add more» ———
     if text == f"➕ {t(chat_id, 'add_more')}":
         data["current_category"] = None
-        # Убираем Reply-клавиатуру перед показом Inline
-        bot.send_message(chat_id, " ", reply_markup=types.ReplyKeyboardRemove())
         bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
         user_data[chat_id] = data
         return
@@ -2139,6 +2166,7 @@ def universal_handler(message):
             bot.send_message(chat_id, t(chat_id, "cart_empty"))
             return
         total_try = sum(i['price'] for i in cart)
+
         conn_local = get_db_connection()
         cursor_local = conn_local.cursor()
         cursor_local.execute("SELECT points FROM users WHERE chat_id = ?", (chat_id,))
@@ -2156,8 +2184,6 @@ def universal_handler(message):
                 + "\n"
                 + t(chat_id, "enter_points").format(max_points=max_points)
             )
-            # Убираем Inline-кнопки перед вводом текста
-            bot.send_message(chat_id, " ", reply_markup=types.ReplyKeyboardRemove())
             bot.send_message(chat_id, msg, reply_markup=types.ReplyKeyboardRemove())
             data["wait_for_points"] = True
             data["temp_total_try"] = total_try
@@ -2165,7 +2191,6 @@ def universal_handler(message):
             user_data[chat_id] = data
         else:
             kb = address_keyboard()
-            # Убираем Inline и показываем Reply-клавиатуру адреса
             bot.send_message(
                 chat_id,
                 f"🛒 {t(chat_id, 'view_cart')}:\n\n" +
@@ -2180,8 +2205,6 @@ def universal_handler(message):
     # ——— Выбор категории (Reply-клавиатура fallback) ———
     if text in menu:
         data['current_category'] = text
-        # Убираем старую Reply, если была, и показываем Inline вкусов
-        bot.send_message(chat_id, " ", reply_markup=types.ReplyKeyboardRemove())
         bot.send_message(chat_id, f"{t(chat_id, 'choose_flavor')} «{text}»", reply_markup=get_inline_flavors(chat_id, text))
         user_data[chat_id] = data
         return
@@ -2200,7 +2223,6 @@ def universal_handler(message):
                     template = t(chat_id, "added_to_cart")
                     suffix = template.split("»", 1)[1].strip()
                     count = len(data['cart'])
-                    # Убираем Reply-клавиатуру перед показом Inline
                     bot.send_message(
                         chat_id,
                         f"«{cat0} — {flavor0}» {suffix.format(flavor=flavor0, count=count)}",
@@ -2242,6 +2264,7 @@ def universal_handler(message):
             bot.send_message(chat_id, "Использование: /show_reviews <название_вкуса>")
             return
         flavor_query = parts[1]
+
         conn_local = get_db_connection()
         cursor_local = conn_local.cursor()
         cursor_local.execute(
@@ -2294,6 +2317,7 @@ def universal_handler(message):
         )
         cursor_local.close()
         conn_local.close()
+
         bot.send_message(chat_id, report)
         return
 
