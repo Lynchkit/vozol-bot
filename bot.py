@@ -8,6 +8,9 @@ import datetime
 import random
 import string
 
+print(">>>> DEBUG: bot.py начинает выполняться, TOKEN =", os.getenv("TOKEN"))
+
+
 from apscheduler.schedulers.background import BackgroundScheduler
 import telebot
 from telebot import types
