@@ -2077,7 +2077,7 @@ def universal_handler(message):
                 f"📱 Contact: {data.get('contact', '—')}\n"
                 f"💬 Comment: {comment_en}"
             )
-            bot.send_message(GROUP_CHAT_ID, full_en)
+            bot.send_message(GROUP_CHAT_ID, full_en, parse_mode=None)
 
             bot.send_message(
                 chat_id,
