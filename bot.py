@@ -2302,4 +2302,4 @@ def universal_handler(message):
 # ------------------------------------------------------------------------
 if __name__ == "__main__":
     bot.delete_webhook()
-    bot.polling(skip_pending=True, none_stop=True)
+    bot.polling(none_stop=True)
