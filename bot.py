@@ -647,6 +647,7 @@ def handle_edit_item_request(call):
     data = user_data.get(chat_id, {})
     cart = data.get("cart", [])
 
+    # Группируем для подсчёта
     grouped = {}
     for item in cart:
         key = (item["category"], item["flavor"], item["price"])
@@ -655,18 +656,30 @@ def handle_edit_item_request(call):
     if idx < 0 or idx >= len(items_list):
         bot.answer_callback_query(call.id, t(chat_id, "error_invalid"))
         return
-    (cat, flavor, price), old_qty = items_list[idx]
 
+    (cat, flavor, price), old_qty = items_list[idx]
     bot.answer_callback_query(call.id)
+
+    # Сохраняем состояние для ввода количества
     data["edit_cart_phase"] = "enter_qty"
     data["edit_index"] = idx
     data["edit_cat"] = cat
     data["edit_flavor"] = flavor
+    user_data[chat_id] = data
+
+    # Выводим по-русски или по-английски в зависимости от языка
+    lang = user_data.get(chat_id, {}).get("lang", "ru")
+    if lang == "ru":
+        prefix = f"Текущий товар: {cat} — {flavor} — {price}₺ (в корзине {old_qty} шт)."
+    else:
+        prefix = f"Current item: {cat} — {flavor} — {price}₺ (in cart {old_qty} pcs)."
+
     bot.send_message(
         chat_id,
-        f"Current item: {cat} — {flavor} — {price}₺ (in cart {old_qty} pcs).\n{t(chat_id, 'enter_new_qty')}",
+        prefix + "\n" + t(chat_id, "enter_new_qty"),
         reply_markup=types.ReplyKeyboardRemove()
     )
+
 
 @bot.message_handler(
     func=lambda m: user_data.get(m.chat.id, {}).get("edit_cart_phase") == "enter_qty",
