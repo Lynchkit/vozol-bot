@@ -647,6 +647,7 @@ def handle_edit_item_request(call):
     data = user_data.get(chat_id, {})
     cart = data.get("cart", [])
 
+    # Группируем для подсчёта
     grouped = {}
     for item in cart:
         key = (item["category"], item["flavor"], item["price"])
@@ -655,62 +656,29 @@ def handle_edit_item_request(call):
     if idx < 0 or idx >= len(items_list):
         bot.answer_callback_query(call.id, t(chat_id, "error_invalid"))
         return
+
     (cat, flavor, price), old_qty = items_list[idx]
 
     bot.answer_callback_query(call.id)
+
+    # Новый локализованный префикс вместо жёсткого "Current item..."
+    prompt = t(chat_id, "edit_current_item").format(
+        category=cat,
+        flavor=flavor,
+        price=price,
+        count=old_qty
+    )
+    bot.send_message(
+        chat_id,
+        prompt + "\n" + t(chat_id, "enter_new_qty"),
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+
+    # Сохраняем состояние для обработки ввода количества
     data["edit_cart_phase"] = "enter_qty"
     data["edit_index"] = idx
     data["edit_cat"] = cat
     data["edit_flavor"] = flavor
-    bot.send_message(
-        chat_id,
-        f"Current item: {cat} — {flavor} — {price}₺ (in cart {old_qty} pcs).\n{t(chat_id, 'enter_new_qty')}",
-        reply_markup=types.ReplyKeyboardRemove()
-    )
-
-@bot.message_handler(
-    func=lambda m: user_data.get(m.chat.id, {}).get("edit_cart_phase") == "enter_qty",
-    content_types=['text']
-)
-def handle_enter_new_qty(message):
-    chat_id = message.chat.id
-    data = user_data.get(chat_id, {})
-    text = message.text.strip()
-    if not text.isdigit():
-        bot.send_message(chat_id, t(chat_id, "error_invalid"))
-        data["edit_cart_phase"] = None
-        return
-
-    new_qty = int(text)
-    idx = data.get("edit_index", -1)
-    cart = data.get("cart", [])
-    grouped = {}
-    for item in cart:
-        key = (item["category"], item["flavor"], item["price"])
-        grouped[key] = grouped.get(key, 0) + 1
-    items_list = list(grouped.items())
-    if idx < 0 or idx >= len(items_list):
-        bot.send_message(chat_id, t(chat_id, "error_invalid"))
-        data["edit_cart_phase"] = None
-        return
-
-    (cat, flavor, price), old_qty = items_list[idx]
-
-    new_cart = [it for it in cart if not (it["category"] == cat and it["flavor"] == flavor and it["price"] == price)]
-    for _ in range(new_qty):
-        new_cart.append({"category": cat, "flavor": flavor, "price": price})
-    data["cart"] = new_cart
-
-    data["edit_cart_phase"] = None
-    data.pop("edit_index", None)
-    data.pop("edit_cat", None)
-    data.pop("edit_flavor", None)
-
-    if new_qty == 0:
-        bot.send_message(chat_id, t(chat_id, "item_removed").format(flavor=flavor), reply_markup=get_inline_main_menu(chat_id))
-    else:
-        bot.send_message(chat_id, t(chat_id, "qty_changed").format(flavor=flavor, qty=new_qty), reply_markup=get_inline_main_menu(chat_id))
-
     user_data[chat_id] = data
 
 # ------------------------------------------------------------------------
