@@ -92,11 +92,53 @@ def load_json(path):
 
 menu = load_json(MENU_PATH)
 translations = load_json(LANG_PATH)
+# 0. Убедимся, что у пользователя всегда есть запись в user_data, новое добавленное
+def init_user(chat_id: int):
+    if chat_id not in user_data:
+        user_data[chat_id] = {
+            "lang": None,
+            "cart": [],
+            "current_category": None,
+            "wait_for_points": False,
+            "wait_for_address": False,
+            "wait_for_contact": False,
+            "wait_for_comment": False,
+            "address": "",
+            "contact": "",
+            "comment": "",
+            "pending_discount": 0,
+            "pending_points_spent": 0,
+            "temp_total_try": 0,
+            "temp_user_points": 0,
+            "edit_phase": None,
+            "edit_cat": None,
+            "edit_flavor": None,
+            "edit_index": None,
+            "edit_cart_phase": None,
+            "awaiting_review_flavor": None,
+            "awaiting_review_rating": False,
+            "awaiting_review_comment": False,
+            "temp_review_flavor": None,
+            "temp_review_rating": 0
+        }
 
 # ------------------------------------------------------------------------
 #   6. Хранилище данных пользователей (in-memory)
 # ------------------------------------------------------------------------
 user_data = {}  # структура объяснялась ранее
+
+# 6.2 Декоратор для гарантированной инициализации
+def ensure_user(handler):
+    def wrapper(message_or_call, *args, **kwargs):
+        # для Message и CallbackQuery chat_id берём по-разному:
+        if hasattr(message_or_call, "from_user"):
+            cid = message_or_call.from_user.id
+        else:
+            cid = message_or_call.chat.id
+        init_user(cid)
+        return handler(message_or_call, *args, **kwargs)
+    return wrapper
+
 
 # ------------------------------------------------------------------------
 #   7. Утилиты
@@ -280,6 +322,7 @@ scheduler.start()
 # ------------------------------------------------------------------------
 #   14. Хендлер /start – регистрация, реферальная система, выбор языка
 # ------------------------------------------------------------------------
+@ensure_user
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     chat_id = message.chat.id
@@ -375,6 +418,7 @@ def cmd_start(message):
 # ------------------------------------------------------------------------
 #   15. Callback: выбор языка
 # ------------------------------------------------------------------------
+@ensure_user
 @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("set_lang|"))
 def handle_set_lang(call):
     chat_id = call.from_user.id
@@ -438,6 +482,7 @@ def handle_set_lang(call):
 # ------------------------------------------------------------------------
 #   16. Callback: выбор категории (показываем вкусы)
 # ------------------------------------------------------------------------
+@ensure_user
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("category|"))
 def handle_category(call):
     chat_id = call.from_user.id
@@ -471,6 +516,7 @@ def handle_category(call):
 # ------------------------------------------------------------------------
 #   17. Callback: «Назад к категориям»
 # ------------------------------------------------------------------------
+@ensure_user
 @bot.callback_query_handler(func=lambda call: call.data == "go_back_to_categories")
 def handle_go_back_to_categories(call):
     chat_id = call.from_user.id
@@ -480,6 +526,7 @@ def handle_go_back_to_categories(call):
 # ------------------------------------------------------------------------
 #   18. Callback: выбор вкуса
 # ------------------------------------------------------------------------
+@ensure_user
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("flavor|"))
 def handle_flavor(call):
     _, cat, flavor = call.data.split("|", 2)
@@ -531,6 +578,7 @@ def handle_flavor(call):
 # ------------------------------------------------------------------------
 #   19. Callback: добавить в корзину (без изменения stock)
 # ------------------------------------------------------------------------
+@ensure_user
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("add_to_cart|"))
 def handle_add_to_cart(call):
     chat_id = call.from_user.id
@@ -560,6 +608,7 @@ def handle_add_to_cart(call):
 # ------------------------------------------------------------------------
 #   20. Callback: «Просмотр корзины»
 # ------------------------------------------------------------------------
+@ensure_user
 @bot.callback_query_handler(func=lambda call: call.data == "view_cart")
 def handle_view_cart(call):
     chat_id = call.from_user.id
@@ -604,6 +653,7 @@ def handle_view_cart(call):
 # ------------------------------------------------------------------------
 #   21. Callback: «Удалить i» из корзины
 # ------------------------------------------------------------------------
+@ensure_user
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("remove_item|"))
 def handle_remove_item(call):
     chat_id = call.from_user.id
@@ -639,6 +689,7 @@ def handle_remove_item(call):
 # ------------------------------------------------------------------------
 #   22. Callback: «Изменить i» в корзине → ввод количества
 # ------------------------------------------------------------------------
+@ensure_user
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("edit_item|"))
 def handle_edit_item_request(call):
     chat_id = call.from_user.id
@@ -680,7 +731,7 @@ def handle_edit_item_request(call):
         reply_markup=types.ReplyKeyboardRemove()
     )
 
-
+@ensure_user
 @bot.message_handler(
     func=lambda m: user_data.get(m.chat.id, {}).get("edit_cart_phase") == "enter_qty",
     content_types=['text']
@@ -729,6 +780,7 @@ def handle_enter_new_qty(message):
 # ------------------------------------------------------------------------
 #   23. Callback: «Очистить корзину»
 # ------------------------------------------------------------------------
+@ensure_user
 @bot.callback_query_handler(func=lambda call: call.data == "clear_cart")
 def handle_clear_cart(call):
     chat_id = call.from_user.id
@@ -741,6 +793,7 @@ def handle_clear_cart(call):
 # ------------------------------------------------------------------------
 #   24. Callback: завершить заказ (с проверкой и списанием stock)
 # ------------------------------------------------------------------------
+@ensure_user
 @bot.callback_query_handler(func=lambda call: call.data == "finish_order")
 def handle_finish_order(call):
     chat_id = call.from_user.id
@@ -791,6 +844,7 @@ def handle_finish_order(call):
 # ------------------------------------------------------------------------
 #   25. Handler: ввод количества баллов для списания
 # ------------------------------------------------------------------------
+@ensure_user
 @bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_points"), content_types=['text'])
 def handle_points_input(message):
     chat_id = message.chat.id
@@ -845,6 +899,7 @@ def handle_points_input(message):
 # ------------------------------------------------------------------------
 #   26. Handler: ввод адреса
 # ------------------------------------------------------------------------
+@ensure_user
 @bot.message_handler(
     func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_address"),
     content_types=['text','location','venue']
@@ -894,6 +949,7 @@ def handle_address_input(message):
 # ------------------------------------------------------------------------
 #   27. Handler: ввод контакта
 # ------------------------------------------------------------------------
+@ensure_user
 @bot.message_handler(
     func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_contact"),
     content_types=['text','contact']
@@ -932,6 +988,7 @@ def handle_contact_input(message):
 # ------------------------------------------------------------------------
 #   28. Handler: ввод комментария и сохранение заказа (с учётом списания stock)
 # ------------------------------------------------------------------------
+@ensure_user
 @bot.message_handler(
     func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_comment"),
     content_types=['text']
@@ -1064,6 +1121,7 @@ def handle_comment_input(message):
 # ------------------------------------------------------------------------
 #   29. /change: перевод в режим редактирования меню (только на английском)
 # ------------------------------------------------------------------------
+@ensure_user
 @bot.message_handler(commands=['change'])
 def cmd_change(message):
     chat_id = message.chat.id
@@ -1113,6 +1171,7 @@ def cmd_change(message):
 # ------------------------------------------------------------------------
 #   30. Хендлер /points
 # ------------------------------------------------------------------------
+@ensure_user
 @bot.message_handler(commands=['points'])
 def cmd_points(message):
     chat_id = message.chat.id
@@ -1132,6 +1191,7 @@ def cmd_points(message):
 # ------------------------------------------------------------------------
 #   31. Хендлер /convert — курсы и конвертация суммы TRY
 # ------------------------------------------------------------------------
+@ensure_user
 @bot.message_handler(commands=['convert'])
 def cmd_convert(message):
     chat_id = message.chat.id
@@ -1178,6 +1238,7 @@ def cmd_convert(message):
 # ------------------------------------------------------------------------
 #   32. Хендлер /review (запуск процесса отзывов)
 # ------------------------------------------------------------------------
+@ensure_user
 @bot.message_handler(commands=['review'])
 def cmd_review_start(message):
     chat_id = message.chat.id
@@ -1218,6 +1279,7 @@ def cmd_review_start(message):
 # ------------------------------------------------------------------------
 #   33. Handler для ввода оценки после /review
 # ------------------------------------------------------------------------
+@ensure_user
 @bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get("awaiting_review_rating"), content_types=['text'])
 def handle_review_rating(message):
     chat_id = message.chat.id
@@ -1238,6 +1300,7 @@ def handle_review_rating(message):
 # ------------------------------------------------------------------------
 #   34. Handler для ввода комментария или /skip после оценки
 # ------------------------------------------------------------------------
+@ensure_user
 @bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get("awaiting_review_comment"), content_types=['text'])
 def handle_review_comment(message):
     chat_id = message.chat.id
@@ -1294,6 +1357,7 @@ def handle_review_comment(message):
 # ------------------------------------------------------------------------
 #   35. Универсальный хендлер (всё остальное, включая /change логику)
 # ------------------------------------------------------------------------
+@ensure_user
 @bot.message_handler(content_types=['text','location','venue','contact'])
 def universal_handler(message):
     chat_id = message.chat.id
