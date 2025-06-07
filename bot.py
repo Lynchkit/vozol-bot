@@ -10,7 +10,6 @@ import string
 from apscheduler.schedulers.background import BackgroundScheduler
 import telebot
 from telebot import types
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # ------------------------------------------------------------------------
 #   1. Загрузка переменных окружения
@@ -1882,43 +1881,6 @@ def universal_handler(message):
     # Остальной universal_handler (cart-функции, /history, /stats, /help и т.д.)
     # ... (тот же код, что и ранее, без изменений) ...
 
-    if text.strip() == "/stats":
-        # проверяем два админ-ID
-        if chat_id not in (ADMIN_ID, ADMIN_ID_TWO):
-            bot.send_message(chat_id, "У вас нет доступа к этой команде.")
-            return
-
-        # собираем статистику
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM orders")
-        total_orders = cur.fetchone()[0]
-        cur.execute("SELECT SUM(total) FROM orders")
-        total_revenue = cur.fetchone()[0] or 0
-        cur.execute("SELECT items_json FROM orders")
-        all_items = cur.fetchall()
-        conn.close()
-
-        # считаем продажи по вкусам
-        counts = {}
-        for (items_json,) in all_items:
-            items = json.loads(items_json)
-            for i in items:
-                counts[i["flavor"]] = counts.get(i["flavor"], 0) + 1
-        top5 = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:5]
-        top5_lines = [f"{flavor}: {qty} шт." for flavor, qty in top5] or ["Пока нет данных."]
-
-        # формируем и отправляем отчёт
-        report = (
-                f"📊 Статистика магазина:\n"
-                f"Всего заказов: {total_orders}\n"
-                f"Общая выручка: {total_revenue}₺\n\n"
-                f"Топ-5 продаваемых вкусов:\n" +
-                "\n".join(top5_lines)
-        )
-        bot.send_message(chat_id, report)
-        return
-
     # ——— Режим редактирования корзины — (оставляем без изменений) ———
     if data.get('edit_cart_phase'):
         if data['edit_cart_phase'] == 'choose_action':
@@ -2448,149 +2410,49 @@ def universal_handler(message):
         bot.send_message(chat_id, "\n\n".join(texts))
         return
 
-        # ——— /stats ———
-    if text == "/stats":
+    # ——— /stats ———
+    @bot.message_handler(commands=['stats'])
+    def cmd_stats(message):
+        chat_id = message.chat.id
+
+        # проверка прав
         if chat_id not in (ADMIN_ID, ADMIN_ID_TWO):
             bot.send_message(chat_id, "У вас нет доступа к этой команде.")
             return
 
-        conn_local = get_db_connection()
-        cursor_local = conn_local.cursor()
-        cursor_local.execute("SELECT COUNT(*) FROM orders")
-        total_orders = cursor_local.fetchone()[0]
-        cursor_local.execute("SELECT SUM(total) FROM orders")
-        total_revenue = cursor_local.fetchone()[0] or 0
-        cursor_local.execute("SELECT items_json FROM orders")
-        all_items = cursor_local.fetchall()
+        # сама логика
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        cur.execute("SELECT COUNT(*) FROM orders")
+        total_orders = cur.fetchone()[0]
+
+        cur.execute("SELECT SUM(total) FROM orders")
+        total_revenue = cur.fetchone()[0] or 0
+
+        cur.execute("SELECT items_json FROM orders")
+        all_items = cur.fetchall()
+
+        conn.close()
 
         counts = {}
         for (items_json,) in all_items:
             items = json.loads(items_json)
             for i in items:
-                key = i["flavor"]
-                counts[key] = counts.get(key, 0) + 1
+                counts[i["flavor"]] = counts.get(i["flavor"], 0) + 1
+
         top5 = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:5]
-        top5_lines = [f"{flavor}: {qty} шт." for flavor, qty in top5] or ["Пока нет данных."]
+        lines = [f"{flavor}: {qty} шт." for flavor, qty in top5] or ["Пока нет данных."]
 
         report = (
                 f"📊 Статистика магазина:\n"
                 f"Всего заказов: {total_orders}\n"
                 f"Общая выручка: {total_revenue}₺\n\n"
-                f"Топ-5 продаваемых вкусов:\n" + "\n".join(top5_lines)
+                f"Топ-5 продаваемых вкусов:\n" +
+                "\n".join(lines)
         )
-        cursor_local.close()
-        conn_local.close()
 
         bot.send_message(chat_id, report)
-
-        # ——— добавляем кнопки отмены последних 5 заказов ———
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("""
-                    SELECT order_id, chat_id, total, timestamp
-                    FROM orders
-                    ORDER BY timestamp DESC
-                        LIMIT 5
-                    """)
-        recent = cur.fetchall()
-        cur.close()
-        conn.close()
-
-        if recent:
-            kb = InlineKeyboardMarkup()
-            for oid, user_id, total, ts in recent:
-                kb.add(InlineKeyboardButton(
-                    text=f"❌ Отменить #{oid}",
-                    callback_data=f"cancel_order|{oid}"
-                ))
-            bot.send_message(chat_id, "Последние заказы (для отмены):", reply_markup=kb)
-
-            # ——— кнопки отмены по заказам (order_id) ———
-            conn = get_db_connection()
-            cur = conn.cursor()
-            cur.execute("""
-                        SELECT order_id, chat_id, total, timestamp
-                        FROM orders
-                        ORDER BY timestamp DESC
-                            LIMIT 5
-                        """)
-            recent = cur.fetchall()
-            cur.close()
-            conn.close()
-
-            if recent:
-                kb = InlineKeyboardMarkup()
-                for oid, user_id, total, ts in recent:
-                    kb.add(InlineKeyboardButton(
-                        text=f"❌ Отменить #{oid}",
-                        callback_data=f"cancel_order|{oid}"
-                    ))
-                bot.send_message(chat_id, "Последние заказы (для отмены):", reply_markup=kb)
-
-            # ——— кнопки отмены всех заказов пользователя (по chat_id) ———
-            conn = get_db_connection()
-            cur = conn.cursor()
-            cur.execute("SELECT DISTINCT chat_id FROM orders")
-            users = cur.fetchall()
-            cur.close()
-            conn.close()
-
-            if users:
-                kb2 = InlineKeyboardMarkup()
-                for (uid,) in users:
-                    kb2.add(InlineKeyboardButton(
-                        text=f"❌ Отменить все заказы {uid}",
-                        callback_data=f"cancel_user|{uid}"
-                    ))
-                bot.send_message(chat_id, "Отменить все заказы пользователя:", reply_markup=kb2)
-
-        return
-
-    # дальше в том же универсальном text-хэндлере - Действия отмены заказа!!!
-    if text.startswith("❌ Отменить #"):
-        try:
-            order_id = int(text.split("#", 1)[1])
-        except ValueError:
-            bot.send_message(chat_id, "Неверный формат номера заказа.")
-            return
-
-        # 1) Найти заказ
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT items_json, total, chat_id FROM orders WHERE order_id = ?", (order_id,))
-        row = cur.fetchone()
-        if not row:
-            cur.close()
-            conn.close()
-            bot.send_message(chat_id, f"Заказ #{order_id} не найден.")
-            return
-
-        items_json, total_paid, user_id = row
-
-        # 2) Вернуть вкусам сток
-        menu = load_json(MENU_PATH)
-        items = json.loads(items_json)
-        for it in items:
-            for flavor_obj in menu[it["category"]]["flavors"]:
-                if flavor_obj["flavor"] == it["flavor"]:
-                    flavor_obj["stock"] += 1
-                    break
-        with open(MENU_PATH, "w", encoding="utf-8") as f:
-            json.dump(menu, f, ensure_ascii=False, indent=2)
-
-        # 3) Вернуть пользователю баллы (по вашей логике)
-        refund_points = total_paid // 30
-        cur.execute("UPDATE users SET points = points + ? WHERE chat_id = ?", (refund_points, user_id))
-
-        # 4) Удалить заказ
-        cur.execute("DELETE FROM orders WHERE order_id = ?", (order_id,))
-
-        conn.commit()
-        cur.close()
-        conn.close()
-
-        bot.send_message(chat_id, f"Заказ #{order_id} успешно отменён и баллы возвращены.")
-        return
 
 
 # ------------------------------------------------------------------------
