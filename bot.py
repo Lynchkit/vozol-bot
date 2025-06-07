@@ -166,18 +166,22 @@ def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
     for cat in menu.keys():
         total_stock = sum(item.get("stock", 0) for item in menu[cat]["flavors"])
         if total_stock == 0:
-            if lang == "en":
-                label = f"{cat} (out of stock)"
-            else:
-                label = f"{cat} (нет в наличии)"
+            label = f"{cat} (out of stock)" if lang == "en" else f"{cat} (нет в наличии)"
         else:
             label = cat
         kb.add(types.InlineKeyboardButton(text=label, callback_data=f"category|{cat}"))
 
+    # корзина, очистить
     kb.add(types.InlineKeyboardButton(text=f"🛒 {t(chat_id,'view_cart')}", callback_data="view_cart"))
     kb.add(types.InlineKeyboardButton(text=f"🗑️ {t(chat_id,'clear_cart')}", callback_data="clear_cart"))
+
+    # новая кнопка отмены заказа
+    kb.add(types.InlineKeyboardButton(text=f"❌ {t(chat_id,'cancel_order')}", callback_data="cancel_order"))
+
+    # завершить
     kb.add(types.InlineKeyboardButton(text=f"✅ {t(chat_id,'finish_order')}", callback_data="finish_order"))
     return kb
+
 
 # ------------------------------------------------------------------------
 #   10. Inline-кнопки для выбора вкусов
@@ -747,22 +751,31 @@ def handle_finish_order(call):
     bot.answer_callback_query(call.id)
     data = user_data.get(chat_id, {})
 
+    # 1) Получаем корзину
     cart = data.get("cart", [])
     if not cart:
         bot.send_message(chat_id, t(chat_id, "cart_empty"))
         return
 
+    # 2) Считаем сумму
     total_try = sum(item["price"] for item in cart)
 
+    # 3) Сохраняем последний заказ для возможности отмены
+    LAST_ORDER[chat_id] = {
+        "cart": cart.copy(),
+        "points_spent": data.get("pending_points_spent", 0)
+    }
+
+    # 4) Проверяем, есть ли у пользователя баллы
     conn_local = get_db_connection()
     cursor_local = conn_local.cursor()
     cursor_local.execute("SELECT points FROM users WHERE chat_id = ?", (chat_id,))
     row = cursor_local.fetchone()
     cursor_local.close()
     conn_local.close()
-
     user_points = row[0] if row else 0
 
+    # 5) Если есть баллы — спрашиваем, сколько списать
     if user_points > 0:
         max_points = min(user_points, total_try)
         points_try = user_points * 1
@@ -775,18 +788,22 @@ def handle_finish_order(call):
         data["wait_for_points"] = True
         data["temp_total_try"] = total_try
         data["temp_user_points"] = user_points
+
+    # 6) Иначе сразу просим адрес
     else:
         kb = address_keyboard()
         bot.send_message(
             chat_id,
-            f"🛒 {t(chat_id, 'view_cart')}:\n\n" +
-            "\n".join(f"{item['category']}: {item['flavor']} — {item['price']}₺" for item in cart) +
-            f"\n\n{t(chat_id, 'enter_address')}",
+            f"🛒 {t(chat_id, 'view_cart')}:\n\n"
+            + "\n".join(f"{item['category']}: {item['flavor']} — {item['price']}₺" for item in cart)
+            + f"\n\n{t(chat_id, 'enter_address')}",
             reply_markup=kb
         )
         data["wait_for_address"] = True
 
+    # 7) Сохраняем обновлённое состояние
     user_data[chat_id] = data
+
 
 # ------------------------------------------------------------------------
 #   25. Handler: ввод количества баллов для списания
@@ -2210,6 +2227,7 @@ def universal_handler(message):
         data["wait_for_comment"] = False
         bot.send_message(chat_id, t(chat_id, "cart_cleared"), reply_markup=get_inline_main_menu(chat_id))
         user_data[chat_id] = data
+        LAST_ORDER = {}
         return
 
     # ——— «Add more» ———
@@ -2380,6 +2398,41 @@ def universal_handler(message):
 
         bot.send_message(chat_id, report)
         return
+@bot.callback_query_handler(func=lambda c: c.data == "cancel_order")
+def handle_cancel_order(call):
+    chat_id = call.from_user.id
+    bot.answer_callback_query(call.id, t(chat_id, "cancel_order"))
+
+    last = LAST_ORDER.get(chat_id)
+    if not last:
+        return bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=get_inline_main_menu(chat_id))
+
+    # 1) Восстанавливаем stock каждого вкуса
+    for it in last["cart"]:
+        for itm in menu[it["category"]]["flavors"]:
+            if itm["flavor"] == it["flavor"]:
+                itm["stock"] = itm.get("stock", 0) + 1
+                break
+    with open(MENU_PATH, "w", encoding="utf-8") as f:
+        json.dump(menu, f, ensure_ascii=False, indent=2)
+
+    # 2) Возвращаем списанные баллы
+    pts = last.get("points_spent", 0)
+    if pts > 0:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET points = points + ? WHERE chat_id = ?", (pts, chat_id))
+        conn.commit()
+        cur.close()
+        conn.close()
+
+    # 3) Очищаем сохранённый последний заказ и корзину юзера
+    LAST_ORDER.pop(chat_id, None)
+    user_data[chat_id]["cart"] = []
+
+    # 4) Уведомляем пользователя
+    bot.send_message(chat_id, t(chat_id, "order_canceled"), reply_markup=get_inline_main_menu(chat_id))
+
 
 # ------------------------------------------------------------------------
 #   36. Запуск бота
