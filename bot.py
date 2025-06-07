@@ -21,6 +21,7 @@ if not TOKEN:
         "Run the container with -e TOKEN=<your_token>."
     )
 ADMIN_ID = int(os.getenv("ADMIN_ID", "424751188"))
+ADMIN_ID_TWO = int(os.getenv("ADMIN_ID_TWO", "748250885"))
 GROUP_CHAT_ID = int(os.getenv("GROUP_CHAT_ID", "0"))
 PERSONAL_CHAT_ID = int(os.getenv("PERSONAL_CHAT_ID", "0"))
 
@@ -2410,40 +2411,49 @@ def universal_handler(message):
         return
 
     # ——— /stats ———
-    if text == "/stats":
-        if chat_id != ADMIN_ID:
+    @bot.message_handler(commands=['stats'])
+    def cmd_stats(message):
+        chat_id = message.chat.id
+
+        # проверка прав
+        if chat_id not in (ADMIN_ID, ADMIN_ID_TWO):
             bot.send_message(chat_id, "У вас нет доступа к этой команде.")
             return
 
-        conn_local = get_db_connection()
-        cursor_local = conn_local.cursor()
-        cursor_local.execute("SELECT COUNT(*) FROM orders")
-        total_orders = cursor_local.fetchone()[0]
-        cursor_local.execute("SELECT SUM(total) FROM orders")
-        total_revenue = cursor_local.fetchone()[0] or 0
-        cursor_local.execute("SELECT items_json FROM orders")
-        all_items = cursor_local.fetchall()
+        # сама логика
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        cur.execute("SELECT COUNT(*) FROM orders")
+        total_orders = cur.fetchone()[0]
+
+        cur.execute("SELECT SUM(total) FROM orders")
+        total_revenue = cur.fetchone()[0] or 0
+
+        cur.execute("SELECT items_json FROM orders")
+        all_items = cur.fetchall()
+
+        conn.close()
 
         counts = {}
         for (items_json,) in all_items:
             items = json.loads(items_json)
             for i in items:
-                key = i["flavor"]
-                counts[key] = counts.get(key, 0) + 1
+                counts[i["flavor"]] = counts.get(i["flavor"], 0) + 1
+
         top5 = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:5]
-        top5_lines = [f"{flavor}: {qty} шт." for flavor, qty in top5] or ["Пока нет данных."]
+        lines = [f"{flavor}: {qty} шт." for flavor, qty in top5] or ["Пока нет данных."]
 
         report = (
-            f"📊 Статистика магазина:\n"
-            f"Всего заказов: {total_orders}\n"
-            f"Общая выручка: {total_revenue}₺\n\n"
-            f"Топ-5 продаваемых вкусов:\n" + "\n".join(top5_lines)
+                f"📊 Статистика магазина:\n"
+                f"Всего заказов: {total_orders}\n"
+                f"Общая выручка: {total_revenue}₺\n\n"
+                f"Топ-5 продаваемых вкусов:\n" +
+                "\n".join(lines)
         )
-        cursor_local.close()
-        conn_local.close()
 
         bot.send_message(chat_id, report)
-        return
+
 
 # ------------------------------------------------------------------------
 #   36. Запуск бота
