@@ -25,6 +25,7 @@ if not TOKEN:
     )
 ADMIN_ID = int(os.getenv("ADMIN_ID", "424751188"))
 ADMIN_ID_TWO = int(os.getenv("ADMIN_ID_TWO", "748250885"))
+ADMIN_ID_TWO = int(os.getenv("ADMIN_ID_TWO", "6492697568"))
 GROUP_CHAT_ID = int(os.getenv("GROUP_CHAT_ID", "0"))
 PERSONAL_CHAT_ID = int(os.getenv("PERSONAL_CHAT_ID", "0"))
 
@@ -2869,7 +2870,7 @@ def universal_handler(message):
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("cancel_order|"))
 def handle_cancel_order(call):
     # 1) Проверяем, что админ
-    if call.from_user.id not in (ADMIN_ID, ADMIN_ID_TWO):
+    if call.from_user.id not in (ADMIN_ID, ADMIN_ID_TWO, ADMIN_ID_THREE):
         return bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
 
     # 2) Извлекаем order_id
