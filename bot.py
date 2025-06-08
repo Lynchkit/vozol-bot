@@ -1343,6 +1343,14 @@ def handle_comment_input(message):
 @bot.message_handler(commands=['change'])
 def cmd_change(message):
     chat_id = message.chat.id
+
+    # Доступ к /change только для трёх админов
+    allowed_admins = [6492697568, 424751188, 748250885]
+    if chat_id not in allowed_admins:
+        bot.send_message(chat_id, "У вас нет доступа к этой команде.")
+        return
+
+    # Инициализируем данные пользователя, если нужно
     if chat_id not in user_data:
         user_data[chat_id] = {
             "lang": "ru",
@@ -1370,6 +1378,8 @@ def cmd_change(message):
             "temp_review_flavor": None,
             "temp_review_rating": 0
         }
+
+    # Переходим в режим редактирования меню
     data = user_data[chat_id]
     data.update({
         "current_category": None,
@@ -1385,6 +1395,7 @@ def cmd_change(message):
     })
     bot.send_message(chat_id, "Menu editing: choose action", reply_markup=edit_action_keyboard())
     user_data[chat_id] = data
+
 
 
 # ------------------------------------------------------------------------
