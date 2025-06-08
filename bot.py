@@ -241,30 +241,28 @@ def get_inline_language_buttons(chat_id: int) -> types.InlineKeyboardMarkup:
 # ------------------------------------------------------------------------
 #   9. Inline-кнопки для главного меню
 # ------------------------------------------------------------------------
-from telebot import types
+
 
 def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=2)
     lang = user_data.get(chat_id, {}).get("lang") or "ru"
 
-    # 1) Категории
-    for cat in menu.keys():
+    # Категории
+    for cat in menu:
         total_stock = sum(item.get("stock", 0) for item in menu[cat]["flavors"])
-        if total_stock == 0:
-            label = f"{cat} (out of stock)" if lang == "en" else f"{cat} (нет в наличии)"
-        else:
-            label = cat
+        label = f"{cat} (out of stock)" if total_stock == 0 and lang == "en" \
+                else f"{cat} (нет в наличии)" if total_stock == 0 \
+                else cat
         kb.add(types.InlineKeyboardButton(text=label, callback_data=f"category|{cat}"))
 
-    # 2) 🛒 Посмотреть корзину (с количеством)
-    cart = user_data.get(chat_id, {}).get("cart", [])
-    cart_count = len(cart)
+    # Кнопка «Посмотреть корзину» с количеством
+    cart_count = len(user_data.get(chat_id, {}).get("cart", []))
     kb.add(types.InlineKeyboardButton(
         text=f"🛒 {t(chat_id, 'view_cart')} ({cart_count})",
         callback_data="view_cart"
     ))
 
-    # 3) 🗑️ Очистить и ✅ Завершить — только если в корзине что-то есть
+    # «Очистить» и «Завершить» — только если в корзине есть товары
     if cart_count > 0:
         kb.add(types.InlineKeyboardButton(
             text=f"🗑️ {t(chat_id, 'clear_cart')}",
@@ -276,6 +274,7 @@ def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
         ))
 
     return kb
+
 
 
 
@@ -599,22 +598,23 @@ def handle_go_back_to_categories(call):
 #   18. Callback: выбор вкуса
 # ------------------------------------------------------------------------
 @ensure_user
-@bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("flavor|"))
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("flavor|"))
 def handle_flavor(call):
-    _, cat, flavor = call.data.split("|", 2)
     chat_id = call.from_user.id
+    _, cat, flavor = call.data.split("|", 2)
 
+    # Проверяем, что категория существует
     if cat not in menu:
-        bot.answer_callback_query(call.id, t(chat_id, "error_invalid"))
-        return
+        return bot.answer_callback_query(call.id, t(chat_id, "error_invalid"), show_alert=True)
 
+    # Ищем сам вкус
     item_obj = next((i for i in menu[cat]["flavors"] if i["flavor"] == flavor), None)
     if not item_obj or item_obj.get("stock", 0) <= 0:
-        bot.answer_callback_query(call.id, t(chat_id, "error_out_of_stock"))
-        return
+        return bot.answer_callback_query(call.id, t(chat_id, "error_out_of_stock"), show_alert=True)
 
     bot.answer_callback_query(call.id)
 
+    # 1) Отправляем описание
     user_lang = user_data.get(chat_id, {}).get("lang", "ru")
     description = item_obj.get(f"description_{user_lang}", "") or ""
     price = menu[cat]["price"]
@@ -623,52 +623,27 @@ def handle_flavor(call):
     if description:
         caption += f"{description}\n"
     caption += f"📌 {price}₺"
-
     bot.send_message(chat_id, caption, parse_mode="HTML")
 
-    @ensure_user
-    @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("flavor|"))
-    def handle_flavor(call):
-        _, cat, flavor = call.data.split("|", 2)
-        chat_id = call.from_user.id
-
-        # === Ваша проверка наличия и получение объекта вкуса ===
-        item_obj = next((i for i in menu[cat]["flavors"] if i["flavor"] == flavor), None)
-        if not item_obj or item_obj.get("stock", 0) <= 0:
-            return bot.answer_callback_query(call.id, t(chat_id, "error_out_of_stock"))
-
-        bot.answer_callback_query(call.id)
-
-        # === Отправляем описание вкуса ===
-        user_lang = user_data.get(chat_id, {}).get("lang", "ru")
-        description = item_obj.get(f"description_{user_lang}", "") or ""
-        price = menu[cat]["price"]
-
-        caption = f"<b>{flavor}</b> — {cat}\n"
-        if description:
-            caption += f"{description}\n"
-        caption += f"📌 {price}₺"
-        bot.send_message(chat_id, caption, parse_mode="HTML")
-
-        # === Формируем клавиатуру действий ===
-        cart = user_data.get(chat_id, {}).get("cart", [])
-        kb = types.InlineKeyboardMarkup(row_width=1)
+    # 2) Формируем клавиатуру с условием по кнопке «✅ Завершить заказ»
+    cart = user_data[chat_id]["cart"]
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton(
+        text=f"➕ {t(chat_id, 'add_to_cart')}",
+        callback_data=f"add_to_cart|{cat}|{flavor}"
+    ))
+    kb.add(types.InlineKeyboardButton(
+        text=f"⬅️ {t(chat_id, 'back_to_categories')}",
+        callback_data="go_back_to_categories"
+    ))
+    if len(cart) > 0:
         kb.add(types.InlineKeyboardButton(
-            text=f"➕ {t(chat_id, 'add_to_cart')}",
-            callback_data=f"add_to_cart|{cat}|{flavor}"
+            text=f"✅ {t(chat_id, 'finish_order')}",
+            callback_data="finish_order"
         ))
-        kb.add(types.InlineKeyboardButton(
-            text=f"⬅️ {t(chat_id, 'back_to_categories')}",
-            callback_data="go_back_to_categories"
-        ))
-        # Кнопка «Завершить заказ» только если корзина непуста
-        if len(cart) > 0:
-            kb.add(types.InlineKeyboardButton(
-                text=f"✅ {t(chat_id, 'finish_order')}",
-                callback_data="finish_order"
-            ))
 
-        bot.send_message(chat_id, t(chat_id, "choose_action"), reply_markup=kb)
+    # 3) Отправляем второе сообщение
+    bot.send_message(chat_id, t(chat_id, "choose_action"), reply_markup=kb)
 
 
 # ------------------------------------------------------------------------
@@ -1614,72 +1589,7 @@ def universal_handler(message):
         }
     data = user_data[chat_id]
 
-    @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("cancel_order|"))
-    def handle_cancel_order(call):
-        # 1) Проверяем права
-        admin_id = call.from_user.id
-        if admin_id not in (ADMIN_ID, ADMIN_ID_TWO):
-            bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
-            return
 
-        # 2) Извлекаем order_id
-        _, oid = call.data.split("|", 1)
-        order_id = int(oid)
-
-        # 3) Получаем данные заказа
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT chat_id, items_json, points_earned FROM orders WHERE order_id = ?",
-            (order_id,)
-        )
-        row = cursor.fetchone()
-        if not row:
-            bot.answer_callback_query(call.id, "Заказ не найден", show_alert=True)
-            cursor.close();
-            conn.close()
-            return
-
-        user_chat_id, items_json, pts_earned = row
-
-        # 4) Возвращаем товары на склад
-        items = json.loads(items_json)
-        for it in items:
-            cat, flav = it["category"], it["flavor"]
-            for itm in menu[cat]["flavors"]:
-                if itm["flavor"] == flav:
-                    itm["stock"] = itm.get("stock", 0) + 1
-                    break
-        with open(MENU_PATH, "w", encoding="utf-8") as f:
-            json.dump(menu, f, ensure_ascii=False, indent=2)
-
-        # 5) Списываем у пользователя начисленные баллы
-        if pts_earned > 0:
-            cursor.execute(
-                "UPDATE users SET points = points - ? WHERE chat_id = ?",
-                (pts_earned, user_chat_id)
-            )
-            conn.commit()
-
-        # 6) Удаляем запись о заказе
-        cursor.execute("DELETE FROM orders WHERE order_id = ?", (order_id,))
-        conn.commit()
-        cursor.close();
-        conn.close()
-
-        # 7) Уведомляем пользователя
-        bot.send_message(
-            user_chat_id,
-            f"Ваш заказ #{order_id} отменён, {pts_earned} бонусных баллов списано."
-        )
-
-        # 8) Убираем кнопку из админского сообщения
-        bot.edit_message_reply_markup(
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-            reply_markup=None
-        )
-        bot.answer_callback_query(call.id, "Заказ отменён")
 
     # ─── Режим редактирования меню (/change) ────────────────────────────────────────
     if data.get('edit_phase'):
