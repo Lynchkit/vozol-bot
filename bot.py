@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 import os
 import json
+import types
+from wsgiref import types
+
 import requests
 import sqlite3
 import datetime
@@ -991,11 +994,19 @@ def handle_address_input(message):
     data = user_data.get(chat_id, {})
     text = message.text or ""
 
+    # ИСПРАВЛЁННЫЙ ВАРИАНТ
+
     if text == t(chat_id, "back"):
         data['wait_for_address'] = False
         data['current_category'] = None
-        bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
-        user_data[chat_id] = data
+        # 1) Убираем клавиатуру запроса локации
+        bot.send_message(chat_id,
+                         t(chat_id, "choose_category"),
+                         reply_markup=types.ReplyKeyboardRemove())
+        # 2) Показываем основное inline-меню
+        bot.send_message(chat_id,
+                         t(chat_id, "choose_category"),
+                         reply_markup=get_inline_main_menu(chat_id))
         return
 
     if text == t(None, "choose_on_map"):
@@ -1042,11 +1053,16 @@ def handle_contact_input(message):
     data = user_data.get(chat_id, {})
     text = message.text or ""
 
+    # ИСПРАВЛЁННЫЙ ВАРИАНТ (если ты хочешь сразу в main-menu)
     if text == t(chat_id, "back"):
-        data['wait_for_address'] = True
+        data['wait_for_address'] = False
         data['wait_for_contact'] = False
-        bot.send_message(chat_id, t(chat_id, "enter_address"), reply_markup=address_keyboard())
-        user_data[chat_id] = data
+        bot.send_message(chat_id,
+                         t(chat_id, "choose_category"),
+                         reply_markup=types.ReplyKeyboardRemove())
+        bot.send_message(chat_id,
+                         t(chat_id, "choose_category"),
+                         reply_markup=get_inline_main_menu(chat_id))
         return
 
     if text == t(None, "enter_nickname"):
@@ -1083,11 +1099,16 @@ def handle_comment_input(message):
     text = message.text or ""
 
     # Обработка кнопки «Назад»
+    # ИСПРАВЛЁННЫЙ ВАРИАНТ
+
     if text == t(chat_id, "back"):
-        data['wait_for_contact'] = True
         data['wait_for_comment'] = False
-        bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=contact_keyboard())
-        user_data[chat_id] = data
+        bot.send_message(chat_id,
+                         t(chat_id, "choose_category"),
+                         reply_markup=types.ReplyKeyboardRemove())
+        bot.send_message(chat_id,
+                         t(chat_id, "choose_category"),
+                         reply_markup=get_inline_main_menu(chat_id))
         return
 
     # Пользователь вводит текст комментария
@@ -1599,19 +1620,32 @@ def universal_handler(message):
         # 1) Главное меню редактирования (всё на английском)
         if phase == 'choose_action':
             # Cancel
+            # ИСПРАВЛЁННЫЙ ВАРИАНТ
+
+            # Cancel
             if text == "❌ Cancel":
                 data['edit_phase'] = None
                 data['edit_cat'] = None
-                bot.send_message(chat_id, "Editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
-                user_data[chat_id] = data
+                # 1) Сначала убираем любую reply-клавиатуру
+                bot.send_message(chat_id,
+                                 "Editing cancelled.",
+                                 reply_markup=types.ReplyKeyboardRemove())
+                # 2) Затем показываем inline-меню
+                bot.send_message(chat_id,
+                                 t(chat_id, "choose_category"),
+                                 reply_markup=get_inline_main_menu(chat_id))
                 return
 
             # Back
             if text == "⬅️ Back":
                 data['edit_phase'] = None
                 data['edit_cat'] = None
-                bot.send_message(chat_id, "Returned to main menu.", reply_markup=get_inline_main_menu(chat_id))
-                user_data[chat_id] = data
+                bot.send_message(chat_id,
+                                 "Returned to main menu.",
+                                 reply_markup=types.ReplyKeyboardRemove())
+                bot.send_message(chat_id,
+                                 t(chat_id, "choose_category"),
+                                 reply_markup=get_inline_main_menu(chat_id))
                 return
 
             if text == "➕ Add Category":
