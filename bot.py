@@ -1567,6 +1567,73 @@ def universal_handler(message):
         }
     data = user_data[chat_id]
 
+    @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("cancel_order|"))
+    def handle_cancel_order(call):
+        # 1) Проверяем права
+        admin_id = call.from_user.id
+        if admin_id not in (ADMIN_ID, ADMIN_ID_TWO):
+            bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
+            return
+
+        # 2) Извлекаем order_id
+        _, oid = call.data.split("|", 1)
+        order_id = int(oid)
+
+        # 3) Получаем данные заказа
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT chat_id, items_json, points_earned FROM orders WHERE order_id = ?",
+            (order_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            bot.answer_callback_query(call.id, "Заказ не найден", show_alert=True)
+            cursor.close();
+            conn.close()
+            return
+
+        user_chat_id, items_json, pts_earned = row
+
+        # 4) Возвращаем товары на склад
+        items = json.loads(items_json)
+        for it in items:
+            cat, flav = it["category"], it["flavor"]
+            for itm in menu[cat]["flavors"]:
+                if itm["flavor"] == flav:
+                    itm["stock"] = itm.get("stock", 0) + 1
+                    break
+        with open(MENU_PATH, "w", encoding="utf-8") as f:
+            json.dump(menu, f, ensure_ascii=False, indent=2)
+
+        # 5) Списываем у пользователя начисленные баллы
+        if pts_earned > 0:
+            cursor.execute(
+                "UPDATE users SET points = points - ? WHERE chat_id = ?",
+                (pts_earned, user_chat_id)
+            )
+            conn.commit()
+
+        # 6) Удаляем запись о заказе
+        cursor.execute("DELETE FROM orders WHERE order_id = ?", (order_id,))
+        conn.commit()
+        cursor.close();
+        conn.close()
+
+        # 7) Уведомляем пользователя
+        bot.send_message(
+            user_chat_id,
+            f"Ваш заказ #{order_id} отменён, {pts_earned} бонусных баллов списано."
+        )
+
+        # 8) Убираем кнопку из админского сообщения
+        bot.edit_message_reply_markup(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=None
+        )
+        bot.answer_callback_query(call.id, "Заказ отменён")
+
     # ─── Режим редактирования меню (/change) ────────────────────────────────────────
     if data.get('edit_phase'):
         phase = data['edit_phase']
@@ -1737,6 +1804,7 @@ def universal_handler(message):
             data['edit_phase'] = 'choose_action'
             user_data[chat_id] = data
             return
+
 
         # 5) Установить все вкусы категории на ноль
         if phase == 'choose_cat_zero':
@@ -2634,6 +2702,73 @@ def universal_handler(message):
 
         bot.send_message(chat_id, report)
         return
+
+
+
+
+
+@bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("cancel_order|"))
+def handle_cancel_order(call):
+    # 1) Проверяем, что админ
+    if call.from_user.id not in (ADMIN_ID, ADMIN_ID_TWO):
+        return bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
+
+    # 2) Извлекаем order_id
+    _, oid = call.data.split("|", 1)
+    order_id = int(oid)
+
+    # 3) Достаём заказ из БД
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT chat_id, items_json, points_earned FROM orders WHERE order_id = ?",
+        (order_id,)
+    )
+    row = cursor.fetchone()
+    if not row:
+        cursor.close()
+        conn.close()
+        return bot.answer_callback_query(call.id, "Заказ не найден", show_alert=True)
+    user_chat_id, items_json, pts_earned = row
+
+    # 4) Возвращаем товары на склад
+    items = json.loads(items_json)
+    for it in items:
+        for itm in menu[it["category"]]["flavors"]:
+            if itm["flavor"] == it["flavor"]:
+                itm["stock"] = itm.get("stock", 0) + 1
+                break
+    with open(MENU_PATH, "w", encoding="utf-8") as f:
+        json.dump(menu, f, ensure_ascii=False, indent=2)
+
+    # 5) Списываем баллы
+    if pts_earned:
+        cursor.execute(
+            "UPDATE users SET points = points - ? WHERE chat_id = ?",
+            (pts_earned, user_chat_id)
+        )
+        conn.commit()
+
+    # 6) Удаляем заказ
+    cursor.execute("DELETE FROM orders WHERE order_id = ?", (order_id,))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    # 7) Уведомляем пользователя
+    bot.send_message(
+        user_chat_id,
+        f"Ваш заказ #{order_id} отменён, {pts_earned} бонусных баллов списано."
+    )
+
+    # 8) Убираем кнопку в админском сообщении
+    bot.edit_message_reply_markup(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=None
+    )
+    bot.answer_callback_query(call.id, "Заказ отменён")
+
 
 
 # ------------------------------------------------------------------------
