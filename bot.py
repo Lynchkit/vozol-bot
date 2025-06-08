@@ -1634,6 +1634,7 @@ def universal_handler(message):
                 bot.send_message(chat_id,
                                  t(chat_id, "choose_category"),
                                  reply_markup=get_inline_main_menu(chat_id))
+                user_data[chat_id] = data
                 return
 
             # Back
@@ -1729,10 +1730,17 @@ def universal_handler(message):
                 return
             if text == "❌ Cancel":
                 data['edit_phase'] = None
-                bot.send_message(chat_id, "Editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
+                data['edit_cat'] = None
+                # 1) Убираем reply-клавиатуру
+                bot.send_message(chat_id,
+                                 "Editing cancelled.",
+                                 reply_markup=types.ReplyKeyboardRemove())
+                # 2) Показываем inline-меню
+                bot.send_message(chat_id,
+                                 t(chat_id, "choose_category"),
+                                 reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
-
 
             new_cat = text.strip()
             if not new_cat or new_cat in menu:
@@ -1762,7 +1770,15 @@ def universal_handler(message):
                 return
             if text == "❌ Cancel":
                 data['edit_phase'] = None
-                bot.send_message(chat_id, "Editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
+                data['edit_cat'] = None
+                # 1) Убираем reply-клавиатуру
+                bot.send_message(chat_id,
+                                 "Editing cancelled.",
+                                 reply_markup=types.ReplyKeyboardRemove())
+                # 2) Показываем inline-меню
+                bot.send_message(chat_id,
+                                 t(chat_id, "choose_category"),
+                                 reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1789,7 +1805,15 @@ def universal_handler(message):
                 return
             if text == "❌ Cancel":
                 data['edit_phase'] = None
-                bot.send_message(chat_id, "Editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
+                data['edit_cat'] = None
+                # 1) Убираем reply-клавиатуру
+                bot.send_message(chat_id,
+                                 "Editing cancelled.",
+                                 reply_markup=types.ReplyKeyboardRemove())
+                # 2) Показываем inline-меню
+                bot.send_message(chat_id,
+                                 t(chat_id, "choose_category"),
+                                 reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1823,7 +1847,15 @@ def universal_handler(message):
                 return
             if text == "❌ Cancel":
                 data['edit_phase'] = None
-                bot.send_message(chat_id, "Editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
+                data['edit_cat'] = None
+                # 1) Убираем reply-клавиатуру
+                bot.send_message(chat_id,
+                                 "Editing cancelled.",
+                                 reply_markup=types.ReplyKeyboardRemove())
+                # 2) Показываем inline-меню
+                bot.send_message(chat_id,
+                                 t(chat_id, "choose_category"),
+                                 reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1853,7 +1885,15 @@ def universal_handler(message):
                 return
             if text == "❌ Cancel":
                 data['edit_phase'] = None
-                bot.send_message(chat_id, "Editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
+                data['edit_cat'] = None
+                # 1) Убираем reply-клавиатуру
+                bot.send_message(chat_id,
+                                 "Editing cancelled.",
+                                 reply_markup=types.ReplyKeyboardRemove())
+                # 2) Показываем inline-меню
+                bot.send_message(chat_id,
+                                 t(chat_id, "choose_category"),
+                                 reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1879,7 +1919,15 @@ def universal_handler(message):
                 return
             if text == "❌ Cancel":
                 data['edit_phase'] = None
-                bot.send_message(chat_id, "Editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
+                data['edit_cat'] = None
+                # 1) Убираем reply-клавиатуру
+                bot.send_message(chat_id,
+                                 "Editing cancelled.",
+                                 reply_markup=types.ReplyKeyboardRemove())
+                # 2) Показываем inline-меню
+                bot.send_message(chat_id,
+                                 t(chat_id, "choose_category"),
+                                 reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1905,7 +1953,15 @@ def universal_handler(message):
                 return
             if text == "❌ Cancel":
                 data['edit_phase'] = None
-                bot.send_message(chat_id, "Editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
+                data['edit_cat'] = None
+                # 1) Убираем reply-клавиатуру
+                bot.send_message(chat_id,
+                                 "Editing cancelled.",
+                                 reply_markup=types.ReplyKeyboardRemove())
+                # 2) Показываем inline-меню
+                bot.send_message(chat_id,
+                                 t(chat_id, "choose_category"),
+                                 reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1938,7 +1994,15 @@ def universal_handler(message):
                 return
             if text == "❌ Cancel":
                 data['edit_phase'] = None
-                bot.send_message(chat_id, "Editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
+                data['edit_cat'] = None
+                # 1) Убираем reply-клавиатуру
+                bot.send_message(chat_id,
+                                 "Editing cancelled.",
+                                 reply_markup=types.ReplyKeyboardRemove())
+                # 2) Показываем inline-меню
+                bot.send_message(chat_id,
+                                 t(chat_id, "choose_category"),
+                                 reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1973,7 +2037,15 @@ def universal_handler(message):
                 return
             if text == "❌ Cancel":
                 data['edit_phase'] = None
-                bot.send_message(chat_id, "Editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
+                data['edit_cat'] = None
+                # 1) Убираем reply-клавиатуру
+                bot.send_message(chat_id,
+                                 "Editing cancelled.",
+                                 reply_markup=types.ReplyKeyboardRemove())
+                # 2) Показываем inline-меню
+                bot.send_message(chat_id,
+                                 t(chat_id, "choose_category"),
+                                 reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -2021,7 +2093,15 @@ def universal_handler(message):
                 return
             if text == "❌ Cancel":
                 data['edit_phase'] = None
-                bot.send_message(chat_id, "Editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
+                data['edit_cat'] = None
+                # 1) Убираем reply-клавиатуру
+                bot.send_message(chat_id,
+                                 "Editing cancelled.",
+                                 reply_markup=types.ReplyKeyboardRemove())
+                # 2) Показываем inline-меню
+                bot.send_message(chat_id,
+                                 t(chat_id, "choose_category"),
+                                 reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -2074,7 +2154,15 @@ def universal_handler(message):
                 return
             if text == "❌ Cancel":
                 data['edit_phase'] = None
-                bot.send_message(chat_id, "Editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
+                data['edit_cat'] = None
+                # 1) Убираем reply-клавиатуру
+                bot.send_message(chat_id,
+                                 "Editing cancelled.",
+                                 reply_markup=types.ReplyKeyboardRemove())
+                # 2) Показываем inline-меню
+                bot.send_message(chat_id,
+                                 t(chat_id, "choose_category"),
+                                 reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -2125,7 +2213,15 @@ def universal_handler(message):
                 return
             if text == "❌ Cancel":
                 data['edit_phase'] = None
-                bot.send_message(chat_id, "Editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
+                data['edit_cat'] = None
+                # 1) Убираем reply-клавиатуру
+                bot.send_message(chat_id,
+                                 "Editing cancelled.",
+                                 reply_markup=types.ReplyKeyboardRemove())
+                # 2) Показываем inline-меню
+                bot.send_message(chat_id,
+                                 t(chat_id, "choose_category"),
+                                 reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
