@@ -241,15 +241,13 @@ def get_inline_language_buttons(chat_id: int) -> types.InlineKeyboardMarkup:
 # ------------------------------------------------------------------------
 #   9. Inline-кнопки для главного меню
 # ------------------------------------------------------------------------
+from telebot import types
+
 def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=2)
-
-    # язык пользователя
     lang = user_data.get(chat_id, {}).get("lang") or "ru"
-    # текущее число товаров в корзине
-    count = len(user_data.get(chat_id, {}).get("cart", []))
 
-    # кнопки категорий
+    # 1) Категории
     for cat in menu.keys():
         total_stock = sum(item.get("stock", 0) for item in menu[cat]["flavors"])
         if total_stock == 0:
@@ -258,20 +256,27 @@ def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
             label = cat
         kb.add(types.InlineKeyboardButton(text=label, callback_data=f"category|{cat}"))
 
-    # кнопка просмотра корзины (с количеством)
-    cart_label = t(chat_id, "view_cart")
-    if count > 0:
-        cart_label += f" ({count})"
-    kb.add(types.InlineKeyboardButton(text=f"🛒 {cart_label}", callback_data="view_cart"))
+    # 2) 🛒 Посмотреть корзину (с количеством)
+    cart = user_data.get(chat_id, {}).get("cart", [])
+    cart_count = len(cart)
+    kb.add(types.InlineKeyboardButton(
+        text=f"🛒 {t(chat_id, 'view_cart')} ({cart_count})",
+        callback_data="view_cart"
+    ))
 
-    # кнопка очистки корзины
-    kb.add(types.InlineKeyboardButton(text=f"🗑️ {t(chat_id, 'clear_cart')}", callback_data="clear_cart"))
-
-    # кнопку "Завершить заказ" показываем только если count > 0
-    if count > 0:
-        kb.add(types.InlineKeyboardButton(text=f"✅ {t(chat_id, 'finish_order')}", callback_data="finish_order"))
+    # 3) 🗑️ Очистить и ✅ Завершить — только если в корзине что-то есть
+    if cart_count > 0:
+        kb.add(types.InlineKeyboardButton(
+            text=f"🗑️ {t(chat_id, 'clear_cart')}",
+            callback_data="clear_cart"
+        ))
+        kb.add(types.InlineKeyboardButton(
+            text=f"✅ {t(chat_id, 'finish_order')}",
+            callback_data="finish_order"
+        ))
 
     return kb
+
 
 
 
@@ -627,32 +632,41 @@ def handle_flavor(call):
         _, cat, flavor = call.data.split("|", 2)
         chat_id = call.from_user.id
 
-        # ... ваш существующий код проверки и отправки описания вкуса ...
+        # === Ваша проверка наличия и получение объекта вкуса ===
+        item_obj = next((i for i in menu[cat]["flavors"] if i["flavor"] == flavor), None)
+        if not item_obj or item_obj.get("stock", 0) <= 0:
+            return bot.answer_callback_query(call.id, t(chat_id, "error_out_of_stock"))
 
-        # Сбор корзины
-        cart_count = len(user_data.get(chat_id, {}).get("cart", []))
+        bot.answer_callback_query(call.id)
 
+        # === Отправляем описание вкуса ===
+        user_lang = user_data.get(chat_id, {}).get("lang", "ru")
+        description = item_obj.get(f"description_{user_lang}", "") or ""
+        price = menu[cat]["price"]
+
+        caption = f"<b>{flavor}</b> — {cat}\n"
+        if description:
+            caption += f"{description}\n"
+        caption += f"📌 {price}₺"
+        bot.send_message(chat_id, caption, parse_mode="HTML")
+
+        # === Формируем клавиатуру действий ===
+        cart = user_data.get(chat_id, {}).get("cart", [])
         kb = types.InlineKeyboardMarkup(row_width=1)
-        kb.add(
-            types.InlineKeyboardButton(
-                text=f"➕ {t(chat_id, 'add_to_cart')}",
-                callback_data=f"add_to_cart|{cat}|{flavor}"
-            )
-        )
-        kb.add(
-            types.InlineKeyboardButton(
-                text=f"⬅️ {t(chat_id, 'back_to_categories')}",
-                callback_data="go_back_to_categories"
-            )
-        )
-        # Добавляем кнопку "Завершить заказ" только если уже что-то в корзине
-        if cart_count > 0:
-            kb.add(
-                types.InlineKeyboardButton(
-                    text=f"✅ {t(chat_id, 'finish_order')}",
-                    callback_data="finish_order"
-                )
-            )
+        kb.add(types.InlineKeyboardButton(
+            text=f"➕ {t(chat_id, 'add_to_cart')}",
+            callback_data=f"add_to_cart|{cat}|{flavor}"
+        ))
+        kb.add(types.InlineKeyboardButton(
+            text=f"⬅️ {t(chat_id, 'back_to_categories')}",
+            callback_data="go_back_to_categories"
+        ))
+        # Кнопка «Завершить заказ» только если корзина непуста
+        if len(cart) > 0:
+            kb.add(types.InlineKeyboardButton(
+                text=f"✅ {t(chat_id, 'finish_order')}",
+                callback_data="finish_order"
+            ))
 
         bot.send_message(chat_id, t(chat_id, "choose_action"), reply_markup=kb)
 
