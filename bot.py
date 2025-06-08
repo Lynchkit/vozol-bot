@@ -1967,97 +1967,100 @@ def universal_handler(message):
         return
     # ────────────────────────────────────────────────────────────────────────────────
     # ——— Шаг 1: админ нажал «🚫 Отменить заказ» — переходим в режим ввода ID ———
-    @ensure_user
-    @bot.callback_query_handler(func=lambda call: call.data == "cancel_order")
-    def handle_cancel_order(call):
-        admin_id = call.from_user.id
-        if admin_id not in (ADMIN_ID, ADMIN_ID_TWO):
-            return bot.answer_callback_query(call.id, "Нет прав")
-        bot.answer_callback_query(call.id)
-        user_data[admin_id]["edit_phase"] = "cancel_order_id"
-        bot.send_message(
-            admin_id,
-            "Введите ID заказа для отмены:",
-            reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-            .add("⬅️ Назад", "❌ Отмена")
-        )
 
-    # ——— Шаг 2: админ ввёл ID — выполняем отмену ———
-    @ensure_user
-    @bot.message_handler(
-        func=lambda m: user_data.get(m.chat.id, {}).get("edit_phase") == "cancel_order_id",
-        content_types=['text']
+
+@ensure_user
+@bot.callback_query_handler(func=lambda call: call.data == "cancel_order")
+def handle_cancel_order(call):
+    admin_id = call.from_user.id
+    if admin_id not in (ADMIN_ID, ADMIN_ID_TWO):
+        return bot.answer_callback_query(call.id, "Нет прав")
+    bot.answer_callback_query(call.id)
+    user_data[admin_id]["edit_phase"] = "cancel_order_id"
+    bot.send_message(
+        admin_id,
+        "Введите ID заказа для отмены:",
+        reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        .add("⬅️ Назад", "❌ Отмена")
     )
-    def handle_cancel_order_id(message):
-        chat_id = message.chat.id
-        text = message.text.strip()
 
-        # Если отмена по кнопке
-        if text in ["⬅️ Назад", "❌ Отмена"]:
-            user_data[chat_id]["edit_phase"] = None
-            return bot.send_message(
-                chat_id,
-                "Отмена прервана.",
-                reply_markup=get_inline_main_menu(chat_id)
-            )
 
-        # Проверяем, что ввели число
-        if not text.isdigit():
-            return bot.send_message(chat_id, "Введите числовой ID заказа.")
+# ——— Шаг 2: админ ввёл ID — выполняем отмену ———
+@ensure_user
+@bot.message_handler(
+    func=lambda m: user_data.get(m.chat.id, {}).get("edit_phase") == "cancel_order_id",
+    content_types=['text']
+)
+def handle_cancel_order_id(message):
+    chat_id = message.chat.id
+    text = message.text.strip()
 
-        order_id = int(text)
-
-        # 1) Найдём заказ
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT chat_id, items_json, total FROM orders WHERE order_id = ?",
-            (order_id,)
-        )
-        row = cur.fetchone()
-        if not row:
-            cur.close()
-            conn.close()
-            return bot.send_message(chat_id, f"Заказ #{order_id} не найден.")
-        user_id, items_json, total = row
-
-        # 2) Вернём сток
-        items = json.loads(items_json)
-        menu_data = load_json(MENU_PATH)
-        for it in items:
-            for flav in menu_data[it["category"]]["flavors"]:
-                if flav["flavor"] == it["flavor"]:
-                    flav["stock"] = flav.get("stock", 0) + 1
-        with open(MENU_PATH, "w", encoding="utf-8") as f:
-            json.dump(menu_data, f, ensure_ascii=False, indent=2)
-
-        # 3) Вернём баллы
-        points_refund = total // 30
-        cur.execute(
-            "UPDATE users SET points = points + ? WHERE chat_id = ?",
-            (points_refund, user_id)
-        )
-
-        # 4) Удалим заказ
-        cur.execute(
-            "DELETE FROM orders WHERE order_id = ?",
-            (order_id,)
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
-
-        # 5) Уведомим админа и пользователя
-        bot.send_message(chat_id, f"Заказ #{order_id} отменён, {points_refund} баллов возвращено.")
-        bot.send_message(user_id, f"Ваш заказ #{order_id} отменён админом. Баллы: +{points_refund}")
-
-        # Сбросим состояние и вернём главное меню
+    # Если отмена по кнопке
+    if text in ["⬅️ Назад", "❌ Отмена"]:
         user_data[chat_id]["edit_phase"] = None
-        bot.send_message(
+        return bot.send_message(
             chat_id,
-            "Готово.",
+            "Отмена прервана.",
             reply_markup=get_inline_main_menu(chat_id)
         )
+
+    # Проверяем, что ввели число
+    if not text.isdigit():
+        return bot.send_message(chat_id, "Введите числовой ID заказа.")
+
+    order_id = int(text)
+
+    # 1) Найдём заказ
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT chat_id, items_json, total FROM orders WHERE order_id = ?",
+        (order_id,)
+    )
+    row = cur.fetchone()
+    if not row:
+        cur.close()
+        conn.close()
+        return bot.send_message(chat_id, f"Заказ #{order_id} не найден.")
+    user_id, items_json, total = row
+
+    # 2) Вернём сток
+    items = json.loads(items_json)
+    menu_data = load_json(MENU_PATH)
+    for it in items:
+        for flav in menu_data[it["category"]]["flavors"]:
+            if flav["flavor"] == it["flavor"]:
+                flav["stock"] = flav.get("stock", 0) + 1
+    with open(MENU_PATH, "w", encoding="utf-8") as f:
+        json.dump(menu_data, f, ensure_ascii=False, indent=2)
+
+    # 3) Вернём баллы
+    points_refund = total // 30
+    cur.execute(
+        "UPDATE users SET points = points + ? WHERE chat_id = ?",
+        (points_refund, user_id)
+    )
+
+    # 4) Удалим заказ
+    cur.execute(
+        "DELETE FROM orders WHERE order_id = ?",
+        (order_id,)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    # 5) Уведомим админа и пользователя
+    bot.send_message(chat_id, f"Заказ #{order_id} отменён, {points_refund} баллов возвращено.")
+    bot.send_message(user_id, f"Ваш заказ #{order_id} отменён админом. Баллы: +{points_refund}")
+
+    # Сбросим состояние и вернём главное меню
+    user_data[chat_id]["edit_phase"] = None
+    bot.send_message(
+        chat_id,
+        "Готово.",
+        reply_markup=get_inline_main_menu(chat_id)
+    )
 
     # Остальной universal_handler (cart-функции, /history, /stats, /help и т.д.)
     # ... (тот же код, что и ранее, без изменений) ...
@@ -2096,8 +2099,8 @@ def universal_handler(message):
 
                 key_to_remove, _ = items_list[idx]
                 new_cart = [it for it in data['cart'] if not (
-                            it['category'] == key_to_remove[0] and it['flavor'] == key_to_remove[1] and it['price'] ==
-                            key_to_remove[2])]
+                        it['category'] == key_to_remove[0] and it['flavor'] == key_to_remove[1] and it['price'] ==
+                        key_to_remove[2])]
                 data['cart'] = new_cart
                 data['edit_cart_phase'] = None
                 data['edit_index'] = None
@@ -2406,11 +2409,7 @@ def universal_handler(message):
             user_data[chat_id] = data
             return
 
-
-
     # ────────────────────────────────────────────────────────────────────────────────
-
-
 
     # ——— Список команд ———
     if text.strip() == "/":
@@ -2646,4 +2645,3 @@ def universal_handler(message):
 if __name__ == "__main__":
     bot.delete_webhook()
     bot.polling(none_stop=True)
-
