@@ -1721,11 +1721,18 @@ def universal_handler(message):
 
         # 2) Добавить категорию
         if phase == 'add_category':
-            if text in ["⬅️ Back", "❌ Cancel"]:
+            #TODO
+            if text == "⬅️ Back":
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
                 user_data[chat_id] = data
                 return
+            if text == "❌ Cancel":
+                data['edit_phase'] = None
+                bot.send_message(chat_id, "Editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
+                user_data[chat_id] = data
+                return
+
 
             new_cat = text.strip()
             if not new_cat or new_cat in menu:
@@ -1748,9 +1755,14 @@ def universal_handler(message):
 
         # 3) Выбор категории для загрузки картинки
         if phase == 'choose_category_for_picture':
-            if text in ["⬅️ Back", "❌ Cancel"]:
+            if text == "⬅️ Back":
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
+                user_data[chat_id] = data
+                return
+            if text == "❌ Cancel":
+                data['edit_phase'] = None
+                bot.send_message(chat_id, "Editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1770,10 +1782,14 @@ def universal_handler(message):
 
         # 4) Ввод URL для картинки категории
         if phase == 'enter_category_picture_url':
-            if text in ["⬅️ Back", "❌ Cancel"]:
-                data.pop('edit_cat', None)
+            if text == "⬅️ Back":
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
+                user_data[chat_id] = data
+                return
+            if text == "❌ Cancel":
+                data['edit_phase'] = None
+                bot.send_message(chat_id, "Editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1800,9 +1816,14 @@ def universal_handler(message):
 
         # 5) Установить все вкусы категории на ноль
         if phase == 'choose_cat_zero':
-            if text in ["⬅️ Back", "❌ Cancel"]:
+            if text == "⬅️ Back":
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
+                user_data[chat_id] = data
+                return
+            if text == "❌ Cancel":
+                data['edit_phase'] = None
+                bot.send_message(chat_id, "Editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1825,9 +1846,14 @@ def universal_handler(message):
 
         # 6) Удалить категорию
         if phase == 'remove_category':
-            if text in ["⬅️ Back", "❌ Cancel"]:
+            if text == "⬅️ Back":
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
+                user_data[chat_id] = data
+                return
+            if text == "❌ Cancel":
+                data['edit_phase'] = None
+                bot.send_message(chat_id, "Editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1846,9 +1872,14 @@ def universal_handler(message):
 
         # 7) Выбрать категорию для Fix Price
         if phase == 'choose_fix_price_cat':
-            if text in ["⬅️ Back", "❌ Cancel"]:
+            if text == "⬅️ Back":
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
+                user_data[chat_id] = data
+                return
+            if text == "❌ Cancel":
+                data['edit_phase'] = None
+                bot.send_message(chat_id, "Editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1867,10 +1898,14 @@ def universal_handler(message):
 
         # 8) Ввод новой цены для категории
         if phase == 'enter_new_price':
-            if text in ["⬅️ Back", "❌ Cancel"]:
-                data.pop('edit_cat', None)
+            if text == "⬅️ Back":
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
+                user_data[chat_id] = data
+                return
+            if text == "❌ Cancel":
+                data['edit_phase'] = None
+                bot.send_message(chat_id, "Editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1896,9 +1931,14 @@ def universal_handler(message):
 
         # 9) Выбрать категорию для ALL IN
         if phase == 'choose_all_in_cat':
-            if text in ["⬅️ Back", "❌ Cancel"]:
+            if text == "⬅️ Back":
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
+                user_data[chat_id] = data
+                return
+            if text == "❌ Cancel":
+                data['edit_phase'] = None
+                bot.send_message(chat_id, "Editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1926,10 +1966,14 @@ def universal_handler(message):
 
         # 10) Заменить полный список вкусов (ALL IN)
         if phase == 'replace_all_in':
-            if text in ["⬅️ Back", "❌ Cancel"]:
-                data.pop('edit_cat', None)
+            if text == "⬅️ Back":
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
+                user_data[chat_id] = data
+                return
+            if text == "❌ Cancel":
+                data['edit_phase'] = None
+                bot.send_message(chat_id, "Editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1970,9 +2014,14 @@ def universal_handler(message):
 
         # 11) Выбрать категорию для Actual Flavor (обновлённый список)
         if phase == 'choose_cat_actual':
-            if text in ["⬅️ Back", "❌ Cancel"]:
+            if text == "⬅️ Back":
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
+                user_data[chat_id] = data
+                return
+            if text == "❌ Cancel":
+                data['edit_phase'] = None
+                bot.send_message(chat_id, "Editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -2018,10 +2067,14 @@ def universal_handler(message):
 
         # 12) Фаза 'choose_flavor_actual' — получаем выбор одного вкуса и запрашиваем новую qty
         if phase == 'choose_flavor_actual':
-            if text in ["⬅️ Back", "❌ Cancel"]:
-                data.pop('edit_cat', None)
+            if text == "⬅️ Back":
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
+                user_data[chat_id] = data
+                return
+            if text == "❌ Cancel":
+                data['edit_phase'] = None
+                bot.send_message(chat_id, "Editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -2065,11 +2118,14 @@ def universal_handler(message):
 
         # 13) Фаза 'enter_actual_qty' — получаем новую qty и обновляем stock
         if phase == 'enter_actual_qty':
-            if text in ["⬅️ Back", "❌ Cancel"]:
-                data.pop('edit_cat', None)
-                data.pop('edit_flavor', None)
+            if text == "⬅️ Back":
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
+                user_data[chat_id] = data
+                return
+            if text == "❌ Cancel":
+                data['edit_phase'] = None
+                bot.send_message(chat_id, "Editing cancelled.", reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
