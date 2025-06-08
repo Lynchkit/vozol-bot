@@ -621,26 +621,40 @@ def handle_flavor(call):
 
     bot.send_message(chat_id, caption, parse_mode="HTML")
 
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.add(
-        types.InlineKeyboardButton(
-            text=f"➕ {t(chat_id, 'add_to_cart')}",
-            callback_data=f"add_to_cart|{cat}|{flavor}"
+    @ensure_user
+    @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("flavor|"))
+    def handle_flavor(call):
+        _, cat, flavor = call.data.split("|", 2)
+        chat_id = call.from_user.id
+
+        # ... ваш существующий код проверки и отправки описания вкуса ...
+
+        # Сбор корзины
+        cart_count = len(user_data.get(chat_id, {}).get("cart", []))
+
+        kb = types.InlineKeyboardMarkup(row_width=1)
+        kb.add(
+            types.InlineKeyboardButton(
+                text=f"➕ {t(chat_id, 'add_to_cart')}",
+                callback_data=f"add_to_cart|{cat}|{flavor}"
+            )
         )
-    )
-    kb.add(
-        types.InlineKeyboardButton(
-            text=f"⬅️ {t(chat_id, 'back_to_categories')}",
-            callback_data="go_back_to_categories"
+        kb.add(
+            types.InlineKeyboardButton(
+                text=f"⬅️ {t(chat_id, 'back_to_categories')}",
+                callback_data="go_back_to_categories"
+            )
         )
-    )
-    kb.add(
-        types.InlineKeyboardButton(
-            text=f"✅ {t(chat_id, 'finish_order')}",
-            callback_data="finish_order"
-        )
-    )
-    bot.send_message(chat_id, t(chat_id, "choose_action"), reply_markup=kb)
+        # Добавляем кнопку "Завершить заказ" только если уже что-то в корзине
+        if cart_count > 0:
+            kb.add(
+                types.InlineKeyboardButton(
+                    text=f"✅ {t(chat_id, 'finish_order')}",
+                    callback_data="finish_order"
+                )
+            )
+
+        bot.send_message(chat_id, t(chat_id, "choose_action"), reply_markup=kb)
 
 
 # ------------------------------------------------------------------------
