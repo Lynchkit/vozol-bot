@@ -2867,10 +2867,10 @@ def universal_handler(message):
 
 
 
-@bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("cancel_order|"))
+@@bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("cancel_order|"))
 def handle_cancel_order(call):
-    # 1) Проверяем, что админ
-    if call.from_user.id not in (ADMIN_ID, ADMIN_ID_TWO, ADMIN_ID_THREE):
+    user_id = call.from_user.id
+    if user_id not in ADMINS:
         return bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
 
     # 2) Извлекаем order_id
