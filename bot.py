@@ -607,47 +607,51 @@ def handle_flavor(call):
     chat_id = call.from_user.id
     _, cat, flavor = call.data.split("|", 2)
 
-    # Проверяем, что категория существует
+    # Проверяем категорию и наличие
     if cat not in menu:
         return bot.answer_callback_query(call.id, t(chat_id, "error_invalid"), show_alert=True)
-
-    # Ищем сам вкус
-    item_obj = next((i for i in menu[cat]["flavors"] if i["flavor"] == flavor), None)
-    if not item_obj or item_obj.get("stock", 0) <= 0:
+    item = next((i for i in menu[cat]["flavors"] if i["flavor"] == flavor), None)
+    if not item or item.get("stock", 0) <= 0:
         return bot.answer_callback_query(call.id, t(chat_id, "error_out_of_stock"), show_alert=True)
 
     bot.answer_callback_query(call.id)
 
-    # 1) Отправляем описание
+    # Собираем текст
     user_lang = user_data.get(chat_id, {}).get("lang", "ru")
-    description = item_obj.get(f"description_{user_lang}", "") or ""
+    desc = item.get(f"description_{user_lang}", "") or ""
     price = menu[cat]["price"]
-
     caption = f"<b>{flavor}</b> — {cat}\n"
-    if description:
-        caption += f"{description}\n"
+    if desc:
+        caption += f"{desc}\n"
     caption += f"📌 {price}₺"
-    bot.send_message(chat_id, caption, parse_mode="HTML")
 
-    # 2) Формируем клавиатуру с условием по кнопке «✅ Завершить заказ»
+    # Формируем клавиатуру
     cart = user_data[chat_id]["cart"]
     kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.add(types.InlineKeyboardButton(
-        text=f"➕ {t(chat_id, 'add_to_cart')}",
-        callback_data=f"add_to_cart|{cat}|{flavor}"
-    ))
-    kb.add(types.InlineKeyboardButton(
-        text=f"⬅️ {t(chat_id, 'back_to_categories')}",
-        callback_data="go_back_to_categories"
-    ))
-    if len(cart) > 0:
+    kb.add(
+        types.InlineKeyboardButton(
+            text=f"➕ {t(chat_id, 'add_to_cart')}",
+            callback_data=f"add_to_cart|{cat}|{flavor}"
+        ),
+        types.InlineKeyboardButton(
+            text=f"⬅️ {t(chat_id, 'back_to_categories')}",
+            callback_data="go_back_to_categories"
+        )
+    )
+    if cart:
         kb.add(types.InlineKeyboardButton(
             text=f"✅ {t(chat_id, 'finish_order')}",
             callback_data="finish_order"
         ))
 
-    # 3) Отправляем второе сообщение
-    bot.send_message(chat_id, t(chat_id, "choose_action"), reply_markup=kb)
+    # Одно сообщение с описанием и кнопками
+    bot.send_message(
+        chat_id,
+        caption,
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
 
 
 # ------------------------------------------------------------------------
