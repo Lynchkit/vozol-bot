@@ -1,5 +1,9 @@
+# -*- coding: utf-8 -*-
 import os
 import json
+import types
+from wsgiref import types
+
 import requests
 import sqlite3
 import datetime
@@ -7,10 +11,11 @@ import random
 import string
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from telebot import TeleBot, types
+import telebot
+from telebot import types
 
 # ------------------------------------------------------------------------
-#   1. Загрузка переменных окружения и инициализация бота
+#   1. Загрузка переменных окружения
 # ------------------------------------------------------------------------
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
@@ -18,16 +23,12 @@ if not TOKEN:
         "Environment variable TOKEN is not set! "
         "Run the container with -e TOKEN=<your_token>."
     )
-
-ADMIN_ID      = int(os.getenv("ADMIN_ID",      "424751188"))
-ADMIN_ID_TWO  = int(os.getenv("ADMIN_ID_TWO",  "748250885"))
-ADMIN_ID_THREE= int(os.getenv("ADMIN_ID_THREE","6492697568"))
-ADMINS        = {ADMIN_ID, ADMIN_ID_TWO, ADMIN_ID_THREE}
-
-GROUP_CHAT_ID    = int(os.getenv("GROUP_CHAT_ID",    "0"))
+ADMIN_ID = int(os.getenv("ADMIN_ID", "424751188"))
+ADMIN_ID_TWO = int(os.getenv("ADMIN_ID_TWO", "748250885"))
+GROUP_CHAT_ID = int(os.getenv("GROUP_CHAT_ID", "0"))
 PERSONAL_CHAT_ID = int(os.getenv("PERSONAL_CHAT_ID", "0"))
 
-bot = TeleBot(TOKEN, parse_mode="HTML")
+bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 
 # ------------------------------------------------------------------------
 #   2. Пути к JSON-файлам и БД (персистентный том /data)
@@ -560,40 +561,30 @@ def handle_category(call):
     chat_id = call.from_user.id
     _, cat = call.data.split("|", 1)
 
-    # Убираем «часики»
-    bot.answer_callback_query(call.id)
+    # === ОТЛАДКА ===
+    print(f"DEBUG: нажата категория → '{cat}'")
+    print(f"DEBUG: ключи menu сейчас = {list(menu.keys())}")
+    # ================
 
     if cat not in menu:
-        return bot.answer_callback_query(call.id, t(chat_id, "error_invalid"), show_alert=True)
+        bot.answer_callback_query(call.id, t(chat_id, "error_invalid"))
+        return
 
+    bot.answer_callback_query(call.id)
     user_data[chat_id]["current_category"] = cat
 
-    text = f"{t(chat_id, 'choose_flavor')} «{cat}»"
-    kb   = get_inline_flavors(chat_id, cat)
     photo_url = menu[cat].get("photo_url", "").strip()
-
     if photo_url:
         try:
-            bot.send_photo(
-                chat_id,
-                photo_url,
-                caption=text,
-                parse_mode="HTML",
-                reply_markup=kb
-            )
-            return  # после фото с клавиатурой выходим из хэндлера
+            bot.send_photo(chat_id, photo_url)
         except Exception as e:
             print(f"Failed to send category photo for {cat}: {e}")
 
-    # fallback, если нет фото или вылет
     bot.send_message(
         chat_id,
-        text,
-        parse_mode="HTML",
-        reply_markup=kb
+        f"{t(chat_id, 'choose_flavor')} «{cat}»",
+        reply_markup=get_inline_flavors(chat_id, cat)
     )
-
-
 
 
 # ------------------------------------------------------------------------
@@ -1354,7 +1345,8 @@ def cmd_change(message):
     chat_id = message.chat.id
 
     # Доступ к /change только для трёх админов
-    if chat_id not in ADMINS:
+    allowed_admins = [6492697568, 424751188, 748250885]
+    if chat_id not in allowed_admins:
         bot.send_message(chat_id, "У вас нет доступа к этой команде.")
         return
 
@@ -2836,8 +2828,8 @@ def universal_handler(message):
 
         # ——— /stats ———
     if text == "/stats":
-        if chat_id not in ADMINS:
-            bot.send_message(chat_id, "У вас нет доступа.")
+        if chat_id not in (ADMIN_ID, ADMIN_ID_TWO):
+            bot.send_message(chat_id, "У вас нет доступа к этой команде.")
             return
 
         conn_local = get_db_connection()
@@ -2876,8 +2868,8 @@ def universal_handler(message):
 
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("cancel_order|"))
 def handle_cancel_order(call):
-    user_id = call.from_user.id
-    if user_id not in ADMINS:
+    # 1) Проверяем, что админ
+    if call.from_user.id not in (ADMIN_ID, ADMIN_ID_TWO):
         return bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
 
     # 2) Извлекаем order_id
