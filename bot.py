@@ -1,9 +1,5 @@
-# -*- coding: utf-8 -*-
 import os
 import json
-import types
-from wsgiref import types
-
 import requests
 import sqlite3
 import datetime
@@ -11,11 +7,10 @@ import random
 import string
 
 from apscheduler.schedulers.background import BackgroundScheduler
-import telebot
-from telebot import types
+from telebot import TeleBot, types
 
 # ------------------------------------------------------------------------
-#   1. Загрузка переменных окружения
+#   1. Загрузка переменных окружения и инициализация бота
 # ------------------------------------------------------------------------
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
@@ -23,13 +18,16 @@ if not TOKEN:
         "Environment variable TOKEN is not set! "
         "Run the container with -e TOKEN=<your_token>."
     )
-ADMIN_ID = int(os.getenv("ADMIN_ID", "424751188"))
-ADMIN_ID_TWO = int(os.getenv("ADMIN_ID_TWO", "748250885"))
-ADMIN_ID_TWO = int(os.getenv("ADMIN_ID_TWO", "6492697568"))
-GROUP_CHAT_ID = int(os.getenv("GROUP_CHAT_ID", "0"))
+
+ADMIN_ID      = int(os.getenv("ADMIN_ID",      "424751188"))
+ADMIN_ID_TWO  = int(os.getenv("ADMIN_ID_TWO",  "748250885"))
+ADMIN_ID_THREE= int(os.getenv("ADMIN_ID_THREE","6492697568"))
+ADMINS        = {ADMIN_ID, ADMIN_ID_TWO, ADMIN_ID_THREE}
+
+GROUP_CHAT_ID    = int(os.getenv("GROUP_CHAT_ID",    "0"))
 PERSONAL_CHAT_ID = int(os.getenv("PERSONAL_CHAT_ID", "0"))
 
-bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
+bot = TeleBot(TOKEN, parse_mode="HTML")
 
 # ------------------------------------------------------------------------
 #   2. Пути к JSON-файлам и БД (персистентный том /data)
@@ -1346,8 +1344,7 @@ def cmd_change(message):
     chat_id = message.chat.id
 
     # Доступ к /change только для трёх админов
-    allowed_admins = [6492697568, 424751188, 748250885]
-    if chat_id not in allowed_admins:
+    if chat_id not in ADMINS:
         bot.send_message(chat_id, "У вас нет доступа к этой команде.")
         return
 
@@ -2829,8 +2826,8 @@ def universal_handler(message):
 
         # ——— /stats ———
     if text == "/stats":
-        if chat_id not in (ADMIN_ID, ADMIN_ID_TWO):
-            bot.send_message(chat_id, "У вас нет доступа к этой команде.")
+        if chat_id not in ADMINS:
+            bot.send_message(chat_id, "У вас нет доступа.")
             return
 
         conn_local = get_db_connection()
@@ -2867,7 +2864,7 @@ def universal_handler(message):
 
 
 
-@@bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("cancel_order|"))
+@bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("cancel_order|"))
 def handle_cancel_order(call):
     user_id = call.from_user.id
     if user_id not in ADMINS:
