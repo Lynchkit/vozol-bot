@@ -246,7 +246,7 @@ def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
 
     # язык пользователя
     lang = user_data.get(chat_id, {}).get("lang") or "ru"
-    # количество позиций в корзине
+    # текущее число товаров в корзине
     count = len(user_data.get(chat_id, {}).get("cart", []))
 
     # кнопки категорий
@@ -256,33 +256,23 @@ def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
             label = f"{cat} (out of stock)" if lang == "en" else f"{cat} (нет в наличии)"
         else:
             label = cat
-        kb.add(
-            types.InlineKeyboardButton(text=label, callback_data=f"category|{cat}")
-        )
+        kb.add(types.InlineKeyboardButton(text=label, callback_data=f"category|{cat}"))
 
-    # кнопка просмотра корзины с числом позиций
+    # кнопка просмотра корзины (с количеством)
     cart_label = t(chat_id, "view_cart")
     if count > 0:
         cart_label += f" ({count})"
-    kb.add(
-        types.InlineKeyboardButton(text=f"🛒 {cart_label}", callback_data="view_cart")
-    )
+    kb.add(types.InlineKeyboardButton(text=f"🛒 {cart_label}", callback_data="view_cart"))
 
-    # остальные кнопки
-    kb.add(
-        types.InlineKeyboardButton(
-            text=f"🗑️ {t(chat_id, 'clear_cart')}",
-            callback_data="clear_cart"
-        )
-    )
-    kb.add(
-        types.InlineKeyboardButton(
-            text=f"✅ {t(chat_id, 'finish_order')}",
-            callback_data="finish_order"
-        )
-    )
+    # кнопка очистки корзины
+    kb.add(types.InlineKeyboardButton(text=f"🗑️ {t(chat_id, 'clear_cart')}", callback_data="clear_cart"))
+
+    # кнопку "Завершить заказ" показываем только если count > 0
+    if count > 0:
+        kb.add(types.InlineKeyboardButton(text=f"✅ {t(chat_id, 'finish_order')}", callback_data="finish_order"))
 
     return kb
+
 
 
 
