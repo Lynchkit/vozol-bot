@@ -255,15 +255,15 @@ def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
                 else cat
         kb.add(types.InlineKeyboardButton(text=label, callback_data=f"category|{cat}"))
 
-    # Кнопка «Посмотреть корзину» с количеством
+    # Кнопки корзины и дальнейших действий — только если в корзине есть товары
     cart_count = len(user_data.get(chat_id, {}).get("cart", []))
-    kb.add(types.InlineKeyboardButton(
-        text=f"🛒 {t(chat_id, 'view_cart')} ({cart_count})",
-        callback_data="view_cart"
-    ))
-
-    # «Очистить» и «Завершить» — только если в корзине есть товары
     if cart_count > 0:
+        # «Посмотреть корзину» с количеством
+        kb.add(types.InlineKeyboardButton(
+            text=f"🛒 {t(chat_id, 'view_cart')} ({cart_count})",
+            callback_data="view_cart"
+        ))
+        # «Очистить» и «Завершить»
         kb.add(types.InlineKeyboardButton(
             text=f"🗑️ {t(chat_id, 'clear_cart')}",
             callback_data="clear_cart"
@@ -274,6 +274,7 @@ def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
         ))
 
     return kb
+
 
 
 
