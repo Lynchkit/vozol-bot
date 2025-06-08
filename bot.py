@@ -243,22 +243,47 @@ def get_inline_language_buttons(chat_id: int) -> types.InlineKeyboardMarkup:
 # ------------------------------------------------------------------------
 def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=2)
+
+    # язык пользователя
     lang = user_data.get(chat_id, {}).get("lang") or "ru"
+    # количество позиций в корзине
+    count = len(user_data.get(chat_id, {}).get("cart", []))
+
+    # кнопки категорий
     for cat in menu.keys():
         total_stock = sum(item.get("stock", 0) for item in menu[cat]["flavors"])
         if total_stock == 0:
-            if lang == "en":
-                label = f"{cat} (out of stock)"
-            else:
-                label = f"{cat} (нет в наличии)"
+            label = f"{cat} (out of stock)" if lang == "en" else f"{cat} (нет в наличии)"
         else:
             label = cat
-        kb.add(types.InlineKeyboardButton(text=label, callback_data=f"category|{cat}"))
+        kb.add(
+            types.InlineKeyboardButton(text=label, callback_data=f"category|{cat}")
+        )
 
-    kb.add(types.InlineKeyboardButton(text=f"🛒 {t(chat_id, 'view_cart')}", callback_data="view_cart"))
-    kb.add(types.InlineKeyboardButton(text=f"🗑️ {t(chat_id, 'clear_cart')}", callback_data="clear_cart"))
-    kb.add(types.InlineKeyboardButton(text=f"✅ {t(chat_id, 'finish_order')}", callback_data="finish_order"))
+    # кнопка просмотра корзины с числом позиций
+    cart_label = t(chat_id, "view_cart")
+    if count > 0:
+        cart_label += f" ({count})"
+    kb.add(
+        types.InlineKeyboardButton(text=f"🛒 {cart_label}", callback_data="view_cart")
+    )
+
+    # остальные кнопки
+    kb.add(
+        types.InlineKeyboardButton(
+            text=f"🗑️ {t(chat_id, 'clear_cart')}",
+            callback_data="clear_cart"
+        )
+    )
+    kb.add(
+        types.InlineKeyboardButton(
+            text=f"✅ {t(chat_id, 'finish_order')}",
+            callback_data="finish_order"
+        )
+    )
+
     return kb
+
 
 
 # ------------------------------------------------------------------------
