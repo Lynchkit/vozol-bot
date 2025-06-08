@@ -216,11 +216,14 @@ def translate_to_en(text: str) -> str:
             "dt": "t",
             "q": text
         }
-        res = requests.get(base_url, params=params, timeout=5)
+        # отправка POST вместо GET — так передаётся весь текст
+        res = requests.post(base_url, data=params, timeout=10)
         data = res.json()
-        return data[0][0][0]
+        # data[0] — список сегментов, каждый seg[0] содержит часть перевода
+        return "".join(seg[0] for seg in data[0])
     except Exception:
         return text
+
 
 
 # ------------------------------------------------------------------------
@@ -1261,17 +1264,18 @@ def handle_comment_input(message):
         )
         bot.send_message(PERSONAL_CHAT_ID, full_rus)
 
-        comment_ru = data.get('comment', '')
-        comment_en = translate_to_en(comment_ru) if comment_ru else "—"
+        comment_ru = data.get('comment', '') or '—'
+        comment_en = translate_to_en(comment_ru) or '—'
+
         full_en = (
             f"📥 New order from @{message.from_user.username or message.from_user.first_name}:\n\n"
             f"{summary}\n\n"
             f"Total: {total_after}₺ {conv}\n"
             f"📍 Address: {data.get('address', '—')}\n"
-            f"📱 Contact: {data.get('contact', '—')}\n"
+            f"📱 Contact: {data.get('contact', '—')}\n\n"
             f"💬 Comment: {comment_en}"
         )
-        bot.send_message(GROUP_CHAT_ID, full_en)
+        bot.send_message(GROUP_CHAT_ID, full_en, reply_markup=kb)
 
         bot.send_message(
             chat_id,
