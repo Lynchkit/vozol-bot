@@ -560,30 +560,40 @@ def handle_category(call):
     chat_id = call.from_user.id
     _, cat = call.data.split("|", 1)
 
-    # === ОТЛАДКА ===
-    print(f"DEBUG: нажата категория → '{cat}'")
-    print(f"DEBUG: ключи menu сейчас = {list(menu.keys())}")
-    # ================
+    # Убираем «часики»
+    bot.answer_callback_query(call.id)
 
     if cat not in menu:
-        bot.answer_callback_query(call.id, t(chat_id, "error_invalid"))
-        return
+        return bot.answer_callback_query(call.id, t(chat_id, "error_invalid"), show_alert=True)
 
-    bot.answer_callback_query(call.id)
     user_data[chat_id]["current_category"] = cat
 
+    text = f"{t(chat_id, 'choose_flavor')} «{cat}»"
+    kb   = get_inline_flavors(chat_id, cat)
     photo_url = menu[cat].get("photo_url", "").strip()
+
     if photo_url:
         try:
-            bot.send_photo(chat_id, photo_url)
+            bot.send_photo(
+                chat_id,
+                photo_url,
+                caption=text,
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+            return  # после фото с клавиатурой выходим из хэндлера
         except Exception as e:
             print(f"Failed to send category photo for {cat}: {e}")
 
+    # fallback, если нет фото или вылет
     bot.send_message(
         chat_id,
-        f"{t(chat_id, 'choose_flavor')} «{cat}»",
-        reply_markup=get_inline_flavors(chat_id, cat)
+        text,
+        parse_mode="HTML",
+        reply_markup=kb
     )
+
+
 
 
 # ------------------------------------------------------------------------
