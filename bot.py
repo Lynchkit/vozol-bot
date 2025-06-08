@@ -1,5 +1,9 @@
+# -*- coding: utf-8 -*-
 import os
 import json
+import types
+from wsgiref import types
+
 import requests
 import sqlite3
 import datetime
@@ -7,10 +11,11 @@ import random
 import string
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from telebot import TeleBot, types
+import telebot
+from telebot import types
 
 # ------------------------------------------------------------------------
-#   1. Загрузка переменных окружения и инициализация бота
+#   1. Загрузка переменных окружения
 # ------------------------------------------------------------------------
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
@@ -18,16 +23,12 @@ if not TOKEN:
         "Environment variable TOKEN is not set! "
         "Run the container with -e TOKEN=<your_token>."
     )
-
-ADMIN_ID      = int(os.getenv("ADMIN_ID",      "424751188"))
-ADMIN_ID_TWO  = int(os.getenv("ADMIN_ID_TWO",  "748250885"))
-ADMIN_ID_THREE= int(os.getenv("ADMIN_ID_THREE","6492697568"))
-ADMINS        = {ADMIN_ID, ADMIN_ID_TWO, ADMIN_ID_THREE}
-
-GROUP_CHAT_ID    = int(os.getenv("GROUP_CHAT_ID",    "0"))
+ADMIN_ID = int(os.getenv("ADMIN_ID", "424751188"))
+ADMIN_ID_TWO = int(os.getenv("ADMIN_ID_TWO", "748250885"))
+GROUP_CHAT_ID = int(os.getenv("GROUP_CHAT_ID", "0"))
 PERSONAL_CHAT_ID = int(os.getenv("PERSONAL_CHAT_ID", "0"))
 
-bot = TeleBot(TOKEN, parse_mode="HTML")
+bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 
 # ------------------------------------------------------------------------
 #   2. Пути к JSON-файлам и БД (персистентный том /data)
@@ -560,41 +561,30 @@ def handle_category(call):
     chat_id = call.from_user.id
     _, cat = call.data.split("|", 1)
 
-    bot.answer_callback_query(call.id)  # убираем «часики»
+    # === ОТЛАДКА ===
+    print(f"DEBUG: нажата категория → '{cat}'")
+    print(f"DEBUG: ключи menu сейчас = {list(menu.keys())}")
+    # ================
 
     if cat not in menu:
-        return bot.answer_callback_query(call.id, t(chat_id, "error_invalid"), show_alert=True)
+        bot.answer_callback_query(call.id, t(chat_id, "error_invalid"))
+        return
 
+    bot.answer_callback_query(call.id)
     user_data[chat_id]["current_category"] = cat
 
-    text = f"{t(chat_id, 'choose_flavor')} «{cat}»"
-    kb   = get_inline_flavors(chat_id, cat)
     photo_url = menu[cat].get("photo_url", "").strip()
-
     if photo_url:
         try:
-            # отправляем фото + подпись + inline-кнопки одним запросом
-            bot.send_photo(
-                chat_id,
-                photo_url,
-                caption=text,
-                parse_mode="HTML",
-                reply_markup=kb
-            )
-            return  # после send_photo завершаем обработчик
+            bot.send_photo(chat_id, photo_url)
         except Exception as e:
             print(f"Failed to send category photo for {cat}: {e}")
 
-    # fallback, если нет фото или упало
     bot.send_message(
         chat_id,
-        text,
-        parse_mode="HTML",
-        reply_markup=kb
+        f"{t(chat_id, 'choose_flavor')} «{cat}»",
+        reply_markup=get_inline_flavors(chat_id, cat)
     )
-
-
-
 
 
 # ------------------------------------------------------------------------
@@ -617,51 +607,47 @@ def handle_flavor(call):
     chat_id = call.from_user.id
     _, cat, flavor = call.data.split("|", 2)
 
-    # Проверяем категорию и наличие
+    # Проверяем, что категория существует
     if cat not in menu:
         return bot.answer_callback_query(call.id, t(chat_id, "error_invalid"), show_alert=True)
-    item = next((i for i in menu[cat]["flavors"] if i["flavor"] == flavor), None)
-    if not item or item.get("stock", 0) <= 0:
+
+    # Ищем сам вкус
+    item_obj = next((i for i in menu[cat]["flavors"] if i["flavor"] == flavor), None)
+    if not item_obj or item_obj.get("stock", 0) <= 0:
         return bot.answer_callback_query(call.id, t(chat_id, "error_out_of_stock"), show_alert=True)
 
     bot.answer_callback_query(call.id)
 
-    # Собираем текст
+    # 1) Отправляем описание
     user_lang = user_data.get(chat_id, {}).get("lang", "ru")
-    desc = item.get(f"description_{user_lang}", "") or ""
+    description = item_obj.get(f"description_{user_lang}", "") or ""
     price = menu[cat]["price"]
-    caption = f"<b>{flavor}</b> — {cat}\n"
-    if desc:
-        caption += f"{desc}\n"
-    caption += f"📌 {price}₺"
 
-    # Формируем клавиатуру
+    caption = f"<b>{flavor}</b> — {cat}\n"
+    if description:
+        caption += f"{description}\n"
+    caption += f"📌 {price}₺"
+    bot.send_message(chat_id, caption, parse_mode="HTML")
+
+    # 2) Формируем клавиатуру с условием по кнопке «✅ Завершить заказ»
     cart = user_data[chat_id]["cart"]
     kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.add(
-        types.InlineKeyboardButton(
-            text=f"➕ {t(chat_id, 'add_to_cart')}",
-            callback_data=f"add_to_cart|{cat}|{flavor}"
-        ),
-        types.InlineKeyboardButton(
-            text=f"⬅️ {t(chat_id, 'back_to_categories')}",
-            callback_data="go_back_to_categories"
-        )
-    )
-    if cart:
+    kb.add(types.InlineKeyboardButton(
+        text=f"➕ {t(chat_id, 'add_to_cart')}",
+        callback_data=f"add_to_cart|{cat}|{flavor}"
+    ))
+    kb.add(types.InlineKeyboardButton(
+        text=f"⬅️ {t(chat_id, 'back_to_categories')}",
+        callback_data="go_back_to_categories"
+    ))
+    if len(cart) > 0:
         kb.add(types.InlineKeyboardButton(
             text=f"✅ {t(chat_id, 'finish_order')}",
             callback_data="finish_order"
         ))
 
-    # Одно сообщение с описанием и кнопками
-    bot.send_message(
-        chat_id,
-        caption,
-        parse_mode="HTML",
-        reply_markup=kb
-    )
-
+    # 3) Отправляем второе сообщение
+    bot.send_message(chat_id, t(chat_id, "choose_action"), reply_markup=kb)
 
 
 # ------------------------------------------------------------------------
@@ -1353,13 +1339,6 @@ def handle_comment_input(message):
 @bot.message_handler(commands=['change'])
 def cmd_change(message):
     chat_id = message.chat.id
-
-    # Доступ к /change только для трёх админов
-    if chat_id not in ADMINS:
-        bot.send_message(chat_id, "У вас нет доступа к этой команде.")
-        return
-
-    # Инициализируем данные пользователя, если нужно
     if chat_id not in user_data:
         user_data[chat_id] = {
             "lang": "ru",
@@ -1387,8 +1366,6 @@ def cmd_change(message):
             "temp_review_flavor": None,
             "temp_review_rating": 0
         }
-
-    # Переходим в режим редактирования меню
     data = user_data[chat_id]
     data.update({
         "current_category": None,
@@ -1404,7 +1381,6 @@ def cmd_change(message):
     })
     bot.send_message(chat_id, "Menu editing: choose action", reply_markup=edit_action_keyboard())
     user_data[chat_id] = data
-
 
 
 # ------------------------------------------------------------------------
@@ -1658,7 +1634,6 @@ def universal_handler(message):
                 bot.send_message(chat_id,
                                  t(chat_id, "choose_category"),
                                  reply_markup=get_inline_main_menu(chat_id))
-                user_data[chat_id] = data
                 return
 
             # Back
@@ -1746,23 +1721,9 @@ def universal_handler(message):
 
         # 2) Добавить категорию
         if phase == 'add_category':
-            #TODO
-            if text == "⬅️ Back":
+            if text in ["⬅️ Back", "❌ Cancel"]:
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
-                user_data[chat_id] = data
-                return
-            if text == "❌ Cancel":
-                data['edit_phase'] = None
-                data['edit_cat'] = None
-                # 1) Убираем reply-клавиатуру
-                bot.send_message(chat_id,
-                                 "Editing cancelled.",
-                                 reply_markup=types.ReplyKeyboardRemove())
-                # 2) Показываем inline-меню
-                bot.send_message(chat_id,
-                                 t(chat_id, "choose_category"),
-                                 reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1787,22 +1748,9 @@ def universal_handler(message):
 
         # 3) Выбор категории для загрузки картинки
         if phase == 'choose_category_for_picture':
-            if text == "⬅️ Back":
+            if text in ["⬅️ Back", "❌ Cancel"]:
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
-                user_data[chat_id] = data
-                return
-            if text == "❌ Cancel":
-                data['edit_phase'] = None
-                data['edit_cat'] = None
-                # 1) Убираем reply-клавиатуру
-                bot.send_message(chat_id,
-                                 "Editing cancelled.",
-                                 reply_markup=types.ReplyKeyboardRemove())
-                # 2) Показываем inline-меню
-                bot.send_message(chat_id,
-                                 t(chat_id, "choose_category"),
-                                 reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1822,22 +1770,10 @@ def universal_handler(message):
 
         # 4) Ввод URL для картинки категории
         if phase == 'enter_category_picture_url':
-            if text == "⬅️ Back":
+            if text in ["⬅️ Back", "❌ Cancel"]:
+                data.pop('edit_cat', None)
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
-                user_data[chat_id] = data
-                return
-            if text == "❌ Cancel":
-                data['edit_phase'] = None
-                data['edit_cat'] = None
-                # 1) Убираем reply-клавиатуру
-                bot.send_message(chat_id,
-                                 "Editing cancelled.",
-                                 reply_markup=types.ReplyKeyboardRemove())
-                # 2) Показываем inline-меню
-                bot.send_message(chat_id,
-                                 t(chat_id, "choose_category"),
-                                 reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1864,22 +1800,9 @@ def universal_handler(message):
 
         # 5) Установить все вкусы категории на ноль
         if phase == 'choose_cat_zero':
-            if text == "⬅️ Back":
+            if text in ["⬅️ Back", "❌ Cancel"]:
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
-                user_data[chat_id] = data
-                return
-            if text == "❌ Cancel":
-                data['edit_phase'] = None
-                data['edit_cat'] = None
-                # 1) Убираем reply-клавиатуру
-                bot.send_message(chat_id,
-                                 "Editing cancelled.",
-                                 reply_markup=types.ReplyKeyboardRemove())
-                # 2) Показываем inline-меню
-                bot.send_message(chat_id,
-                                 t(chat_id, "choose_category"),
-                                 reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1902,22 +1825,9 @@ def universal_handler(message):
 
         # 6) Удалить категорию
         if phase == 'remove_category':
-            if text == "⬅️ Back":
+            if text in ["⬅️ Back", "❌ Cancel"]:
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
-                user_data[chat_id] = data
-                return
-            if text == "❌ Cancel":
-                data['edit_phase'] = None
-                data['edit_cat'] = None
-                # 1) Убираем reply-клавиатуру
-                bot.send_message(chat_id,
-                                 "Editing cancelled.",
-                                 reply_markup=types.ReplyKeyboardRemove())
-                # 2) Показываем inline-меню
-                bot.send_message(chat_id,
-                                 t(chat_id, "choose_category"),
-                                 reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1936,22 +1846,9 @@ def universal_handler(message):
 
         # 7) Выбрать категорию для Fix Price
         if phase == 'choose_fix_price_cat':
-            if text == "⬅️ Back":
+            if text in ["⬅️ Back", "❌ Cancel"]:
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
-                user_data[chat_id] = data
-                return
-            if text == "❌ Cancel":
-                data['edit_phase'] = None
-                data['edit_cat'] = None
-                # 1) Убираем reply-клавиатуру
-                bot.send_message(chat_id,
-                                 "Editing cancelled.",
-                                 reply_markup=types.ReplyKeyboardRemove())
-                # 2) Показываем inline-меню
-                bot.send_message(chat_id,
-                                 t(chat_id, "choose_category"),
-                                 reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -1970,22 +1867,10 @@ def universal_handler(message):
 
         # 8) Ввод новой цены для категории
         if phase == 'enter_new_price':
-            if text == "⬅️ Back":
+            if text in ["⬅️ Back", "❌ Cancel"]:
+                data.pop('edit_cat', None)
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
-                user_data[chat_id] = data
-                return
-            if text == "❌ Cancel":
-                data['edit_phase'] = None
-                data['edit_cat'] = None
-                # 1) Убираем reply-клавиатуру
-                bot.send_message(chat_id,
-                                 "Editing cancelled.",
-                                 reply_markup=types.ReplyKeyboardRemove())
-                # 2) Показываем inline-меню
-                bot.send_message(chat_id,
-                                 t(chat_id, "choose_category"),
-                                 reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -2011,22 +1896,9 @@ def universal_handler(message):
 
         # 9) Выбрать категорию для ALL IN
         if phase == 'choose_all_in_cat':
-            if text == "⬅️ Back":
+            if text in ["⬅️ Back", "❌ Cancel"]:
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
-                user_data[chat_id] = data
-                return
-            if text == "❌ Cancel":
-                data['edit_phase'] = None
-                data['edit_cat'] = None
-                # 1) Убираем reply-клавиатуру
-                bot.send_message(chat_id,
-                                 "Editing cancelled.",
-                                 reply_markup=types.ReplyKeyboardRemove())
-                # 2) Показываем inline-меню
-                bot.send_message(chat_id,
-                                 t(chat_id, "choose_category"),
-                                 reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -2054,22 +1926,10 @@ def universal_handler(message):
 
         # 10) Заменить полный список вкусов (ALL IN)
         if phase == 'replace_all_in':
-            if text == "⬅️ Back":
+            if text in ["⬅️ Back", "❌ Cancel"]:
+                data.pop('edit_cat', None)
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
-                user_data[chat_id] = data
-                return
-            if text == "❌ Cancel":
-                data['edit_phase'] = None
-                data['edit_cat'] = None
-                # 1) Убираем reply-клавиатуру
-                bot.send_message(chat_id,
-                                 "Editing cancelled.",
-                                 reply_markup=types.ReplyKeyboardRemove())
-                # 2) Показываем inline-меню
-                bot.send_message(chat_id,
-                                 t(chat_id, "choose_category"),
-                                 reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -2110,22 +1970,9 @@ def universal_handler(message):
 
         # 11) Выбрать категорию для Actual Flavor (обновлённый список)
         if phase == 'choose_cat_actual':
-            if text == "⬅️ Back":
+            if text in ["⬅️ Back", "❌ Cancel"]:
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
-                user_data[chat_id] = data
-                return
-            if text == "❌ Cancel":
-                data['edit_phase'] = None
-                data['edit_cat'] = None
-                # 1) Убираем reply-клавиатуру
-                bot.send_message(chat_id,
-                                 "Editing cancelled.",
-                                 reply_markup=types.ReplyKeyboardRemove())
-                # 2) Показываем inline-меню
-                bot.send_message(chat_id,
-                                 t(chat_id, "choose_category"),
-                                 reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -2171,22 +2018,10 @@ def universal_handler(message):
 
         # 12) Фаза 'choose_flavor_actual' — получаем выбор одного вкуса и запрашиваем новую qty
         if phase == 'choose_flavor_actual':
-            if text == "⬅️ Back":
+            if text in ["⬅️ Back", "❌ Cancel"]:
+                data.pop('edit_cat', None)
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
-                user_data[chat_id] = data
-                return
-            if text == "❌ Cancel":
-                data['edit_phase'] = None
-                data['edit_cat'] = None
-                # 1) Убираем reply-клавиатуру
-                bot.send_message(chat_id,
-                                 "Editing cancelled.",
-                                 reply_markup=types.ReplyKeyboardRemove())
-                # 2) Показываем inline-меню
-                bot.send_message(chat_id,
-                                 t(chat_id, "choose_category"),
-                                 reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -2230,22 +2065,11 @@ def universal_handler(message):
 
         # 13) Фаза 'enter_actual_qty' — получаем новую qty и обновляем stock
         if phase == 'enter_actual_qty':
-            if text == "⬅️ Back":
+            if text in ["⬅️ Back", "❌ Cancel"]:
+                data.pop('edit_cat', None)
+                data.pop('edit_flavor', None)
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
-                user_data[chat_id] = data
-                return
-            if text == "❌ Cancel":
-                data['edit_phase'] = None
-                data['edit_cat'] = None
-                # 1) Убираем reply-клавиатуру
-                bot.send_message(chat_id,
-                                 "Editing cancelled.",
-                                 reply_markup=types.ReplyKeyboardRemove())
-                # 2) Показываем inline-меню
-                bot.send_message(chat_id,
-                                 t(chat_id, "choose_category"),
-                                 reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
@@ -2837,8 +2661,8 @@ def universal_handler(message):
 
         # ——— /stats ———
     if text == "/stats":
-        if chat_id not in ADMINS:
-            bot.send_message(chat_id, "У вас нет доступа.")
+        if chat_id not in (ADMIN_ID, ADMIN_ID_TWO):
+            bot.send_message(chat_id, "У вас нет доступа к этой команде.")
             return
 
         conn_local = get_db_connection()
@@ -2877,8 +2701,8 @@ def universal_handler(message):
 
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("cancel_order|"))
 def handle_cancel_order(call):
-    user_id = call.from_user.id
-    if user_id not in ADMINS:
+    # 1) Проверяем, что админ
+    if call.from_user.id not in (ADMIN_ID, ADMIN_ID_TWO):
         return bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
 
     # 2) Извлекаем order_id
