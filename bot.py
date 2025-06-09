@@ -2873,19 +2873,22 @@ def handle_cancel_order(call):
 
     conn = get_db_connection()
     cursor = conn.cursor()
+    # Теперь вытягиваем как points_spent (списано при заказе), так и points_earned (начислено за заказ)
     cursor.execute(
-        "SELECT chat_id, items_json, points_earned FROM orders WHERE order_id = ?",
+        "SELECT chat_id, items_json, points_spent, points_earned "
+        "FROM orders WHERE order_id = ?",
         (order_id,)
     )
     row = cursor.fetchone()
     if not row:
-        cursor.close(); conn.close()
+        cursor.close()
+        conn.close()
         return bot.answer_callback_query(call.id, "Заказ не найден", show_alert=True)
 
-    user_chat_id, items_json, pts_earned = row
+    user_chat_id, items_json, pts_spent, pts_earned = row
     items = json.loads(items_json)
 
-    # возвращаем товары на склад
+    # 1) Возвращаем товары на склад (как раньше)
     for it in items:
         cat = it["category"]
         flavor = it["flavor"]
@@ -2896,7 +2899,7 @@ def handle_cancel_order(call):
                 found = True
                 break
         if not found:
-            # если вкус вдруг отсутствует — добавляем его
+            # если вдруг вкус отсутствует — добавим его
             menu[cat]["flavors"].append({
                 "flavor": flavor,
                 "stock": 1,
@@ -2911,7 +2914,15 @@ def handle_cancel_order(call):
     with open(MENU_PATH, "w", encoding="utf-8") as f:
         json.dump(menu, f, ensure_ascii=False, indent=2)
 
-    # списываем бонусы, если были
+    # 2) Возвращаем списанные баллы пользователю
+    if pts_spent:
+        cursor.execute(
+            "UPDATE users SET points = points + ? WHERE chat_id = ?",
+            (pts_spent, user_chat_id)
+        )
+        conn.commit()
+
+    # 3) Убираем ранее начисленные за этот заказ баллы
     if pts_earned:
         cursor.execute(
             "UPDATE users SET points = points - ? WHERE chat_id = ?",
@@ -2919,23 +2930,28 @@ def handle_cancel_order(call):
         )
         conn.commit()
 
-    # удаляем заказ из БД
+    # 4) Удаляем сам заказ из БД
     cursor.execute("DELETE FROM orders WHERE order_id = ?", (order_id,))
     conn.commit()
-    cursor.close(); conn.close()
+    cursor.close()
+    conn.close()
 
-    # уведомляем пользователя
-    bot.send_message(
-        user_chat_id,
-        f"Ваш заказ #{order_id} отменён, {pts_earned} бонусных баллов списано."
-    )
-    # убираем кнопку в сообщении админ-группы
+    # 5) Уведомляем пользователя
+    msg = f"Ваш заказ #{order_id} отменён."
+    if pts_spent:
+        msg += f" Возвращено {pts_spent} списанных баллов."
+    if pts_earned:
+        msg += f" Списано {pts_earned} начисленных баллов."
+    bot.send_message(user_chat_id, msg)
+
+    # 6) Убираем кнопку «Отменить» в админском сообщении
     bot.edit_message_reply_markup(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         reply_markup=None
     )
     bot.answer_callback_query(call.id, "Заказ отменён")
+
 
 
 
