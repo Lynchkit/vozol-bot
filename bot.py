@@ -359,36 +359,55 @@ def edit_action_keyboard() -> types.ReplyKeyboardMarkup:
 #   13. Планировщик – еженедельный дайджест (необязательно)
 # ------------------------------------------------------------------------
 def send_weekly_digest():
-    conn_local = get_db_connection()
-    cursor_local = conn_local.cursor()
+    conn = get_db_connection()
+    cursor = conn.cursor()
 
+    # Собираем заказы за последние 7 дней
     one_week_ago = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).isoformat()
-    cursor_local.execute("SELECT items_json FROM orders WHERE timestamp >= ?", (one_week_ago,))
-    recent = cursor_local.fetchall()
+    cursor.execute("SELECT items_json FROM orders WHERE timestamp >= ?", (one_week_ago,))
+    recent = cursor.fetchall()
+
+    # Считаем количество продаж по вкусам
     counts = {}
     for (items_json,) in recent:
         items = json.loads(items_json)
         for i in items:
             counts[i["flavor"]] = counts.get(i["flavor"], 0) + 1
+
+    # Берём топ-3
     top3 = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:3]
+
+    # Формируем текст на русском
     if not top3:
-        text = "📢 No sales in the past week."
+        text = "📢 За прошлую неделю не было продаж."
     else:
-        lines = [f"{flavor}: {qty} sold" for flavor, qty in top3]
-        text = "📢 Top-3 flavors this week:\n" + "\n".join(lines)
+        lines = [f"{flavor}: {qty} шт." for flavor, qty in top3]
+        text = "📢 Топ-3 вкуса за неделю:\n" + "\n".join(lines)
 
-    cursor_local.execute("SELECT DISTINCT chat_id FROM orders")
-    users = cursor_local.fetchall()
-    for (uid,) in users:
-        bot.send_message(uid, text)
+    # Рассылаем всем зарегистрированным пользователям
+    cursor.execute("SELECT chat_id FROM users")
+    for (uid,) in cursor.fetchall():
+        try:
+            bot.send_message(uid, text)
+        except Exception as e:
+            print(f"Не удалось отправить дайджест пользователю {uid}: {e}")
 
-    cursor_local.close()
-    conn_local.close()
+    cursor.close()
+    conn.close()
 
 
+# Инициализация планировщика
 scheduler = BackgroundScheduler(timezone="Europe/Riga")
-scheduler.add_job(send_weekly_digest, trigger="cron", day_of_week="mon", hour=9, minute=0)
+scheduler.add_job(
+    send_weekly_digest,
+    trigger="cron",
+    day_of_week="mon",
+    hour=9,
+    minute=0,
+    id="weekly_digest"
+)
 scheduler.start()
+
 
 
 # ------------------------------------------------------------------------
