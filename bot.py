@@ -1441,17 +1441,18 @@ def cmd_points(message):
 @bot.message_handler(commands=['convert'])
 def cmd_convert(message):
     chat_id = message.chat.id
-    parts = message.text.split()
-    rates = fetch_rates()
-    rub = rates.get("RUB", 0)
-    usd = rates.get("USD", 0)
-    uah = rates.get("UAH", 0)
-    eur = rates.get("EUR", 0)
+    parts   = message.text.split()
+    rates   = fetch_rates()
+    rub     = rates.get("RUB", 0)
+    usd     = rates.get("USD", 0)
+    eur     = rates.get("EUR", 0)
+    uah     = rates.get("UAH", 0)
 
-    if rub == 0 or usd == 0 or uah == 0:
-        bot.send_message(chat_id, "Курсы валют сейчас недоступны, попробуйте позже.")
-        return
+    # Если хотя бы один курс не вытащился — сразу вылетаем
+    if 0 in (rub, usd, eur, uah):
+        return bot.send_message(chat_id, "Курсы валют сейчас недоступны, попробуйте позже.")
 
+    # Просто показать текущие курсы
     if len(parts) == 1:
         text = (
             "📊 Курс лиры сейчас:\n"
@@ -1461,28 +1462,31 @@ def cmd_convert(message):
             f"1₺ = {eur:.2f} €\n"
             "Для пересчёта напишите: /convert 1300"
         )
-        bot.send_message(chat_id, text)
-        return
+        return bot.send_message(chat_id, text)
 
+    # Если передали сумму — делаем расчёт
     if len(parts) == 2:
         try:
             amount = float(parts[1].replace(",", "."))
-        except Exception:
-            bot.send_message(chat_id, "Формат: /convert 1300 (или другую сумму в лирах)")
-            return
-    res_rub = amount * rub
-    res_usd = amount * usd
-    res_eur = amount * eur + 2
-    res_uah = amount * uah
+        except ValueError:
+            return bot.send_message(chat_id, "Формат: /convert 1300 (или другую сумму в лирах)")
 
-    text = (
-        f"{amount:.2f}₺ = {res_rub:.2f} ₽\n"
-        f"{amount:.2f}₺ = {res_usd:.2f} $\n"
-        f"{amount:.2f}₺ = {res_eur:.2f} €\n"
-        f"{amount:.2f}₺ = {res_uah:.2f} ₴\n"
-    )
-    bot.send_message(chat_id, text)
-    return
+        res_rub = amount * rub
+        res_usd = amount * usd
+        # вот здесь мы прибавляем 2 ₼ к евро
+        res_eur = amount * eur + 2
+        res_uah = amount * uah
+
+        text = (
+            f"{amount:.2f}₺ = {res_rub:.2f} ₽\n"
+            f"{amount:.2f}₺ = {res_usd:.2f} $\n"
+            f"{amount:.2f}₺ = {res_eur:.2f} €\n"
+            f"{amount:.2f}₺ = {res_uah:.2f} ₴"
+        )
+        return bot.send_message(chat_id, text)
+
+    # Если больше аргументов — просим уточнить
+    return bot.send_message(chat_id, "Использование: /convert 1300")
 
 # ------------------------------------------------------------------------
 #   32. Хендлер /review (запуск процесса отзывов)
