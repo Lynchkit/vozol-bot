@@ -1470,22 +1470,19 @@ def cmd_convert(message):
         except Exception:
             bot.send_message(chat_id, "Формат: /convert 1300 (или другую сумму в лирах)")
             return
-        res_rub = amount * rub
-        res_usd = amount * usd
-        res_eur = amount * eur + 2
-        res_uah = amount * uah
+    res_rub = amount * rub
+    res_usd = amount * usd
+    res_eur = amount * eur + 2
+    res_uah = amount * uah
 
-        text = (
-            f"{amount:.2f}₺ = {res_rub:.2f} ₽\n"
-            f"{amount:.2f}₺ = {res_usd:.2f} $\n"
-            f"{amount:.2f}₺ = {res_eur:.2f} €\n"
-            f"{amount:.2f}₺ = {res_uah:.2f} ₴\n"
-        )
-        bot.send_message(chat_id, text)
-        return
-
-    bot.send_message(chat_id, "Использование: /convert 1300")
-
+    text = (
+        f"{amount:.2f}₺ = {res_rub:.2f} ₽\n"
+        f"{amount:.2f}₺ = {res_usd:.2f} $\n"
+        f"{amount:.2f}₺ = {res_eur:.2f} €\n"
+        f"{amount:.2f}₺ = {res_uah:.2f} ₴\n"
+    )
+    bot.send_message(chat_id, text)
+    return
 
 # ------------------------------------------------------------------------
 #   32. Хендлер /review (запуск процесса отзывов)
