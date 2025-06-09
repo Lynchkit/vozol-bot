@@ -1210,8 +1210,9 @@ def handle_comment_input(message):
         rates = fetch_rates()
         rub = round(total_after * rates.get("RUB", 0) + 500, 2)
         usd = round(total_after * rates.get("USD", 0) + 2, 2)
+        eur = round(total_after * rates.get("EUR", 0) + 2, 2)  # евро
         uah = round(total_after * rates.get("UAH", 0) + 200, 2)
-        conv = f"({rub}₽, ${usd}, ₴{uah})"
+        conv = f"({rub}₽, ${usd}, €{eur}, ₴{uah})"
 
         # Русский
         full_rus = (
@@ -1311,8 +1312,9 @@ def handle_comment_input(message):
         rates = fetch_rates()
         rub = round(total_after * rates.get("RUB", 0) + 500, 2)
         usd = round(total_after * rates.get("USD", 0) + 2, 2)
+        eur = round(total_after * rates.get("EUR", 0) + 2, 2)
         uah = round(total_after * rates.get("UAH", 0) + 200, 2)
-        conv = f"({rub}₽, ${usd}, ₴{uah})"
+        conv = f"({rub}₽, ${usd}, €{eur}, ₴{uah})"
 
         full_rus = (
             f"📥 Новый заказ от @{message.from_user.username or message.from_user.first_name}:\n\n"
