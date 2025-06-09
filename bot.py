@@ -191,7 +191,7 @@ def generate_ref_code(length=6):
 
 def fetch_rates():
     sources = [
-        ("https://api.exchangerate.host/latest", {"base": "TRY", "symbols": "RUB,USD,UAH"}),
+        ("https://api.exchangerate.host/latest", {"base": "TRY", "symbols": "RUB,USD,UAH,EUR"}),
         ("https://open.er-api.com/v6/latest/TRY", {})
     ]
     for url, params in sources:
@@ -200,10 +200,10 @@ def fetch_rates():
             data = r.json()
             rates = data.get("rates") or data.get("conversion_rates")
             if rates:
-                return {k: rates[k] for k in ("RUB", "USD", "UAH") if k in rates}
+                return {k: rates[k] for k in ("RUB", "USD", "UAH", "EUR") if k in rates}
         except:
             continue
-    return {"RUB": 0, "USD": 0, "UAH": 0}
+    return {"RUB": 0, "USD": 0, "EUR": 0, "UAH": 0}
 
 
 def translate_to_en(text: str) -> str:
@@ -1446,6 +1446,7 @@ def cmd_convert(message):
     rub = rates.get("RUB", 0)
     usd = rates.get("USD", 0)
     uah = rates.get("UAH", 0)
+    eur = rates.get("EUR", 0)
 
     if rub == 0 or usd == 0 or uah == 0:
         bot.send_message(chat_id, "Курсы валют сейчас недоступны, попробуйте позже.")
@@ -1457,6 +1458,7 @@ def cmd_convert(message):
             f"1₺ = {rub:.2f} ₽\n"
             f"1₺ = {usd:.2f} $\n"
             f"1₺ = {uah:.2f} ₴\n\n"
+            f"1₺ = {eur:.2f} €\n"
             "Для пересчёта напишите: /convert 1300"
         )
         bot.send_message(chat_id, text)
@@ -1470,11 +1472,14 @@ def cmd_convert(message):
             return
         res_rub = amount * rub
         res_usd = amount * usd
+        res_eur = amount * eur + 2
         res_uah = amount * uah
+
         text = (
             f"{amount:.2f}₺ = {res_rub:.2f} ₽\n"
             f"{amount:.2f}₺ = {res_usd:.2f} $\n"
-            f"{amount:.2f}₺ = {res_uah:.2f} ₴"
+            f"{amount:.2f}₺ = {res_eur:.2f} €\n"
+            f"{amount:.2f}₺ = {res_uah:.2f} ₴\n"
         )
         bot.send_message(chat_id, text)
         return
@@ -2609,7 +2614,8 @@ def universal_handler(message):
             rub = round(total_after * rates.get("RUB", 0) + 500, 2)
             usd = round(total_after * rates.get("USD", 0) + 2, 2)
             uah = round(total_after * rates.get("UAH", 0) + 200, 2)
-            conv = f"({rub}₽, ${usd}, ₴{uah})"
+            eur = round(total_after * rates.get("EUR", 0) + 2, 2)  # новая строка
+            conv = f"({rub}₽, ${usd}, €{eur}, ₴{uah})"
 
             full_rus = (
                 f"📥 Новый заказ от @{message.from_user.username or message.from_user.first_name}:\n\n"
