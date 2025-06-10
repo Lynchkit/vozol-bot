@@ -1033,6 +1033,8 @@ def handle_points_input(message):
 # ------------------------------------------------------------------------
 #   26. Handler: ввод адреса
 # ------------------------------------------------------------------------
+from types import SimpleNamespace
+
 @ensure_user
 @bot.message_handler(
     func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_address"),
@@ -1040,16 +1042,15 @@ def handle_points_input(message):
 )
 def handle_address_input(message):
     chat_id = message.chat.id
-    data = user_data[chat_id]
-    text = message.text or ""
+    data    = user_data[chat_id]
+    text    = message.text or ""
 
-    # Нажали «Назад» — возвращаемся к предыдущему шагу
+    # 1) Нажали «Назад» — отменяем ввод адреса и возвращаемся на предыдущий шаг
     if text == t(chat_id, "back"):
-        # отменяем ввод адреса
         data['wait_for_address'] = False
 
-        # если до этого был шаг со списанием баллов — возвращаемся туда
         if data.get("temp_user_points", 0) > 0:
+            # возвращаемся к вводу баллов
             data['wait_for_points'] = True
             points_msg = (
                 t(chat_id, "points_info")
@@ -1060,14 +1061,14 @@ def handle_address_input(message):
             )
             bot.send_message(chat_id, points_msg, reply_markup=types.ReplyKeyboardRemove())
         else:
-            # иначе показываем корзину
-            handle_view_cart(types.SimpleNamespace(from_user=message.from_user, id=None, data=None))
+            # показываем корзину
+            dummy_call = SimpleNamespace(from_user=message.from_user, id=None, data=None)
+            handle_view_cart(dummy_call)
 
         user_data[chat_id] = data
         return
 
-    # Нажали «Выбрать на карте» — показываем инструкцию и снова address_keyboard
-    # Инструкция “Выбрать на карте” с единственной кнопкой «Назад»
+    # 2) Инструкция «Выбрать на карте» — оставляем только «Назад»
     if text == t(None, "choose_on_map"):
         kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
         kb.add(t(chat_id, "back"))
@@ -1079,28 +1080,50 @@ def handle_address_input(message):
         )
         return
 
-    # Пользователь прислал Venue
-    if message.content_type == 'venue' and message.venue:
-        v = message.venue
-        address = f"{v.title}, {v.address}\n🌍 https://maps.google.com/?q={v.location.latitude},{v.location.longitude}"
+    # 3) Переключаемся в ручной ввод текста
+    if text == t(None, "enter_address_text"):
+        data['awaiting_manual_address'] = True
+        kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        kb.add(t(chat_id, "back"))
+        bot.send_message(
+            chat_id,
+            t(chat_id, "enter_address"),  # в переводах: «Введите ваш адрес…»
+            reply_markup=kb
+        )
+        user_data[chat_id] = data
+        return
 
-    # Пользователь прислал гео-точку
+    # 4) Если ждём ручного ввода — любой текст принимаем как адрес
+    if data.get('awaiting_manual_address'):
+        address = text.strip()
+        data.pop('awaiting_manual_address', None)
+
+    # 5) Если прислали Venue (точку из поиска)
+    elif message.content_type == 'venue' and message.venue:
+        v = message.venue
+        address = (
+            f"{v.title}, {v.address}\n"
+            f"🌍 https://maps.google.com/?q={v.location.latitude},{v.location.longitude}"
+        )
+
+    # 6) Если прислали GPS-локацию
     elif message.content_type == 'location' and message.location:
         lat, lon = message.location.latitude, message.location.longitude
         address = f"🌍 https://maps.google.com/?q={lat},{lon}"
 
-    # Нажали “Ввести адрес текстом”
-    elif text == t(None, "enter_address_text"):
-        bot.send_message(chat_id, t(chat_id, "enter_address"), reply_markup=types.ReplyKeyboardRemove())
-        return
-
-    # Пользователь ввёл текст
-    elif message.content_type == 'text':
-        address = text.strip()
-
     else:
+        # ни текст, ни локация — просим повторить
         bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=address_keyboard())
         return
+
+    # 7) У нас есть адрес — переходим к вводу контакта
+    data['address']            = address
+    data['wait_for_address']   = False
+    data['wait_for_contact']   = True
+
+    bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=contact_keyboard())
+    user_data[chat_id] = data
+
 
 
 # ------------------------------------------------------------------------
