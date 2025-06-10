@@ -1011,53 +1011,65 @@ def handle_points_input(message):
 )
 def handle_address_input(message):
     chat_id = message.chat.id
-    data = user_data.get(chat_id, {})
+    data = user_data[chat_id]
     text = message.text or ""
 
-    # ИСПРАВЛЁННЫЙ ВАРИАНТ
-
+    # Кнопка «Назад»
     if text == t(chat_id, "back"):
         data['wait_for_address'] = False
         data['current_category'] = None
-        # 1) Убираем клавиатуру запроса локации
-        bot.send_message(chat_id,
-                         t(chat_id, "choose_category"),
+        # Убираем клавиатуру
+        bot.send_message(chat_id, t(chat_id, "choose_category"),
                          reply_markup=types.ReplyKeyboardRemove())
-        # 2) Показываем основное inline-меню
-        bot.send_message(chat_id,
-                         t(chat_id, "choose_category"),
+        # Показываем основное меню
+        bot.send_message(chat_id, t(chat_id, "choose_category"),
                          reply_markup=get_inline_main_menu(chat_id))
         return
 
+    # Пользователь нажал «Выбрать на карте»
     if text == t(None, "choose_on_map"):
-        bot.send_message(
-            chat_id,
-            "Чтобы выбрать точку:\n📎 → Местоположение → «Выбрать на карте» → метка → Отправить",
-            reply_markup=types.ReplyKeyboardRemove()
+        instr = (
+            "Чтобы выбрать точку:\n"
+            "📎 → Местоположение → «Выбрать на карте» → метка → Отправить"
         )
-        return
+        # Показываем инструкцию + кнопку «Назад»
+        back_kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        back_kb.add(t(chat_id, "back"))
+        return bot.send_message(chat_id, instr, reply_markup=back_kb)
 
+    # Получили venue (меткa)
     if message.content_type == 'venue' and message.venue:
         v = message.venue
         address = f"{v.title}, {v.address}\n🌍 https://maps.google.com/?q={v.location.latitude},{v.location.longitude}"
+
+    # Получили локацию
     elif message.content_type == 'location' and message.location:
         lat, lon = message.location.latitude, message.location.longitude
         address = f"🌍 https://maps.google.com/?q={lat},{lon}"
+
+    # Нажали «Ввести текстом»
     elif text == t(None, "enter_address_text"):
-        bot.send_message(chat_id, t(chat_id, "enter_address"), reply_markup=types.ReplyKeyboardRemove())
-        return
-    elif message.content_type == 'text' and message.text:
-        address = message.text.strip()
-    else:
-        bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=address_keyboard())
+        bot.send_message(chat_id, t(chat_id, "enter_address"),
+                         reply_markup=types.ReplyKeyboardRemove())
         return
 
+    # Любой другой текст
+    elif message.content_type == 'text':
+        address = text.strip()
+
+    else:
+        # Некорректный ввод — возвращаем исходную клавиатуру
+        return bot.send_message(chat_id, t(chat_id, "error_invalid"),
+                                reply_markup=address_keyboard())
+
+    # Если дошли до сюда — адрес получен
     data['address'] = address
     data['wait_for_address'] = False
     data['wait_for_contact'] = True
-    kb = contact_keyboard()
-    bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=kb)
     user_data[chat_id] = data
+
+    bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=contact_keyboard())
+
 
 
 # ------------------------------------------------------------------------
