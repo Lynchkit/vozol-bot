@@ -1067,12 +1067,15 @@ def handle_address_input(message):
         return
 
     # Нажали «Выбрать на карте» — показываем инструкцию и снова address_keyboard
+    # Инструкция “Выбрать на карте” с единственной кнопкой «Назад»
     if text == t(None, "choose_on_map"):
+        kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        kb.add(t(chat_id, "back"))
         bot.send_message(
             chat_id,
             "Чтобы выбрать точку:\n"
             "📎 → Местоположение → «Выбрать на карте» → метка → Отправить",
-            reply_markup=address_keyboard()
+            reply_markup=kb
         )
         return
 
@@ -1098,17 +1101,6 @@ def handle_address_input(message):
     else:
         bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=address_keyboard())
         return
-
-    # У нас есть адрес — идём дальше к вводу контакта
-    data['address'] = address
-    data['wait_for_address'] = False
-    data['wait_for_contact'] = True
-
-    bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=contact_keyboard())
-    user_data[chat_id] = data
-
-
-
 
 
 # ------------------------------------------------------------------------
