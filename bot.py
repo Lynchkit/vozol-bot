@@ -1051,8 +1051,9 @@ def handle_address_input(message):
     # Дальнейшая обработка выбора адреса...
     if text == t(None, "choose_on_map"):
         data["prev_stage"] = "wait_for_address"
-        # Берём стандартную клавиатуру адреса (с кнопкой «⬅️ Назад»)
-        kb = address_keyboard()
+        # Только кнопка “назад”
+        kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        kb.add(t(None, "back"))
         bot.send_message(
             chat_id,
             "Чтобы выбрать точку:\n"
