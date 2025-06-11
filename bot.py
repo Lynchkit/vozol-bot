@@ -1078,8 +1078,9 @@ def handle_address_input(message):
     data['wait_for_contact'] = True
     user_data[chat_id] = data
 
+    # Становится:
     kb = contact_keyboard()
-    kb.add(t(None, "back"))
+    # убираем второе добавление back
     bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=kb)
 
 
@@ -2487,10 +2488,13 @@ def universal_handler(message):
             return
 
         if text == t(None, "choose_on_map"):
+            data["prev_stage"] = "wait_for_address"
+            kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+            kb.add(t(None, "back"))  # кнопка назад
             bot.send_message(
                 chat_id,
                 "Чтобы выбрать точку:\n📎 → Местоположение → «Выбрать на карте» → метка → Отправить",
-                reply_markup=types.ReplyKeyboardRemove()
+                reply_markup=kb
             )
             return
 
