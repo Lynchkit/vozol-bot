@@ -2489,8 +2489,9 @@ def universal_handler(message):
 
         if text == t(None, "choose_on_map"):
             data["prev_stage"] = "wait_for_address"
+            # формируем новую клавиатуру только с кнопкой “Назад”
             kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-            kb.add(t(None, "back"))  # кнопка назад
+            kb.add(t(chat_id, "back"))
             bot.send_message(
                 chat_id,
                 "Чтобы выбрать точку:\n📎 → Местоположение → «Выбрать на карте» → метка → Отправить",
