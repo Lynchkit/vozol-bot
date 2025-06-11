@@ -1656,21 +1656,21 @@ def cmd_total(message):
 def cmd_payment(message):
     chat_id = message.chat.id
     # 1) Номер IBAN
-    bot.send_message(chat_id, "1) TR22 0004 6013 3088 8000 0301 47")
+    bot.send_message(chat_id, "TR22 0004 6013 3088 8000 0301 47")
     # 2) Имя получателя
-    bot.send_message(chat_id, "2) Artur Yuldashev")
+    bot.send_message(chat_id, "Artur Yuldashev")
     # 3) Адрес кошелька
-    bot.send_message(chat_id, "3) TNPPfWfYmWuthV5fMG795FE2HsA5ySwq76")
+    bot.send_message(chat_id, "TNPPfWfYmWuthV5fMG795FE2HsA5ySwq76")
     # 4) Сеть
-    bot.send_message(chat_id, "4) Tron (TRC-20)")
+    bot.send_message(chat_id, "Tron (TRC-20)")
     # 5) Карта
-    bot.send_message(chat_id, "5) 4441 1115 7718 424")
+    bot.send_message(chat_id, "4441 1115 7718 424")
     # 6) Валюта
-    bot.send_message(chat_id, "6) Grivne")
+    bot.send_message(chat_id, "Grivne")
     # 7) Контакт
-    bot.send_message(chat_id, "7) +7 996 996 12 99")
+    bot.send_message(chat_id, "+7 996 996 12 99")
     # Дополнительно Тинькофф в рублях
-    bot.send_message(chat_id, "\n• Тинькофф (₽): 2200 7007 0808 9817")
+    bot.send_message(chat_id, "Тинькофф (₽): 2200 7007 0808 9817")
 
 
 
