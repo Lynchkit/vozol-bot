@@ -946,20 +946,22 @@ def handle_finish_order(call):
         data["temp_total_try"] = total_try
         data["temp_user_points"] = user_points
     else:
-        # Запоминаем, откуда мы пришли
+        # Запоминаем, откуда пришли
         push_state(chat_id, "finish_order")
-        # Показываем ввод адреса с кнопкой «Назад»
+        # Только здесь показываем ввод адреса
         kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-        kb.add(types.KeyboardButton(t(None, "share_location"), request_location=True))
-        kb.add(t(None, "back"))
+        kb.add(types.KeyboardButton(t(chat_id, "share_location"), request_location=True))
+        kb.add(t(chat_id, "back"))
         bot.send_message(
             chat_id,
-            f"🛒 {t(chat_id, 'view_cart')}:\n\n" +
-            "\n".join(f"{item['category']}: {item['flavor']} — {item['price']}₺" for item in cart) +
-            f"\n\n{t(chat_id, 'enter_address')}",
+            f"🛒 {t(chat_id, 'view_cart')}:\n\n"
+            + "\n".join(f"{i['category']}: {i['flavor']} — {i['price']}₺" for i in cart)
+            + f"\n\n{t(chat_id, 'enter_address')}",
             reply_markup=kb
         )
         data["wait_for_address"] = True
+
+    user_data[chat_id] = data
 
 
 # ------------------------------------------------------------------------
@@ -1046,7 +1048,7 @@ def handle_address_input(message):
                          reply_markup=get_inline_main_menu(chat_id))
         return
 
-    if text == t(None, "choose_on_map"):
+    if text == t(chat_id, "choose_on_map"):
         bot.send_message(
             chat_id,
             "Чтобы выбрать точку:\n📎 → Местоположение → «Выбрать на карте» → метка → Отправить",
