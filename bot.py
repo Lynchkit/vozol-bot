@@ -2988,4 +2988,7 @@ def handle_cancel_order(call):
 # ------------------------------------------------------------------------
 if __name__ == "__main__":
     bot.delete_webhook()
-    bot.polling(none_stop=True)
+    # timeout — время ожидания одного long-polling запроса (в секундах)
+    # long_polling_timeout — пауза между запросами, если нет новых апдейтов
+    bot.infinity_polling(timeout=10, long_polling_timeout=5)
+
