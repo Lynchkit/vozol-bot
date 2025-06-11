@@ -171,6 +171,19 @@ def ensure_user(handler):
         return handler(message_or_call, *args, **kwargs)
 
     return wrapper
+def push_state(chat_id: int, state: str):
+    """Пушит текущее имя шага в стек."""
+    stack = user_data[chat_id].setdefault("state_stack", [])
+    stack.append(state)
+
+def pop_state(chat_id: int) -> str | None:
+    """Удаляет текущее состояние и возвращает предыдущее."""
+    stack = user_data[chat_id].get("state_stack", [])
+    if not stack:
+        return None
+    stack.pop()
+    return stack[-1] if stack else None
+
 
 
 # ------------------------------------------------------------------------
@@ -348,7 +361,7 @@ def comment_keyboard() -> types.ReplyKeyboardMarkup:
 # ------------------------------------------------------------------------
 def edit_action_keyboard() -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.add("➕ Add Category", "➖ Remove Category")
+    kb.add("➕ Add Category", "➖ Remove Category", "✏️ Rename Category")
     kb.add("💲 Fix Price", "ALL IN", "🔄 Actual Flavor")
     kb.add("🖼️ Add Category Picture", "Set Category Flavor to 0")
     kb.add("⬅️ Back", "❌ Cancel")
@@ -1705,6 +1718,16 @@ def universal_handler(message):
                 user_data[chat_id] = data
                 return
 
+            if text == "✏️ Rename Category":
+                data['edit_phase'] = 'rename_category_select'
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                for cat_key in menu:
+                    kb.add(cat_key)
+                kb.add("⬅️ Back", "❌ Cancel")
+                bot.send_message(chat_id, "Выберите категорию для переименования:", reply_markup=kb)
+                user_data[chat_id] = data
+                return
+
             if text == "💲 Fix Price":
                 data['edit_phase'] = 'choose_fix_price_cat'
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -1946,6 +1969,67 @@ def universal_handler(message):
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
                 kb.add("⬅️ Back", "❌ Cancel")
                 bot.send_message(chat_id, "Select a valid category.", reply_markup=kb)
+            return
+
+        # ——————————————————————————————————————————
+        if phase == 'rename_category_select':
+            if text == "⬅️ Back":
+                data['edit_phase'] = 'choose_action'
+                bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
+                user_data[chat_id] = data
+                return
+            if text == "❌ Cancel":
+                data['edit_phase'] = None
+                bot.send_message(chat_id, "Editing cancelled.", reply_markup=types.ReplyKeyboardRemove())
+                bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
+                user_data[chat_id] = data
+                return
+            if text in menu:
+                data['edit_cat'] = text
+                data['edit_phase'] = 'rename_category_enter'
+                bot.send_message(
+                    chat_id,
+                    f"Введите новое имя для категории «{text}»:",
+                    reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                    .add("⬅️ Back", "❌ Cancel")
+                )
+                user_data[chat_id] = data
+                return
+            # Если ввели несуществующую категорию
+            bot.send_message(chat_id, "Выберите корректную категорию или нажмите Cancel.")
+            return
+        # ——————————————————————————————————————————
+        if phase == 'rename_category_enter':
+            old_name = data.get('edit_cat')
+            if text == "⬅️ Back":
+                data['edit_phase'] = 'rename_category_select'
+                # показать список категорий заново
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                for cat_key in menu:
+                    kb.add(cat_key)
+                kb.add("⬅️ Back", "❌ Cancel")
+                bot.send_message(chat_id, "Выберите категорию для переименования:", reply_markup=kb)
+                user_data[chat_id] = data
+                return
+            if text == "❌ Cancel":
+                data['edit_phase'] = None
+                bot.send_message(chat_id, "Editing cancelled.", reply_markup=types.ReplyKeyboardRemove())
+                bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
+                user_data[chat_id] = data
+                return
+            new_name = text.strip()
+            if not new_name or new_name in menu:
+                bot.send_message(chat_id, "Некорректное или уже существующее имя. Попробуйте ещё раз:")
+                return
+            # Переименование
+            menu[new_name] = menu.pop(old_name)
+            with open(MENU_PATH, "w", encoding="utf-8") as f:
+                json.dump(menu, f, ensure_ascii=False, indent=2)
+            bot.send_message(chat_id, f"Категория «{old_name}» переименована в «{new_name}».",
+                             reply_markup=edit_action_keyboard())
+            data['edit_phase'] = 'choose_action'
+            data.pop('edit_cat', None)
+            user_data[chat_id] = data
             return
 
         # 7) Выбрать категорию для Fix Price
