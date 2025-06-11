@@ -171,6 +171,19 @@ def ensure_user(handler):
         return handler(message_or_call, *args, **kwargs)
 
     return wrapper
+def push_state(chat_id: int, state: str):
+    """Пушит текущее имя шага в стек."""
+    stack = user_data[chat_id].setdefault("state_stack", [])
+    stack.append(state)
+
+def pop_state(chat_id: int) -> str | None:
+    """Удаляет текущее состояние и возвращает предыдущее."""
+    stack = user_data[chat_id].get("state_stack", [])
+    if not stack:
+        return None
+    stack.pop()
+    return stack[-1] if stack else None
+
 
 
 # ------------------------------------------------------------------------
@@ -348,7 +361,7 @@ def comment_keyboard() -> types.ReplyKeyboardMarkup:
 # ------------------------------------------------------------------------
 def edit_action_keyboard() -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.add("➕ Add Category", "➖ Remove Category")
+    kb.add("➕ Add Category", "➖ Remove Category", "✏️ Rename Category")
     kb.add("💲 Fix Price", "ALL IN", "🔄 Actual Flavor")
     kb.add("🖼️ Add Category Picture", "Set Category Flavor to 0")
     kb.add("⬅️ Back", "❌ Cancel")
@@ -901,46 +914,49 @@ def handle_clear_cart(call):
 def handle_finish_order(call):
     chat_id = call.from_user.id
     bot.answer_callback_query(call.id)
-    data = user_data.setdefault(chat_id, {})
+    data = user_data.get(chat_id, {})
 
     cart = data.get("cart", [])
     if not cart:
-        return bot.send_message(chat_id, t(chat_id, "cart_empty"))
+        bot.send_message(chat_id, t(chat_id, "cart_empty"))
+        return
 
     total_try = sum(item["price"] for item in cart)
-    data["temp_total_try"]   = total_try
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT points FROM users WHERE chat_id = ?", (chat_id,))
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
-    user_points = row[0] if row else 0
-    data["temp_user_points"] = user_points
 
-    data["prev_stage"] = "finish_order"
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    cursor_local.execute("SELECT points FROM users WHERE chat_id = ?", (chat_id,))
+    row = cursor_local.fetchone()
+    cursor_local.close()
+    conn_local.close()
+
+    user_points = row[0] if row else 0
+
     if user_points > 0:
         max_points = min(user_points, total_try)
+        points_try = user_points * 1
         msg = (
-            t(chat_id, "points_info").format(points=user_points, points_try=user_points)
-            + "\n"
-            + t(chat_id, "enter_points").format(max_points=max_points)
+                t(chat_id, "points_info").format(points=user_points, points_try=points_try)
+                + "\n"
+                + t(chat_id, "enter_points").format(max_points=max_points)
         )
-        kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-        kb.add(t(chat_id, "back"))
-        bot.send_message(chat_id, msg, reply_markup=kb)
+        bot.send_message(chat_id, msg, reply_markup=types.ReplyKeyboardRemove())
         data["wait_for_points"] = True
+        data["temp_total_try"] = total_try
+        data["temp_user_points"] = user_points
     else:
         kb = address_keyboard()
-        summary = "\n".join(f"{i['category']}: {i['flavor']} — {i['price']}₺" for i in cart)
         bot.send_message(
             chat_id,
-            f"🛒 {t(chat_id,'view_cart')}:\n\n{summary}\n\n{t(chat_id,'enter_address')}",
+            f"🛒 {t(chat_id, 'view_cart')}:\n\n" +
+            "\n".join(f"{item['category']}: {item['flavor']} — {item['price']}₺" for item in cart) +
+            f"\n\n{t(chat_id, 'enter_address')}",
             reply_markup=kb
         )
         data["wait_for_address"] = True
 
     user_data[chat_id] = data
+
 
 # ------------------------------------------------------------------------
 #   25. Handler: ввод количества баллов для списания
@@ -949,15 +965,8 @@ def handle_finish_order(call):
 @bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_points"), content_types=['text'])
 def handle_points_input(message):
     chat_id = message.chat.id
-    data = user_data[chat_id]
+    data = user_data.get(chat_id, {})
     text = message.text.strip()
-
-    if text == t(chat_id, "back") and data.get("prev_stage") == "finish_order":
-        data["wait_for_points"] = False
-        user_data[chat_id] = data
-        summary = "\n".join(f"{i['category']}: {i['flavor']} — {i['price']}₺" for i in data["cart"])
-        bot.send_message(chat_id, f"🛒 {t(chat_id,'view_cart')}:\n\n{summary}", reply_markup=get_inline_main_menu(chat_id))
-        return
 
     if not text.isdigit():
         bot.send_message(chat_id, t(chat_id, "invalid_points").format(max_points=data.get("temp_total_try", 0)))
@@ -1015,114 +1024,58 @@ def handle_points_input(message):
 )
 def handle_address_input(message):
     chat_id = message.chat.id
-    data = user_data.setdefault(chat_id, {})
+    data = user_data.get(chat_id, {})
     text = message.text or ""
 
-    # Нажатие «Назад»
-    # Нажатие «Назад»
+    # ИСПРАВЛЁННЫЙ ВАРИАНТ
+
     if text == t(chat_id, "back"):
-        # если были в режиме выбора точки на карте — показываем клавиатуру ввода адреса и выходим из режима «map»
-        if data.get("prev_stage") == "map":
-            data["prev_stage"] = None
-            user_data[chat_id] = data
-            return bot.send_message(
-                chat_id,
-                t(chat_id, "enter_address"),
-                reply_markup=address_keyboard()
-            )
-
-        # если возвращаемся с этапа списания баллов — показываем ввод баллов
-        if data.get("prev_stage") == "finish_order":
-            data["wait_for_points"] = True
-            data["wait_for_address"] = False
-            user_data[chat_id] = data
-
-            total_try = data.get("temp_total_try", 0)
-            user_points = data.get("temp_user_points", 0)
-            max_points = min(user_points, total_try)
-            msg = (
-                    t(chat_id, "points_info").format(points=user_points, points_try=user_points)
-                    + "\n"
-                    + t(chat_id, "enter_points").format(max_points=max_points)
-            )
-            kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-            kb.add(t(chat_id, "back"))
-            return bot.send_message(chat_id, msg, reply_markup=kb)
-
-        # во всех остальных случаях — показываем выбор способа ввода адреса
         data['wait_for_address'] = False
-        user_data[chat_id] = data
-        return bot.send_message(
-            chat_id,
-            t(chat_id, "enter_address"),
-            reply_markup=address_keyboard()
-        )
+        data['current_category'] = None
+        # 1) Убираем клавиатуру запроса локации
+        bot.send_message(chat_id,
+                         t(chat_id, "choose_category"),
+                         reply_markup=types.ReplyKeyboardRemove())
+        # 2) Показываем основное inline-меню
+        bot.send_message(chat_id,
+                         t(chat_id, "choose_category"),
+                         reply_markup=get_inline_main_menu(chat_id))
+        return
 
-    # Нажатие «Выбрать на карте»
-    if text == t(chat_id, "choose_on_map"):
-        data["prev_stage"] = "map"
-        kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-        kb.add(t(chat_id, "back"))
+    if text == t(None, "choose_on_map"):
         bot.send_message(
             chat_id,
-            "Чтобы выбрать точку:\n"
-            "📎 → Местоположение → «Выбрать на карте» → метка → Отправить",
-            reply_markup=kb
+            "Чтобы выбрать точку:\n📎 → Местоположение → «Выбрать на карте» → метка → Отправить",
+            reply_markup=types.ReplyKeyboardRemove()
         )
         return
 
-    # Пришёл объект venue
     if message.content_type == 'venue' and message.venue:
         v = message.venue
         address = f"{v.title}, {v.address}\n🌍 https://maps.google.com/?q={v.location.latitude},{v.location.longitude}"
-
-    # Пришли чистые координаты
     elif message.content_type == 'location' and message.location:
         lat, lon = message.location.latitude, message.location.longitude
         address = f"🌍 https://maps.google.com/?q={lat},{lon}"
-
-    # Текстовый ввод адреса
-    elif text == t(chat_id, "enter_address_text"):
+    elif text == t(None, "enter_address_text"):
         bot.send_message(chat_id, t(chat_id, "enter_address"), reply_markup=types.ReplyKeyboardRemove())
         return
-    elif message.content_type == 'text':
+    elif message.content_type == 'text' and message.text:
         address = message.text.strip()
     else:
-        # некорректный ввод — возвращаем стандартную клавиатуру
-        return bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=address_keyboard())
+        bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=address_keyboard())
+        return
 
-    # Сохраняем адрес и переходим к контакту
     data['address'] = address
     data['wait_for_address'] = False
     data['wait_for_contact'] = True
+    kb = contact_keyboard()
+    bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=kb)
     user_data[chat_id] = data
 
-    bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=contact_keyboard())
 
-
-
-
-
-
-
-    # Сохраняем контакт и переходим к комментарию
-    data['contact'] = contact
-    data['wait_for_contact'] = False
-    data['wait_for_comment'] = True
-    user_data[chat_id] = data
-
-    # Кастомный промпт и только кнопка «Назад»
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.add(t(chat_id, "back"))
-
-    bot.send_message(
-        chat_id,
-        "Напишите, пожалуйста, важную информацию — мы обязательно примем её во внимание.",
-        reply_markup=kb
-    )
-    return
-
-
+# ------------------------------------------------------------------------
+#   27. Handler: ввод контакта
+# ------------------------------------------------------------------------
 @ensure_user
 @bot.message_handler(
     func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_contact"),
@@ -1130,52 +1083,66 @@ def handle_address_input(message):
 )
 def handle_contact_input(message):
     chat_id = message.chat.id
-    data = user_data[chat_id]
-
+    data = user_data.get(chat_id, {})
     text = message.text or ""
-    # Нажали «Назад»?
+
+    # ИСПРАВЛЁННЫЙ ВАРИАНТ (если ты хочешь сразу в main-menu)
     if text == t(chat_id, "back"):
-        data['wait_for_address'] = True
+        data['wait_for_address'] = False
         data['wait_for_contact'] = False
-        bot.send_message(chat_id, t(chat_id, "enter_address"), reply_markup=address_keyboard())
+        bot.send_message(chat_id,
+                         t(chat_id, "choose_category"),
+                         reply_markup=types.ReplyKeyboardRemove())
+        bot.send_message(chat_id,
+                         t(chat_id, "choose_category"),
+                         reply_markup=get_inline_main_menu(chat_id))
         return
 
-    # Получили контакт через кнопку
+    if text == t(None, "enter_nickname"):
+        bot.send_message(chat_id, "Введите ваш Telegram-ник (без @):", reply_markup=types.ReplyKeyboardRemove())
+        return
+
     if message.content_type == 'contact' and message.contact:
         contact = message.contact.phone_number
-    else:
-        # Пользователь вбил текстовый ник
+    elif message.content_type == 'text' and message.text:
         contact = "@" + message.text.strip().lstrip("@")
+    else:
+        bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=contact_keyboard())
+        return
 
     data['contact'] = contact
     data['wait_for_contact'] = False
     data['wait_for_comment'] = True
+    kb = comment_keyboard()
+    bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=kb)
     user_data[chat_id] = data
 
-    # Переходим к комментарию
-    bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=comment_keyboard())
-    return
 
 # ------------------------------------------------------------------------
 #   28. Handler: ввод комментария и сохранение заказа (с учётом списания stock)
 # ------------------------------------------------------------------------
-# 5. handle_comment_input: «Back» возвращает на ввод контакта
 @ensure_user
-@bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_comment"), content_types=['text'])
+@bot.message_handler(
+    func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_comment"),
+    content_types=['text']
+)
 def handle_comment_input(message):
     chat_id = message.chat.id
-    data = user_data[chat_id]
+    data = user_data.get(chat_id, {})
     text = message.text or ""
+
+    # Обработка кнопки «Назад»
+    # ИСПРАВЛЁННЫЙ ВАРИАНТ
 
     if text == t(chat_id, "back"):
         data['wait_for_comment'] = False
-        data['wait_for_contact'] = True
-        user_data[chat_id] = data
-        bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=contact_keyboard())
+        bot.send_message(chat_id,
+                         t(chat_id, "choose_category"),
+                         reply_markup=types.ReplyKeyboardRemove())
+        bot.send_message(chat_id,
+                         t(chat_id, "choose_category"),
+                         reply_markup=get_inline_main_menu(chat_id))
         return
-
-    # … остальной код обработки комментария …
-
 
     # Пользователь вводит текст комментария
     if text == t(None, "enter_comment"):
@@ -1751,6 +1718,16 @@ def universal_handler(message):
                 user_data[chat_id] = data
                 return
 
+            if text == "✏️ Rename Category":
+                data['edit_phase'] = 'rename_category_select'
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                for cat_key in menu:
+                    kb.add(cat_key)
+                kb.add("⬅️ Back", "❌ Cancel")
+                bot.send_message(chat_id, "Выберите категорию для переименования:", reply_markup=kb)
+                user_data[chat_id] = data
+                return
+
             if text == "💲 Fix Price":
                 data['edit_phase'] = 'choose_fix_price_cat'
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -1992,6 +1969,67 @@ def universal_handler(message):
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
                 kb.add("⬅️ Back", "❌ Cancel")
                 bot.send_message(chat_id, "Select a valid category.", reply_markup=kb)
+            return
+
+        # ——————————————————————————————————————————
+        if phase == 'rename_category_select':
+            if text == "⬅️ Back":
+                data['edit_phase'] = 'choose_action'
+                bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
+                user_data[chat_id] = data
+                return
+            if text == "❌ Cancel":
+                data['edit_phase'] = None
+                bot.send_message(chat_id, "Editing cancelled.", reply_markup=types.ReplyKeyboardRemove())
+                bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
+                user_data[chat_id] = data
+                return
+            if text in menu:
+                data['edit_cat'] = text
+                data['edit_phase'] = 'rename_category_enter'
+                bot.send_message(
+                    chat_id,
+                    f"Enter new name for category «{text}»:",
+                    reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                    .add("⬅️ Back", "❌ Cancel")
+                )
+                user_data[chat_id] = data
+                return
+            # Если ввели несуществующую категорию
+            bot.send_message(chat_id, "Select a valid category or press Cancel.")
+            return
+        # ——————————————————————————————————————————
+        if phase == 'rename_category_enter':
+            old_name = data.get('edit_cat')
+            if text == "⬅️ Back":
+                data['edit_phase'] = 'rename_category_select'
+                # показать список категорий заново
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                for cat_key in menu:
+                    kb.add(cat_key)
+                kb.add("⬅️ Back", "❌ Cancel")
+                bot.send_message(chat_id, "Select a category to rename:", reply_markup=kb)
+                user_data[chat_id] = data
+                return
+            if text == "❌ Cancel":
+                data['edit_phase'] = None
+                bot.send_message(chat_id, "Editing cancelled.", reply_markup=types.ReplyKeyboardRemove())
+                bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
+                user_data[chat_id] = data
+                return
+            new_name = text.strip()
+            if not new_name or new_name in menu:
+                bot.send_message(chat_id, "Invalid or already existing name. Try again:")
+                return
+            # Переименование
+            menu[new_name] = menu.pop(old_name)
+            with open(MENU_PATH, "w", encoding="utf-8") as f:
+                json.dump(menu, f, ensure_ascii=False, indent=2)
+            bot.send_message(chat_id, f"Category “{old_name}” renamed to “{new_name}”.",
+                             reply_markup=edit_action_keyboard())
+            data['edit_phase'] = 'choose_action'
+            data.pop('edit_cat', None)
+            user_data[chat_id] = data
             return
 
         # 7) Выбрать категорию для Fix Price
@@ -2522,14 +2560,10 @@ def universal_handler(message):
             return
 
         if text == t(None, "choose_on_map"):
-            data["prev_stage"] = "wait_for_address"
-            kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-            kb.add(t(chat_id, "back"))  # ← вот она, кнопка «Назад»
             bot.send_message(
                 chat_id,
-                "Чтобы выбрать точку:\n"
-                "📎 → Местоположение → «Выбрать на карте» → метка → Отправить",
-                reply_markup=kb
+                "Чтобы выбрать точку:\n📎 → Местоположение → «Выбрать на карте» → метка → Отправить",
+                reply_markup=types.ReplyKeyboardRemove()
             )
             return
 
@@ -2580,17 +2614,8 @@ def universal_handler(message):
         data['contact'] = contact
         data['wait_for_contact'] = False
         data['wait_for_comment'] = True
-
-        # Показываем кнопку «ввести комментарий»
         kb = comment_keyboard()
         bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=kb)
-
-        # И сразу за ней — нашу подсказку
-        bot.send_message(
-            chat_id,
-            "📝 Пожалуйста, напишите важную информацию — мы обязательно примем её во внимание."
-        )
-
         user_data[chat_id] = data
         return
 
