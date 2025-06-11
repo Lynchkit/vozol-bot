@@ -3064,6 +3064,35 @@ def handle_cancel_order(call):
     )
     bot.answer_callback_query(call.id, "Заказ отменён")
 
+@ensure_user
+@bot.message_handler(commands=['total'])
+def cmd_total(message):
+    chat_id = message.chat.id
+
+    lines = []
+    total_pcs = 0
+    for cat, cat_data in menu.items():
+        lines.append(f"<b>{cat}</b>:")
+        for itm in cat_data.get("flavors", []):
+            flavor = itm.get("flavor", "—")
+            stock  = int(itm.get("stock", 0))
+            total_pcs += stock
+            lines.append(f"  • {flavor} — {stock} pcs")
+        lines.append("")  # пустая строка между категориями
+
+    if not lines:
+        text = "No flavors available."
+    else:
+        # удаляем последнюю пустую строку и добавляем итог
+        if lines[-1] == "":
+            lines.pop()
+        lines.append(f"\n<b>Total:</b> {total_pcs} pcs")
+
+        text = "\n".join(lines)
+
+    bot.send_message(chat_id, text, parse_mode="HTML")
+
+
 
 
 
