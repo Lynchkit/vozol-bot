@@ -1989,14 +1989,14 @@ def universal_handler(message):
                 data['edit_phase'] = 'rename_category_enter'
                 bot.send_message(
                     chat_id,
-                    f"Введите новое имя для категории «{text}»:",
+                    f"Enter new name for category «{text}»:",
                     reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
                     .add("⬅️ Back", "❌ Cancel")
                 )
                 user_data[chat_id] = data
                 return
             # Если ввели несуществующую категорию
-            bot.send_message(chat_id, "Выберите корректную категорию или нажмите Cancel.")
+            bot.send_message(chat_id, "Select a valid category or press Cancel.")
             return
         # ——————————————————————————————————————————
         if phase == 'rename_category_enter':
@@ -2008,7 +2008,7 @@ def universal_handler(message):
                 for cat_key in menu:
                     kb.add(cat_key)
                 kb.add("⬅️ Back", "❌ Cancel")
-                bot.send_message(chat_id, "Выберите категорию для переименования:", reply_markup=kb)
+                bot.send_message(chat_id, "Select a category to rename:", reply_markup=kb)
                 user_data[chat_id] = data
                 return
             if text == "❌ Cancel":
@@ -2019,13 +2019,13 @@ def universal_handler(message):
                 return
             new_name = text.strip()
             if not new_name or new_name in menu:
-                bot.send_message(chat_id, "Некорректное или уже существующее имя. Попробуйте ещё раз:")
+                bot.send_message(chat_id, "Invalid or already existing name. Try again:")
                 return
             # Переименование
             menu[new_name] = menu.pop(old_name)
             with open(MENU_PATH, "w", encoding="utf-8") as f:
                 json.dump(menu, f, ensure_ascii=False, indent=2)
-            bot.send_message(chat_id, f"Категория «{old_name}» переименована в «{new_name}».",
+            bot.send_message(chat_id, f"Category “{old_name}” renamed to “{new_name}”.",
                              reply_markup=edit_action_keyboard())
             data['edit_phase'] = 'choose_action'
             data.pop('edit_cat', None)
