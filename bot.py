@@ -1651,6 +1651,28 @@ def cmd_total(message):
     text = "\n".join(lines) if lines else "No flavors available."
     bot.send_message(chat_id, text, parse_mode="HTML")
 
+@ensure_user
+@bot.message_handler(commands=['payment'])
+def cmd_payment(message):
+    chat_id = message.chat.id
+    # 1) Номер IBAN
+    bot.send_message(chat_id, "1) TR22 0004 6013 3088 8000 0301 47")
+    # 2) Имя получателя
+    bot.send_message(chat_id, "2) Artur Yuldashev")
+    # 3) Адрес кошелька
+    bot.send_message(chat_id, "3) TNPPfWfYmWuthV5fMG795FE2HsA5ySwq76")
+    # 4) Сеть
+    bot.send_message(chat_id, "4) Tron (TRC-20)")
+    # 5) Карта
+    bot.send_message(chat_id, "5) 4441 1115 7718 424")
+    # 6) Валюта
+    bot.send_message(chat_id, "6) Grivne")
+    # 7) Контакт
+    bot.send_message(chat_id, "7) +7 996 996 12 99")
+    # Дополнительно Тинькофф в рублях
+    bot.send_message(chat_id, "\n• Тинькофф (₽): 2200 7007 0808 9817")
+
+
 
 
 # ------------------------------------------------------------------------
