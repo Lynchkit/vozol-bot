@@ -1139,16 +1139,6 @@ def handle_address_input(message):
     bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=contact_keyboard())
     return
 
-    # Кастомный промпт и только кнопка «Назад»
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.add(t(chat_id, "back"))
-
-    bot.send_message(
-        chat_id,
-        "Напишите, пожалуйста, важную информацию — мы обязательно примем её во внимание.",
-        reply_markup=kb
-    )
-    return
 
 
 @ensure_user
@@ -2669,7 +2659,7 @@ def universal_handler(message):
         else:
             bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=contact_keyboard())
             return
-        
+
 
         # Показываем кнопку «ввести комментарий»
         kb = comment_keyboard()
