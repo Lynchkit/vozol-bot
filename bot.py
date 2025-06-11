@@ -1666,11 +1666,11 @@ def cmd_payment(message):
     # 5) Карта
     bot.send_message(chat_id, "4441 1115 7718 424")
     # 6) Валюта
-    bot.send_message(chat_id, "Grivne")
+    bot.send_message(chat_id, "Grivne Vlad")
     # 7) Контакт
     bot.send_message(chat_id, "+7 996 996 12 99")
     # Дополнительно Тинькофф в рублях
-    bot.send_message(chat_id, "Тинькофф (₽): 2200 7007 0808 9817")
+    bot.send_message(chat_id, "Артур Маратович")
 
 
 
