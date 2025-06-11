@@ -1051,10 +1051,12 @@ def handle_address_input(message):
     # Дальнейшая обработка выбора адреса...
     if text == t(None, "choose_on_map"):
         data["prev_stage"] = "wait_for_address"
+        # Берём стандартную клавиатуру адреса, в ней уже есть кнопка "back"
+        kb = address_keyboard()
         bot.send_message(
             chat_id,
             "Чтобы выбрать точку:\n📎 → Местоположение → «Выбрать на карте» → метка → Отправить",
-            reply_markup=types.ReplyKeyboardRemove()
+            reply_markup=kb
         )
         return
 
@@ -2546,8 +2548,17 @@ def universal_handler(message):
         data['contact'] = contact
         data['wait_for_contact'] = False
         data['wait_for_comment'] = True
+
+        # Показываем кнопку «ввести комментарий»
         kb = comment_keyboard()
         bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=kb)
+
+        # И сразу за ней — нашу подсказку
+        bot.send_message(
+            chat_id,
+            "📝 Пожалуйста, напишите важную информацию — мы обязательно примем её во внимание."
+        )
+
         user_data[chat_id] = data
         return
 
