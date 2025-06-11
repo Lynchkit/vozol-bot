@@ -2669,10 +2669,7 @@ def universal_handler(message):
         else:
             bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=contact_keyboard())
             return
-
-        data['contact'] = contact
-        data['wait_for_contact'] = False
-        data['wait_for_comment'] = True
+        
 
         # Показываем кнопку «ввести комментарий»
         kb = comment_keyboard()
