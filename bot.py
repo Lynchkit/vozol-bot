@@ -1019,18 +1019,17 @@ def handle_address_input(message):
     text = message.text or ""
 
     # Нажатие «Назад»
+    # Нажатие «Назад»
     if text == t(chat_id, "back"):
-        # если были в режиме выбора точки на карте — остаёмся в нём
+        # если были в режиме выбора точки на карте — показываем клавиатуру ввода адреса и выходим из режима «map»
         if data.get("prev_stage") == "map":
-            kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-            kb.add(t(chat_id, "back"))
-            bot.send_message(
+            data["prev_stage"] = None
+            user_data[chat_id] = data
+            return bot.send_message(
                 chat_id,
-                "Чтобы выбрать точку:\n"
-                "📎 → Местоположение → «Выбрать на карте» → метка → Отправить",
-                reply_markup=kb
+                t(chat_id, "enter_address"),
+                reply_markup=address_keyboard()
             )
-            return
 
         # если возвращаемся с этапа списания баллов — показываем ввод баллов
         if data.get("prev_stage") == "finish_order":
@@ -1038,20 +1037,19 @@ def handle_address_input(message):
             data["wait_for_address"] = False
             user_data[chat_id] = data
 
-            total_try   = data.get("temp_total_try", 0)
+            total_try = data.get("temp_total_try", 0)
             user_points = data.get("temp_user_points", 0)
-            max_points  = min(user_points, total_try)
+            max_points = min(user_points, total_try)
             msg = (
-                t(chat_id, "points_info").format(points=user_points, points_try=user_points)
-                + "\n"
-                + t(chat_id, "enter_points").format(max_points=max_points)
+                    t(chat_id, "points_info").format(points=user_points, points_try=user_points)
+                    + "\n"
+                    + t(chat_id, "enter_points").format(max_points=max_points)
             )
             kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
             kb.add(t(chat_id, "back"))
-            bot.send_message(chat_id, msg, reply_markup=kb)
-            return
+            return bot.send_message(chat_id, msg, reply_markup=kb)
 
-        # во всех остальных случаях — вернуть выбор способа ввода адреса
+        # во всех остальных случаях — показываем выбор способа ввода адреса
         data['wait_for_address'] = False
         user_data[chat_id] = data
         return bot.send_message(
