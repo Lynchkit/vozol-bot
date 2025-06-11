@@ -1660,7 +1660,7 @@ def cmd_payment(message):
     # 2) Имя получателя
     bot.send_message(chat_id, "Artur Yuldashev")
     # 3) Адрес кошелька
-    bot.send_message(chat_id, "TNPPfWfYmWuthV5fMG795FE2HsA5ySwq76")
+    bot.send_message(chat_id, "TUnMJ7oCtSDCHZiQSMrFjShkUPv18SVFDc")
     # 4) Сеть
     bot.send_message(chat_id, "Tron (TRC-20)")
     # 5) Карта
