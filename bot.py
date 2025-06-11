@@ -149,8 +149,7 @@ def init_user(chat_id: int):
             "awaiting_review_rating": False,
             "awaiting_review_comment": False,
             "temp_review_flavor": None,
-            "temp_review_rating": 0,
-            "state_stack": []
+            "temp_review_rating": 0
         }
 
 
@@ -332,12 +331,12 @@ def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
 # ------------------------------------------------------------------------
 #   11. Reply-клавиатуры (альтернатива inline)
 # ------------------------------------------------------------------------
-def address_keyboard(chat_id: int) -> types.ReplyKeyboardMarkup:
+def address_keyboard() -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.add(types.KeyboardButton(t(chat_id, "share_location"), request_location=True))
-    kb.add(t(chat_id, "choose_on_map"))
-    kb.add(t(chat_id, "enter_address_text"))
-    kb.add(t(chat_id, "back"))     # ← теперь правильно
+    kb.add(types.KeyboardButton(t(None, "share_location"), request_location=True))
+    kb.add(t(None, "choose_on_map"))
+    kb.add(t(None, "enter_address_text"))
+    kb.add(t(None, "back"))
     return kb
 
 
@@ -946,17 +945,12 @@ def handle_finish_order(call):
         data["temp_total_try"] = total_try
         data["temp_user_points"] = user_points
     else:
-        # Запоминаем, откуда пришли
-        push_state(chat_id, "finish_order")
-        # Только здесь показываем ввод адреса
-        kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-        kb.add(types.KeyboardButton(t(chat_id, "share_location"), request_location=True))
-        kb.add(t(chat_id, "back"))
+        kb = address_keyboard()
         bot.send_message(
             chat_id,
-            f"🛒 {t(chat_id, 'view_cart')}:\n\n"
-            + "\n".join(f"{i['category']}: {i['flavor']} — {i['price']}₺" for i in cart)
-            + f"\n\n{t(chat_id, 'enter_address')}",
+            f"🛒 {t(chat_id, 'view_cart')}:\n\n" +
+            "\n".join(f"{item['category']}: {item['flavor']} — {item['price']}₺" for item in cart) +
+            f"\n\n{t(chat_id, 'enter_address')}",
             reply_markup=kb
         )
         data["wait_for_address"] = True
@@ -1048,7 +1042,7 @@ def handle_address_input(message):
                          reply_markup=get_inline_main_menu(chat_id))
         return
 
-    if text == t(chat_id, "choose_on_map"):
+    if text == t(None, "choose_on_map"):
         bot.send_message(
             chat_id,
             "Чтобы выбрать точку:\n📎 → Местоположение → «Выбрать на карте» → метка → Отправить",
