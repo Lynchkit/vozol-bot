@@ -1018,18 +1018,29 @@ def handle_address_input(message):
     data = user_data.setdefault(chat_id, {})
     text = message.text or ""
 
-    # Нажатие «⬅️ Back» возвращает на предыдущий этап
+    # Нажатие «Назад»
     if text == t(chat_id, "back"):
-        data['wait_for_address'] = False
+        # если были в режиме выбора точки на карте — остаёмся в нём
+        if data.get("prev_stage") == "map":
+            kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+            kb.add(t(chat_id, "back"))
+            bot.send_message(
+                chat_id,
+                "Чтобы выбрать точку:\n"
+                "📎 → Местоположение → «Выбрать на карте» → метка → Отправить",
+                reply_markup=kb
+            )
+            return
 
-        # Если перед этим были баллы — возвращаем на ввод баллов
+        # если возвращаемся с этапа списания баллов — показываем ввод баллов
         if data.get("prev_stage") == "finish_order":
-            data['wait_for_points'] = True
+            data["wait_for_points"] = True
+            data["wait_for_address"] = False
             user_data[chat_id] = data
 
-            total_try = data.get("temp_total_try", 0)
+            total_try   = data.get("temp_total_try", 0)
             user_points = data.get("temp_user_points", 0)
-            max_points = min(user_points, total_try)
+            max_points  = min(user_points, total_try)
             msg = (
                 t(chat_id, "points_info").format(points=user_points, points_try=user_points)
                 + "\n"
@@ -1037,21 +1048,21 @@ def handle_address_input(message):
             )
             kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
             kb.add(t(chat_id, "back"))
-            return bot.send_message(chat_id, msg, reply_markup=kb)
+            bot.send_message(chat_id, msg, reply_markup=kb)
+            return
 
-        # Иначе — возвращаем к выбору завершения заказа (корзина + inline)
-        summary = "\n".join(f"{i['category']}: {i['flavor']} — {i['price']}₺" for i in data.get('cart', []))
+        # во всех остальных случаях — вернуть выбор способа ввода адреса
+        data['wait_for_address'] = False
         user_data[chat_id] = data
         return bot.send_message(
             chat_id,
-            f"🛒 {t(chat_id,'view_cart')}:\n\n{summary}",
-            reply_markup=get_inline_main_menu(chat_id)
+            t(chat_id, "enter_address"),
+            reply_markup=address_keyboard()
         )
 
-    # Дальнейшая обработка выбора адреса...
+    # Нажатие «Выбрать на карте»
     if text == t(chat_id, "choose_on_map"):
-        # НЕ меняем prev_stage
-        # Показываем только одну кнопку «Назад»
+        data["prev_stage"] = "map"
         kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
         kb.add(t(chat_id, "back"))
         bot.send_message(
@@ -1062,69 +1073,90 @@ def handle_address_input(message):
         )
         return
 
+    # Пришёл объект venue
     if message.content_type == 'venue' and message.venue:
         v = message.venue
         address = f"{v.title}, {v.address}\n🌍 https://maps.google.com/?q={v.location.latitude},{v.location.longitude}"
+
+    # Пришли чистые координаты
     elif message.content_type == 'location' and message.location:
         lat, lon = message.location.latitude, message.location.longitude
         address = f"🌍 https://maps.google.com/?q={lat},{lon}"
-    elif text == t(None, "enter_address_text"):
+
+    # Текстовый ввод адреса
+    elif text == t(chat_id, "enter_address_text"):
         bot.send_message(chat_id, t(chat_id, "enter_address"), reply_markup=types.ReplyKeyboardRemove())
         return
-    elif message.content_type == 'text' and message.text:
+    elif message.content_type == 'text':
         address = message.text.strip()
     else:
+        # некорректный ввод — возвращаем стандартную клавиатуру
         return bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=address_keyboard())
 
-    # Сохраняем и переходим к вводу контакта
+    # Сохраняем адрес и переходим к контакту
     data['address'] = address
     data['wait_for_address'] = False
     data['wait_for_contact'] = True
     user_data[chat_id] = data
 
-    # Становится:
-    kb = contact_keyboard()
-    # убираем второе добавление back
-    bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=kb)
+    bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=contact_keyboard())
 
 
 
-# ------------------------------------------------------------------------
-#   27. Handler: ввод контакта
-# ------------------------------------------------------------------------
+
+
+
+
+    # Сохраняем контакт и переходим к комментарию
+    data['contact'] = contact
+    data['wait_for_contact'] = False
+    data['wait_for_comment'] = True
+    user_data[chat_id] = data
+
+    # Кастомный промпт и только кнопка «Назад»
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    kb.add(t(chat_id, "back"))
+
+    bot.send_message(
+        chat_id,
+        "Напишите, пожалуйста, важную информацию — мы обязательно примем её во внимание.",
+        reply_markup=kb
+    )
+    return
+
+
 @ensure_user
-@bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_contact"), content_types=['text','contact'])
+@bot.message_handler(
+    func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_contact"),
+    content_types=['text', 'contact']
+)
 def handle_contact_input(message):
     chat_id = message.chat.id
     data = user_data[chat_id]
-    text = message.text or ""
 
+    text = message.text or ""
+    # Нажали «Назад»?
     if text == t(chat_id, "back"):
-        data['wait_for_contact'] = False
         data['wait_for_address'] = True
-        user_data[chat_id] = data
+        data['wait_for_contact'] = False
         bot.send_message(chat_id, t(chat_id, "enter_address"), reply_markup=address_keyboard())
         return
 
-    if text == t(None, "enter_nickname"):
-        bot.send_message(chat_id, "Введите ваш Telegram-ник (без @):", reply_markup=types.ReplyKeyboardRemove())
-        return
-
+    # Получили контакт через кнопку
     if message.content_type == 'contact' and message.contact:
         contact = message.contact.phone_number
-    elif message.content_type == 'text' and message.text:
-        contact = "@" + message.text.strip().lstrip("@")
     else:
-        bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=contact_keyboard())
-        return
+        # Пользователь вбил текстовый ник
+        contact = "@" + message.text.strip().lstrip("@")
 
     data['contact'] = contact
     data['wait_for_contact'] = False
     data['wait_for_comment'] = True
-    kb = comment_keyboard()
-    bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=kb)
     user_data[chat_id] = data
 
+    # Переходим к комментарию
+    bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=comment_keyboard())
+    return
 
 # ------------------------------------------------------------------------
 #   28. Handler: ввод комментария и сохранение заказа (с учётом списания stock)
