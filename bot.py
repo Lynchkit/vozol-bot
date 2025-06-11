@@ -1049,11 +1049,11 @@ def handle_address_input(message):
         )
 
     # Дальнейшая обработка выбора адреса...
-    if text == t(None, "choose_on_map"):
-        data["prev_stage"] = "wait_for_address"
-        # Только кнопка “назад”
+    if text == t(chat_id, "choose_on_map"):
+        # НЕ меняем prev_stage
+        # Показываем только одну кнопку «Назад»
         kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-        kb.add(t(None, "back"))
+        kb.add(t(chat_id, "back"))
         bot.send_message(
             chat_id,
             "Чтобы выбрать точку:\n"
