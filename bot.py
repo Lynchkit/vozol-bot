@@ -149,7 +149,8 @@ def init_user(chat_id: int):
             "awaiting_review_rating": False,
             "awaiting_review_comment": False,
             "temp_review_flavor": None,
-            "temp_review_rating": 0
+            "temp_review_rating": 0,
+            "state_stack": []
         }
 
 
@@ -945,7 +946,12 @@ def handle_finish_order(call):
         data["temp_total_try"] = total_try
         data["temp_user_points"] = user_points
     else:
-        kb = address_keyboard()
+        # Запоминаем, откуда мы пришли
+        push_state(chat_id, "finish_order")
+        # Показываем ввод адреса с кнопкой «Назад»
+        kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        kb.add(types.KeyboardButton(t(None, "share_location"), request_location=True))
+        kb.add(t(None, "back"))
         bot.send_message(
             chat_id,
             f"🛒 {t(chat_id, 'view_cart')}:\n\n" +
@@ -954,8 +960,6 @@ def handle_finish_order(call):
             reply_markup=kb
         )
         data["wait_for_address"] = True
-
-    user_data[chat_id] = data
 
 
 # ------------------------------------------------------------------------
