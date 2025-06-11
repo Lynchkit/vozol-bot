@@ -332,12 +332,12 @@ def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
 # ------------------------------------------------------------------------
 #   11. Reply-клавиатуры (альтернатива inline)
 # ------------------------------------------------------------------------
-def address_keyboard() -> types.ReplyKeyboardMarkup:
+def address_keyboard(chat_id: int) -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.add(types.KeyboardButton(t(None, "share_location"), request_location=True))
-    kb.add(t(None, "choose_on_map"))
-    kb.add(t(None, "enter_address_text"))
-    kb.add(t(None, "back"))
+    kb.add(types.KeyboardButton(t(chat_id, "share_location"), request_location=True))
+    kb.add(t(chat_id, "choose_on_map"))
+    kb.add(t(chat_id, "enter_address_text"))
+    kb.add(t(chat_id, "back"))     # ← теперь правильно
     return kb
 
 
