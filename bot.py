@@ -1719,53 +1719,81 @@ def cmd_stats(message: types.Message):
 
 from telebot import types
 
-# 1) Команда /review — выбор оценки через InlineKeyboard
-@bot.message_handler(commands=['review'])
+# ——— Review с inline-звёздочками ———
 @ensure_user
+@bot.message_handler(commands=['review'])
 def cmd_review(message):
     chat_id = message.chat.id
     parts = message.text.split(maxsplit=1)
     if len(parts) != 2:
-        return bot.send_message(chat_id, "Usage: /review <flavor_name>")
-    flavor = parts[1].strip()
-    # здесь можно проверить, что вкус есть в menu, иначе — ошибка
+        return bot.send_message(chat_id, "Использование: /review <название_вкуса>")
+    q = parts[1].strip().lower()
+
+    # Ищем вкус в menu
+    flavor_name = None
+    for cat, data_cat in menu.items():
+        for itm in data_cat["flavors"]:
+            if itm["flavor"].lower() == q:
+                flavor_name = itm["flavor"]
+                break
+        if flavor_name:
+            break
+
+    if not flavor_name:
+        return bot.send_message(chat_id, "Вкус не найден. Попробуйте снова.")
+
+    # Сохраняем для последующих шагов
+    user_data[chat_id]["temp_review_flavor"] = flavor_name
+    user_data[chat_id]["awaiting_review_comment"] = False
+
+    # Собираем inline-клавиатуру со звёздочками
     kb = types.InlineKeyboardMarkup(row_width=5)
     for i in range(1, 6):
-        stars = "⭐️" * i
-        kb.add(types.InlineKeyboardButton(text=stars,
-                                          callback_data=f"review_rate|{flavor}|{i}"))
-    bot.send_message(chat_id,
-                     f"Пожалуйста, оцените «{flavor}»:",
-                     reply_markup=kb)
+        kb.insert(types.InlineKeyboardButton(text="⭐️" * i, callback_data=f"review_rate|{i}"))
 
-# 2) Callback-handler для обработки оценки
+    bot.send_message(
+        chat_id,
+        f"Пожалуйста, оцените вкус «{flavor_name}»",
+        reply_markup=kb
+    )
+
+@ensure_user
 @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("review_rate|"))
+def callback_review_rate(call):
+    chat_id = call.from_user.id
+    _, rating_str = call.data.split("|", 1)
+    rating = int(rating_str)
+
+    data = user_data[chat_id]
+    data["temp_review_rating"] = rating
+    data["awaiting_review_comment"] = True
+    user_data[chat_id] = data
+
+    bot.answer_callback_query(call.id, f"Вы выбрали {rating}⭐️")
+    bot.send_message(
+        chat_id,
+        "Оставьте комментарий или отправьте /skip, чтобы пропустить",
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+
 @ensure_user
-def handle_review_rate(call):
-    call.answer()  # убираем «часики»
-    _, flavor, rating_s = call.data.split("|", 2)
-    rating = int(rating_s)
-    uid = call.from_user.id
-
-    # сохраняем временно в user_data
-    user_data[uid]["pending_review"] = {"flavor": flavor, "rating": rating}
-
-    bot.send_message(uid,
-                     f"Вы выбрали {rating} {'звезда' if rating==1 else 'звёзд'}.\n"
-                     "Теперь напишите свой комментарий или /skip, чтобы пропустить.",
-                     reply_markup=types.ReplyKeyboardRemove())
-
-# 3) Handler для ввода комментария (или /skip)
-@bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get("pending_review"), content_types=['text'])
-@ensure_user
+@bot.message_handler(
+    func=lambda m: user_data.get(m.chat.id, {}).get("awaiting_review_comment"),
+    content_types=['text']
+)
 def handle_review_comment(message):
     chat_id = message.chat.id
-    pending = user_data[chat_id].pop("pending_review")
-    flavor = pending["flavor"]
-    rating = pending["rating"]
-    text = message.text.strip()
-    comment = "" if text.lower() == "/skip" else text
+    data = user_data[chat_id]
 
+    flavor = data.pop("temp_review_flavor")
+    rating = data.pop("temp_review_rating")
+    comment_text = message.text.strip()
+    comment = "" if comment_text.lower() == "/skip" else comment_text
+
+    data["awaiting_review_comment"] = False
+    user_data[chat_id] = data
+
+    # Сохраняем в БД
     now = datetime.datetime.utcnow().isoformat()
     conn = get_db_connection()
     cur = conn.cursor()
@@ -1776,23 +1804,25 @@ def handle_review_comment(message):
     )
     conn.commit()
 
-    # Подсчитаем новый средний рейтинг
+    # Пересчитываем средний рейтинг
     cur.execute("SELECT AVG(rating) FROM reviews WHERE flavor = ?", (flavor,))
-    avg = cur.fetchone()[0] or 0
+    avg = round(cur.fetchone()[0] or 0, 1)
+    cur.close()
+    conn.close()
 
-    # Опционально: сохраняем средний рейтинг в menu.json
-    for cat, data in menu.items():
-        for itm in data["flavors"]:
+    # Обновляем menu.json, если нужно
+    for cat_data in menu.values():
+        for itm in cat_data["flavors"]:
             if itm["flavor"] == flavor:
-                itm["rating"] = round(avg, 1)
+                itm["rating"] = avg
     with open(MENU_PATH, "w", encoding="utf-8") as f:
         json.dump(menu, f, ensure_ascii=False, indent=2)
 
-    bot.send_message(chat_id,
-                     f"Спасибо за отзыв! «{flavor}» теперь в среднем на {avg:.1f}⭐️.")
+    bot.send_message(
+        chat_id,
+        f"Спасибо за отзыв! Средний рейтинг вкуса «{flavor}» теперь {avg}⭐️"
+    )
 
-    cur.close()
-    conn.close()
 @ensure_user
 @bot.message_handler(commands=['reviewtop'])
 def cmd_reviewtop(message):
