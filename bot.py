@@ -1731,7 +1731,12 @@ def _normalize(text: str) -> str:
     # убрать «лишние» пробелы и привести к lower
     return re.sub(r'\s+', ' ', cleaned).strip().lower()
 
-# ——— Review с inline-звёздочками ———
+import re
+
+def _normalize(text: str) -> str:
+    cleaned = re.sub(r'[^0-9A-Za-z\u0400-\u04FF]+', ' ', text)
+    return re.sub(r'\s+', ' ', cleaned).strip().lower()
+
 @ensure_user
 @bot.message_handler(commands=['review'])
 def cmd_review(message):
@@ -1741,18 +1746,14 @@ def cmd_review(message):
         return bot.send_message(chat_id, "Использование: /review <название_вкуса>")
 
     q = _normalize(parts[1])
-
-    # собираем все вкусы, в которых подстрока q встречается в нормализованном названии
     matches = []
     for cat, cat_data in menu.items():
         for itm in cat_data["flavors"]:
             if q in _normalize(itm["flavor"]):
                 matches.append(itm["flavor"])
-    # убираем дубликаты, сохраняем порядок
     matches = list(dict.fromkeys(matches))
 
     if not matches:
-        # если ничего не нашлось — выведем полный список
         all_flavors = sorted({itm["flavor"] for cat in menu.values() for itm in cat["flavors"]})
         return bot.send_message(
             chat_id,
@@ -1760,12 +1761,12 @@ def cmd_review(message):
         )
 
     if len(matches) > 1:
-        # если несколько совпадений — попросим уточнить
-        text = ["Найдено несколько вкусов, уточните, например:"]
-        text += [f"/review {fl}" for fl in matches]
-        return bot.send_message(chat_id, "\n".join(text))
+        return bot.send_message(
+            chat_id,
+            "Найдено несколько вкусов, уточните:\n" +
+            "\n".join(f"/review {m}" for m in matches)
+        )
 
-    # ровно один результат — запускаем inline-оценку
     flavor = matches[0]
     user_data[chat_id]["temp_review_flavor"] = flavor
     user_data[chat_id]["awaiting_review_comment"] = False
@@ -1780,14 +1781,12 @@ def cmd_review(message):
         reply_markup=kb
     )
 
-
 @ensure_user
 @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("review_rate|"))
 def callback_review_rate(call):
     chat_id = call.from_user.id
     _, rating_str = call.data.split("|", 1)
     rating = int(rating_str)
-
     data = user_data[chat_id]
     data["temp_review_rating"]   = rating
     data["awaiting_review_comment"] = True
@@ -1817,7 +1816,6 @@ def handle_review_comment(message):
     data["awaiting_review_comment"] = False
     user_data[chat_id] = data
 
-    # сохраняем в БД
     now = datetime.datetime.utcnow().isoformat()
     conn = get_db_connection()
     cur = conn.cursor()
@@ -1828,13 +1826,11 @@ def handle_review_comment(message):
     )
     conn.commit()
 
-    # пересчёт среднего
     cur.execute("SELECT AVG(rating) FROM reviews WHERE flavor = ?", (flavor,))
     avg = round(cur.fetchone()[0] or 0, 1)
     cur.close()
     conn.close()
 
-    # обновляем menu.json
     for cat_data in menu.values():
         for itm in cat_data["flavors"]:
             if itm["flavor"] == flavor:
@@ -1847,6 +1843,7 @@ def handle_review_comment(message):
         f"Спасибо за отзыв! Средний рейтинг «{flavor}» теперь {avg}⭐️",
         reply_markup=get_inline_main_menu(chat_id)
     )
+
 
 
 
