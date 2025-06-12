@@ -1619,14 +1619,8 @@ def cmd_stats(message: types.Message):
     bot.send_message(message.chat.id, report)
 
 
-import datetime
-import re
-from telebot import types
 
 
-import datetime
-import re
-from telebot import types
 
 def _normalize(text: str) -> str:
     cleaned = re.sub(r'[^0-9A-Za-z\u0400-\u04FF]+', ' ', text)
