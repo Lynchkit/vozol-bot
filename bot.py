@@ -1742,48 +1742,44 @@ def cmd_review(message):
 
     q = _normalize(parts[1])
 
-    # ищем все совпадения по подстроке
+    # собираем все вкусы, в которых подстрока q встречается в нормализованном названии
     matches = []
     for cat, cat_data in menu.items():
         for itm in cat_data["flavors"]:
             if q in _normalize(itm["flavor"]):
                 matches.append(itm["flavor"])
-    # убираем дубликаты, сохраняя порядок
+    # убираем дубликаты, сохраняем порядок
     matches = list(dict.fromkeys(matches))
 
     if not matches:
-        all_flavors = sorted({itm["flavor"] for cat in menu for itm in menu[cat]["flavors"]})
+        # если ничего не нашлось — выведем полный список
+        all_flavors = sorted({itm["flavor"] for cat in menu.values() for itm in cat["flavors"]})
         return bot.send_message(
             chat_id,
             "Вкус не найден. Доступные вкусы:\n" + "\n".join(all_flavors)
         )
 
     if len(matches) > 1:
-        # несколько вариантов — предложить уточнить
-        return bot.send_message(
-            chat_id,
-            "Найдено несколько вкусοв, уточните, например:\n" +
-            "\n".join(f"/review {m}" for m in matches)
-        )
+        # если несколько совпадений — попросим уточнить
+        text = ["Найдено несколько вкусов, уточните, например:"]
+        text += [f"/review {fl}" for fl in matches]
+        return bot.send_message(chat_id, "\n".join(text))
 
-    # ровно один результат
+    # ровно один результат — запускаем inline-оценку
     flavor = matches[0]
-    data = user_data.setdefault(chat_id, {})
-    data["temp_review_flavor"]  = flavor
-    data["awaiting_review_comment"] = False
-    user_data[chat_id] = data
+    user_data[chat_id]["temp_review_flavor"] = flavor
+    user_data[chat_id]["awaiting_review_comment"] = False
 
-    # inline-звёздочки
     kb = types.InlineKeyboardMarkup(row_width=5)
     for i in range(1, 6):
-        kb.add(types.InlineKeyboardButton(text="⭐️"*i,
-                                          callback_data=f"review_rate|{i}"))
+        kb.add(types.InlineKeyboardButton(text="⭐️"*i, callback_data=f"review_rate|{i}"))
 
     bot.send_message(
         chat_id,
         f"Пожалуйста, оцените вкус «{flavor}»",
         reply_markup=kb
     )
+
 
 @ensure_user
 @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("review_rate|"))
