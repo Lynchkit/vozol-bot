@@ -4,6 +4,7 @@ import requests
 import sqlite3
 import datetime
 import random
+import re
 import string
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -1719,11 +1720,18 @@ def cmd_stats(message: types.Message):
 
 
 
-def _normalize(text: str) -> str:
-    """Убирает эмодзи/спецсимволы, оставляет буквы+цифры+пробел и приводит к lower()."""
-    return re.sub(r'[^0-9A-Za-zА-Яа-я ]+', '', text).strip().lower()
 
-# ——— /review — поиск вкуса и inline-звёздочки ———
+def _normalize(text: str) -> str:
+    """
+    Убирает эмодзи и любые спецсимволы, заменяя их на пробел,
+    сводит к нижнему регистру и склеивает повторяющиеся пробелы.
+    """
+    # всё, что не буква/цифра → пробел
+    cleaned = re.sub(r'[^0-9A-Za-zА-Яа-я]+', ' ', text)
+    # убрать «лишние» пробелы и привести к lower
+    return re.sub(r'\s+', ' ', cleaned).strip().lower()
+
+# ——— Review с inline-звёздочками ———
 @ensure_user
 @bot.message_handler(commands=['review'])
 def cmd_review(message):
@@ -1732,41 +1740,44 @@ def cmd_review(message):
     if len(parts) != 2:
         return bot.send_message(chat_id, "Использование: /review <название_вкуса>")
 
-    query = _normalize(parts[1])
-    # собираем все совпадения
+    q = _normalize(parts[1])
+
+    # ищем все совпадения по подстроке
     matches = []
     for cat, cat_data in menu.items():
         for itm in cat_data["flavors"]:
-            if query in _normalize(itm["flavor"]):
+            if q in _normalize(itm["flavor"]):
                 matches.append(itm["flavor"])
-    # убираем дубли
+    # убираем дубликаты, сохраняя порядок
     matches = list(dict.fromkeys(matches))
 
     if not matches:
-        # ничего не нашли — покажем все вкусы
         all_flavors = sorted({itm["flavor"] for cat in menu for itm in menu[cat]["flavors"]})
         return bot.send_message(
             chat_id,
             "Вкус не найден. Доступные вкусы:\n" + "\n".join(all_flavors)
         )
+
     if len(matches) > 1:
-        # несколько совпало — просим уточнить
+        # несколько вариантов — предложить уточнить
         return bot.send_message(
             chat_id,
             "Найдено несколько вкусοв, уточните, например:\n" +
             "\n".join(f"/review {m}" for m in matches)
         )
 
-    # ровно один вкус
+    # ровно один результат
     flavor = matches[0]
-    user_data[chat_id]["temp_review_flavor"] = flavor
-    user_data[chat_id]["awaiting_review_comment"] = False
+    data = user_data.setdefault(chat_id, {})
+    data["temp_review_flavor"]  = flavor
+    data["awaiting_review_comment"] = False
+    user_data[chat_id] = data
 
     # inline-звёздочки
     kb = types.InlineKeyboardMarkup(row_width=5)
     for i in range(1, 6):
-        kb.insert(types.InlineKeyboardButton(text="⭐️" * i,
-                                             callback_data=f"review_rate|{i}"))
+        kb.add(types.InlineKeyboardButton(text="⭐️"*i,
+                                          callback_data=f"review_rate|{i}"))
 
     bot.send_message(
         chat_id,
@@ -1774,7 +1785,6 @@ def cmd_review(message):
         reply_markup=kb
     )
 
-# ——— колбек на выбор оценки ———
 @ensure_user
 @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("review_rate|"))
 def callback_review_rate(call):
@@ -1783,7 +1793,7 @@ def callback_review_rate(call):
     rating = int(rating_str)
 
     data = user_data[chat_id]
-    data["temp_review_rating"] = rating
+    data["temp_review_rating"]   = rating
     data["awaiting_review_comment"] = True
     user_data[chat_id] = data
 
@@ -1794,7 +1804,6 @@ def callback_review_rate(call):
         reply_markup=types.ReplyKeyboardRemove()
     )
 
-# ——— приёём комментария или /skip ———
 @ensure_user
 @bot.message_handler(
     func=lambda m: user_data.get(m.chat.id, {}).get("awaiting_review_comment"),
@@ -1806,7 +1815,7 @@ def handle_review_comment(message):
 
     flavor = data.pop("temp_review_flavor")
     rating = data.pop("temp_review_rating")
-    raw = message.text.strip()
+    raw     = message.text.strip()
     comment = "" if raw.lower() == "/skip" else raw
 
     data["awaiting_review_comment"] = False
@@ -1842,6 +1851,7 @@ def handle_review_comment(message):
         f"Спасибо за отзыв! Средний рейтинг «{flavor}» теперь {avg}⭐️",
         reply_markup=get_inline_main_menu(chat_id)
     )
+
 
 
 @ensure_user
