@@ -1404,15 +1404,16 @@ def handle_comment_input(message):
         user_data[chat_id] = data
         return
 
-@bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("delivered|"))
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("delivered|"))
 def handle_delivered(call):
-    print("DELIVERED CLICKED:", call.message.chat.id, "expected:", GROUP_CHAT_ID)
+    print("DELIVERED CLICKED in chat:", call.message.chat.id)
+    print("Expected GROUP_CHAT_ID:", GROUP_CHAT_ID)
 
-    # проверяем, что нажали именно в нужном чате
+    # Если нажали не в том чате — возвращаем алерт
     if call.message.chat.id != GROUP_CHAT_ID:
         return bot.answer_callback_query(call.id, "Не в том чате", show_alert=True)
 
-    # дальше — уже валидный колбэк
+    # Всё верно — разбираем order_id
     _, oid = call.data.split("|", 1)
 
     # Собираем кнопки способов оплаты
@@ -1424,13 +1425,14 @@ def handle_delivered(call):
             callback_data=f"paid|{oid}|{m}"
         ))
 
-    # Меняем клавиатуру у сообщения
+    # Меняем клавиатуру
     bot.edit_message_reply_markup(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         reply_markup=kb
     )
     bot.answer_callback_query(call.id, "Выберите способ оплаты")
+
 
 
 
@@ -3130,6 +3132,7 @@ def universal_handler(message):
 def handle_paid(call):
     # Сначала логируем, куда приходит колбэк
     print("PAID CLICKED:", call.message.chat.id, "expected:", GROUP_CHAT_ID)
+    print("DELIVERED CLICKED in chat:", call.message.chat.id)
 
     # Проверяем, что нажали именно в том чате
     if call.message.chat.id != GROUP_CHAT_ID:
