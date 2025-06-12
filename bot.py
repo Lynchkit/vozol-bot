@@ -1618,8 +1618,9 @@ def cmd_stats(message: types.Message):
     bot.send_message(message.chat.id, report)
 
 
-
-
+import datetime
+import re
+from telebot import types
 
 
 import datetime
@@ -1639,32 +1640,43 @@ def cmd_review(message):
         return bot.send_message(chat_id, "Использование: /review <название_вкуса>")
 
     q = _normalize(parts[1])
-    matches = []
-    for cat in menu.values():
-        for itm in cat["flavors"]:
-            if q in _normalize(itm["flavor"]):
-                matches.append(itm["flavor"])
-    matches = list(dict.fromkeys(matches))
+    # Сначала точное совпадение
+    matches = [
+        itm["flavor"]
+        for cat in menu.values()
+        for itm in cat["flavors"]
+        if _normalize(itm["flavor"]) == q
+    ]
+    # Если нет — подстрока
+    if not matches:
+        matches = [
+            itm["flavor"]
+            for cat in menu.values()
+            for itm in cat["flavors"]
+            if q in _normalize(itm["flavor"])
+        ]
 
     if not matches:
         all_fl = sorted({itm["flavor"] for cat in menu.values() for itm in cat["flavors"]})
-        return bot.send_message(chat_id,
-            "Вкус не найден. Доступные вкусы:\n" + "\n".join(all_fl))
-
+        return bot.send_message(
+            chat_id,
+            "Вкус не найден. Доступные вкусы:\n" + "\n".join(all_fl)
+        )
     if len(matches) > 1:
-        return bot.send_message(chat_id,
+        return bot.send_message(
+            chat_id,
             "Найдено несколько вкусов, уточните:\n" +
-            "\n".join(f"/review {m}" for m in matches))
+            "\n".join(f"/review {m}" for m in matches)
+        )
 
+    # ровно один матч
     flavor = matches[0]
-    user_data[chat_id]["temp_review_flavor"]     = flavor
+    user_data[chat_id]["temp_review_flavor"] = flavor
+
     kb = types.InlineKeyboardMarkup(row_width=5)
     for i in range(1, 6):
         kb.add(types.InlineKeyboardButton(text="⭐️"*i, callback_data=f"review_rate|{i}"))
-
-    bot.send_message(chat_id,
-        f"Пожалуйста, оцените вкус «{flavor}»",
-        reply_markup=kb)
+    bot.send_message(chat_id, f"Пожалуйста, оцените вкус «{flavor}»", reply_markup=kb)
 
 @ensure_user
 @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("review_rate|"))
@@ -1672,51 +1684,53 @@ def callback_review_rate(call):
     chat_id = call.from_user.id
     rating = int(call.data.split("|",1)[1])
     data = user_data[chat_id]
-    data["temp_review_rating"]     = rating
+    data["temp_review_rating"] = rating
     data["awaiting_review_comment"] = True
     user_data[chat_id] = data
 
     bot.answer_callback_query(call.id, f"Вы выбрали {rating}⭐️")
-    bot.send_message(chat_id,
-        "Оставьте комментарий или отправьте /skip, чтобы пропустить",
-        reply_markup=types.ReplyKeyboardRemove())
+    bot.send_message(chat_id, "Оставьте комментарий или отправьте /skip, чтобы пропустить",
+                     reply_markup=types.ReplyKeyboardRemove())
 
 @ensure_user
 @bot.message_handler(func=lambda m: user_data.get(m.chat.id,{}).get("awaiting_review_comment"), content_types=['text'])
 def handle_review_comment(message):
     chat_id = message.chat.id
-    data   = user_data[chat_id]
+    data = user_data[chat_id]
     flavor = data.pop("temp_review_flavor")
     rating = data.pop("temp_review_rating")
-    raw    = message.text.strip()
-    comment= "" if raw.lower()=="/skip" else raw
-    data["awaiting_review_comment"]=False
-    user_data[chat_id]=data
+    raw = message.text.strip()
+    comment = "" if raw.lower() == "/skip" else raw
+    data["awaiting_review_comment"] = False
+    user_data[chat_id] = data
 
     now = datetime.datetime.utcnow().isoformat()
-    conn, cur = get_db_connection(), None
+    conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("INSERT INTO reviews (chat_id, category, flavor, rating, comment, timestamp) VALUES (?,?,?,?,?,?)",
-                (chat_id, None, flavor, rating, comment, now))
+    cur.execute(
+        "INSERT INTO reviews (chat_id, category, flavor, rating, comment, timestamp)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (chat_id, None, flavor, rating, comment, now)
+    )
     conn.commit()
-    cur.execute("SELECT AVG(rating) FROM reviews WHERE flavor=?", (flavor,))
+    cur.execute("SELECT AVG(rating) FROM reviews WHERE flavor = ?", (flavor,))
     avg = round(cur.fetchone()[0] or 0, 1)
-    cur.close(); conn.close()
+    cur.close()
+    conn.close()
 
-    # обновляем средний рейтинг в menu.json
+    # обновляем меню
     for cat in menu.values():
         for itm in cat["flavors"]:
-            if itm["flavor"]==flavor:
-                itm["rating"]=avg
+            if itm["flavor"] == flavor:
+                itm["rating"] = avg
     with open(MENU_PATH, "w", encoding="utf-8") as f:
         json.dump(menu, f, ensure_ascii=False, indent=2)
 
-    bot.send_message(chat_id,
+    bot.send_message(
+        chat_id,
         f"Спасибо за отзыв! Средний рейтинг «{flavor}» теперь {avg}⭐️",
-        reply_markup=get_inline_main_menu(chat_id))
-
-
-
+        reply_markup=get_inline_main_menu(chat_id)
+    )
 
 
 
