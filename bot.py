@@ -1717,6 +1717,114 @@ def cmd_stats(message: types.Message):
     )
     bot.send_message(message.chat.id, report)
 
+from telebot import types
+
+# 1) Команда /review — выбор оценки через InlineKeyboard
+@bot.message_handler(commands=['review'])
+@ensure_user
+def cmd_review(message):
+    chat_id = message.chat.id
+    parts = message.text.split(maxsplit=1)
+    if len(parts) != 2:
+        return bot.send_message(chat_id, "Usage: /review <flavor_name>")
+    flavor = parts[1].strip()
+    # здесь можно проверить, что вкус есть в menu, иначе — ошибка
+    kb = types.InlineKeyboardMarkup(row_width=5)
+    for i in range(1, 6):
+        stars = "⭐️" * i
+        kb.add(types.InlineKeyboardButton(text=stars,
+                                          callback_data=f"review_rate|{flavor}|{i}"))
+    bot.send_message(chat_id,
+                     f"Пожалуйста, оцените «{flavor}»:",
+                     reply_markup=kb)
+
+# 2) Callback-handler для обработки оценки
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("review_rate|"))
+@ensure_user
+def handle_review_rate(call):
+    call.answer()  # убираем «часики»
+    _, flavor, rating_s = call.data.split("|", 2)
+    rating = int(rating_s)
+    uid = call.from_user.id
+
+    # сохраняем временно в user_data
+    user_data[uid]["pending_review"] = {"flavor": flavor, "rating": rating}
+
+    bot.send_message(uid,
+                     f"Вы выбрали {rating} {'звезда' if rating==1 else 'звёзд'}.\n"
+                     "Теперь напишите свой комментарий или /skip, чтобы пропустить.",
+                     reply_markup=types.ReplyKeyboardRemove())
+
+# 3) Handler для ввода комментария (или /skip)
+@bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get("pending_review"), content_types=['text'])
+@ensure_user
+def handle_review_comment(message):
+    chat_id = message.chat.id
+    pending = user_data[chat_id].pop("pending_review")
+    flavor = pending["flavor"]
+    rating = pending["rating"]
+    text = message.text.strip()
+    comment = "" if text.lower() == "/skip" else text
+
+    now = datetime.datetime.utcnow().isoformat()
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO reviews (chat_id, category, flavor, rating, comment, timestamp) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (chat_id, None, flavor, rating, comment, now)
+    )
+    conn.commit()
+
+    # Подсчитаем новый средний рейтинг
+    cur.execute("SELECT AVG(rating) FROM reviews WHERE flavor = ?", (flavor,))
+    avg = cur.fetchone()[0] or 0
+
+    # Опционально: сохраняем средний рейтинг в menu.json
+    for cat, data in menu.items():
+        for itm in data["flavors"]:
+            if itm["flavor"] == flavor:
+                itm["rating"] = round(avg, 1)
+    with open(MENU_PATH, "w", encoding="utf-8") as f:
+        json.dump(menu, f, ensure_ascii=False, indent=2)
+
+    bot.send_message(chat_id,
+                     f"Спасибо за отзыв! «{flavor}» теперь в среднем на {avg:.1f}⭐️.")
+
+    cur.close()
+    conn.close()
+@ensure_user
+@bot.message_handler(commands=['reviewtop'])
+def cmd_reviewtop(message):
+    chat_id = message.chat.id
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    # сгруппируем по вкусу, посчитаем средний рейтинг и кол-во отзывов
+    cur.execute("""
+        SELECT flavor,
+               ROUND(AVG(rating),1) AS avg_r,
+               COUNT(*) AS cnt
+        FROM reviews
+        GROUP BY flavor
+        HAVING cnt > 0
+        ORDER BY avg_r DESC, cnt DESC
+        LIMIT 5
+    """)
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    if not rows:
+        return bot.send_message(chat_id, "Пока нет отзывов ни на один вкус.")
+
+    text = ["🏆 Топ-5 вкусов по оценкам:"]
+    for i, (flavor, avg_r, cnt) in enumerate(rows, start=1):
+        text.append(f"{i}. {flavor} — {avg_r}⭐ ({cnt} отз.)")
+
+    bot.send_message(chat_id, "\n".join(text))
+
+
 
 
 # ------------------------------------------------------------------------
@@ -3011,33 +3119,7 @@ def universal_handler(message):
         bot.send_message(chat_id, "\n\n".join(texts))
         return
 
-    # ——— /show_reviews ———
-    if text.startswith("/show_reviews"):
-        parts = text.split(maxsplit=1)
-        if len(parts) != 2:
-            bot.send_message(chat_id, "Использование: /show_reviews <название_вкуса>")
-            return
-        flavor_query = parts[1]
 
-        conn_local = get_db_connection()
-        cursor_local = conn_local.cursor()
-        cursor_local.execute(
-            "SELECT chat_id, rating, comment, timestamp FROM reviews WHERE flavor = ? ORDER BY timestamp DESC",
-            (flavor_query,)
-        )
-        rows = cursor_local.fetchall()
-        cursor_local.close()
-        conn_local.close()
-
-        if not rows:
-            bot.send_message(chat_id, "Пока нет отзывов для этого вкуса.")
-            return
-        texts = []
-        for uid, rating, comment, ts in rows[:10]:
-            date = ts.split("T")[0]
-            texts.append(f"👤 {uid} [{rating}⭐]\n🕒 {date}\n«{comment}»")
-        bot.send_message(chat_id, "\n\n".join(texts))
-        return
 
 
 
