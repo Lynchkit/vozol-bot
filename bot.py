@@ -618,6 +618,74 @@ def handle_go_back_to_categories(call):
 # ------------------------------------------------------------------------
 #   17.1. Callback: универсальная кнопка «Назад»
 # ------------------------------------------------------------------------
+# ------------------------------------------------------------------------
+# 17.1. Callback: единая кнопка «Назад» (универсальный)
+# ------------------------------------------------------------------------
+@ensure_user
+@bot.callback_query_handler(func=lambda c: c.data == "go_back")
+def handle_go_back(call):
+    chat_id = call.from_user.id
+    bot.answer_callback_query(call.id)
+
+    prev = pop_state(chat_id)
+    data = user_data[chat_id]
+
+    # 1) Если некуда возвращаться или main_menu — показываем категории
+    if prev is None or prev == "main_menu":
+        return bot.send_message(
+            chat_id,
+            t(chat_id, "choose_category"),
+            reply_markup=get_inline_main_menu(chat_id)
+        )
+
+    # 2) Если возвращаемся к списку вкусов
+    if prev.startswith("category|"):
+        _, cat = prev.split("|", 1)
+        data["current_category"] = cat
+        kb = get_inline_flavors(chat_id, cat)
+        return bot.send_message(
+            chat_id,
+            f"{t(chat_id,'choose_flavor')} «{cat}»",
+            reply_markup=kb
+        )
+
+    # 3) Возврат к вводу баллов
+    if prev == "enter_points":
+        total_try    = data["temp_total_try"]
+        user_points  = data["temp_user_points"]
+        max_points   = min(user_points, total_try)
+        msg = (
+            t(chat_id, "points_info").format(points=user_points, points_try=user_points)
+            + "\n"
+            + t(chat_id, "enter_points").format(max_points=max_points)
+        )
+        data["wait_for_points"] = True
+        return bot.send_message(chat_id, msg)
+
+    # 4) Возврат к вводу адреса
+    if prev == "enter_address":
+        kb = address_keyboard()
+        data["wait_for_address"] = True
+        return bot.send_message(chat_id, t(chat_id, "enter_address"), reply_markup=kb)
+
+    # 5) Возврат к вводу контакта
+    if prev == "enter_contact":
+        kb = contact_keyboard()
+        data["wait_for_contact"] = True
+        return bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=kb)
+
+    # 6) Возврат к вводу комментария
+    if prev == "enter_comment":
+        kb = comment_keyboard()
+        data["wait_for_comment"] = True
+        return bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=kb)
+
+    # 7) По-умолчанию — показываем список категорий
+    return bot.send_message(
+        chat_id,
+        t(chat_id, "choose_category"),
+        reply_markup=get_inline_main_menu(chat_id)
+    )
 
 
 
@@ -951,6 +1019,7 @@ def handle_finish_order(call):
             + "\n"
             + t(chat_id, "enter_points").format(max_points=max_points)
         )
+        push_state(chat_id, "enter_points")
         bot.send_message(chat_id, msg, reply_markup=types.ReplyKeyboardRemove())
         data["wait_for_points"] = True
         data["temp_total_try"] = total_try
@@ -978,43 +1047,63 @@ def handle_finish_order(call):
 #   25. Handler: ввод количества баллов для списания
 # ------------------------------------------------------------------------
 @ensure_user
-@bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_points"), content_types=['text'])
+@bot.message_handler(
+    func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_points"),
+    content_types=['text']
+)
 def handle_points_input(message):
     chat_id = message.chat.id
     data = user_data.get(chat_id, {})
     text = message.text.strip()
 
+    # Проверяем, что это число
     if not text.isdigit():
-        bot.send_message(chat_id, t(chat_id, "invalid_points").format(max_points=data.get("temp_total_try", 0)))
+        bot.send_message(
+            chat_id,
+            t(chat_id, "invalid_points").format(max_points=data.get("temp_total_try", 0))
+        )
         return
 
     points_to_spend = int(text)
-    user_points = data.get("temp_user_points", 0)
-    total_try = data.get("temp_total_try", 0)
-    max_points = min(user_points, total_try)
+    user_points    = data.get("temp_user_points", 0)
+    total_try      = data.get("temp_total_try", 0)
+    max_points     = min(user_points, total_try)
 
+    # Диапазон 0…max_points
     if points_to_spend < 0 or points_to_spend > max_points:
-        bot.send_message(chat_id, t(chat_id, "invalid_points").format(max_points=max_points))
+        bot.send_message(
+            chat_id,
+            t(chat_id, "invalid_points").format(max_points=max_points)
+        )
         return
 
+    # Списываем баллы из БД, если нужно
     if points_to_spend > 0:
         conn_local = get_db_connection()
         cursor_local = conn_local.cursor()
-        cursor_local.execute("UPDATE users SET points = points - ? WHERE chat_id = ?", (points_to_spend, chat_id))
+        cursor_local.execute(
+            "UPDATE users SET points = points - ? WHERE chat_id = ?",
+            (points_to_spend, chat_id)
+        )
         conn_local.commit()
         cursor_local.close()
         conn_local.close()
 
-    discount_try = points_to_spend * 1
-    data["pending_discount"] = discount_try
-    data["pending_points_spent"] = points_to_spend
-    data["wait_for_points"] = False
+    # Готовим данные для заказа
+    discount_try = points_to_spend
+    data["pending_discount"]       = discount_try
+    data["pending_points_spent"]   = points_to_spend
+    data["wait_for_points"]        = False
+
+    # Теперь переходим к вводу адреса — пушим состояние
+    push_state(chat_id, "enter_address")
 
     cart = data.get("cart", [])
     total_after = total_try - discount_try
-    kb = address_keyboard()
-
-    summary_lines = [f"{item['category']}: {item['flavor']} — {item['price']}₺" for item in cart]
+    summary_lines = [
+        f"{item['category']}: {item['flavor']} — {item['price']}₺"
+        for item in cart
+    ]
     summary = "\n".join(summary_lines)
     msg = (
         f"🛒 {t(chat_id, 'view_cart')}:\n\n"
@@ -1024,10 +1113,13 @@ def handle_points_input(message):
         f"К оплате: {total_after}₺\n\n"
         f"{t(chat_id, 'enter_address')}"
     )
-    bot.send_message(chat_id, msg, reply_markup=kb)
+
+    # Просим ввести адрес
+    bot.send_message(chat_id, msg, reply_markup=address_keyboard())
     data["wait_for_address"] = True
 
     user_data[chat_id] = data
+
 
 
 # ------------------------------------------------------------------------
@@ -1045,30 +1137,25 @@ def handle_address_input(message):
 
     # 1) Обработка кнопки «Назад»
     if text == t(chat_id, "back"):
-        # снимаем ожидание адреса
         data['wait_for_address'] = False
 
-        # извлекаем предыдущий шаг
         prev = pop_state(chat_id)
-
         if prev == "finish_order":
             # повторно показываем сводку заказа и клавиатуру для ввода адреса
             cart = data.get("cart", [])
             summary = "\n".join(f"{i['category']}: {i['flavor']} — {i['price']}₺" for i in cart)
             kb = address_keyboard()
+
+            # пушим, что снова на вводе адреса
             push_state(chat_id, "enter_address")
+
             bot.send_message(
                 chat_id,
-                f"🛒 {t(chat_id, 'view_cart')}:\n\n"
-                f"{summary}\n\n"
-                f"{t(chat_id, 'enter_address')}",
+                f"🛒 {t(chat_id, 'view_cart')}:\n\n{summary}\n\n{t(chat_id, 'enter_address')}",
                 reply_markup=kb
             )
-            # возвращаем флаг ожидания
             data['wait_for_address'] = True
-
         else:
-            # если предыдущего шага нет или другой — кидаем в главное меню
             bot.send_message(
                 chat_id,
                 t(chat_id, "choose_category"),
@@ -1078,7 +1165,7 @@ def handle_address_input(message):
         user_data[chat_id] = data
         return
 
-    # 2) Обработка «Выбрать на карте» и прочего
+    # 2) Обработка «Выбрать на карте»
     if text == t(None, "choose_on_map"):
         bot.send_message(
             chat_id,
@@ -1109,9 +1196,12 @@ def handle_address_input(message):
     data['wait_for_contact'] = True
     user_data[chat_id] = data
 
-    kb = contact_keyboard()
+    # пушим, что теперь ожидаем контакт
     push_state(chat_id, "enter_contact")
+
+    kb = contact_keyboard()
     bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=kb)
+
 
 
 
@@ -1251,6 +1341,10 @@ def handle_comment_input(message):
         conn_local.commit()
 
         # Начисляем пользователю новые баллы
+        # 1) Начисляем баллы за сам заказ
+        # …после INSERT в orders…
+
+        # 1) Начисляем баллы за сам заказ
         if pts_earned > 0:
             cursor_local.execute(
                 "UPDATE users SET points = points + ? WHERE chat_id = ?",
@@ -1258,6 +1352,37 @@ def handle_comment_input(message):
             )
             conn_local.commit()
             bot.send_message(chat_id, f"👍 Вы получили {pts_earned} бонусных баллов за этот заказ.")
+
+        # 2) Реферальная система — всегда проверяем
+        cursor_local.execute(
+            "SELECT referred_by FROM users WHERE chat_id = ?",
+            (chat_id,)
+        )
+        row = cursor_local.fetchone()
+        if row and row[0]:
+            inviter = row[0]
+            cursor_local.execute(
+                "UPDATE users SET points = points + 200 WHERE chat_id = ?",
+                (inviter,)
+            )
+            conn_local.commit()
+            bot.send_message(
+                inviter,
+                "🎉 Вам начислено 200 бонусных баллов за приглашение нового клиента!"
+            )
+            # снимаем флаг, чтобы не начислить вторично
+            cursor_local.execute(
+                "UPDATE users SET referred_by = NULL WHERE chat_id = ?",
+                (chat_id,)
+            )
+            conn_local.commit()
+
+        # 3) Закрываем всё
+        cursor_local.close()
+        conn_local.close()
+
+        # …далее остальной код отправки уведомлений и сброса состояний…
+        return
 
         # Обрабатываем реферальную систему (если нужно)...
         # (ваш уже существующий код по начислению 200 баллов пригласившему)
@@ -1351,19 +1476,7 @@ def handle_comment_input(message):
             reply_markup=kb
         )
 
-        # реферальная система
-        cursor_local.execute("SELECT referred_by FROM users WHERE chat_id = ?", (chat_id,))
-        row = cursor_local.fetchone()
-        if row and row[0]:
-            inviter = row[0]
-            cursor_local.execute("UPDATE users SET points = points + 200 WHERE chat_id = ?", (inviter,))
-            conn_local.commit()
-            bot.send_message(inviter, "🎉 Вам начислено 200 бонусных баллов за приглашение нового клиента!")
-            cursor_local.execute("UPDATE users SET referred_by = NULL WHERE chat_id = ?", (chat_id,))
-            conn_local.commit()
 
-        cursor_local.close()
-        conn_local.close()
 
         summary = "\n".join(f"{i['category']}: {i['flavor']} — {i['price']}₺" for i in cart)
         rates = fetch_rates()
