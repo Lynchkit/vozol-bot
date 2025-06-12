@@ -1618,14 +1618,6 @@ def cmd_stats(message: types.Message):
     )
     bot.send_message(message.chat.id, report)
 
-
-
-
-
-def _normalize(text: str) -> str:
-    cleaned = re.sub(r'[^0-9A-Za-z\u0400-\u04FF]+', ' ', text)
-    return re.sub(r'\s+', ' ', cleaned).strip().lower()
-
 @ensure_user
 @bot.message_handler(commands=['review'])
 def cmd_review(message):
