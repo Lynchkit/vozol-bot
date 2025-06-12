@@ -1404,10 +1404,15 @@ def handle_comment_input(message):
         user_data[chat_id] = data
         return
 
-@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("delivered|"))
+@bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("delivered|"))
 def handle_delivered(call):
     print("DELIVERED CLICKED:", call.message.chat.id, "expected:", GROUP_CHAT_ID)
+
+    # проверяем, что нажали именно в нужном чате
+    if call.message.chat.id != GROUP_CHAT_ID:
         return bot.answer_callback_query(call.id, "Не в том чате", show_alert=True)
+
+    # дальше — уже валидный колбэк
     _, oid = call.data.split("|", 1)
 
     # Собираем кнопки способов оплаты
@@ -1426,6 +1431,7 @@ def handle_delivered(call):
         reply_markup=kb
     )
     bot.answer_callback_query(call.id, "Выберите способ оплаты")
+
 
 
 
