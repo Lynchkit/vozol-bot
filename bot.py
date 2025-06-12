@@ -320,7 +320,6 @@ def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
     price = menu[cat]["price"]
 
     # Сохраняем в user_data текущий список «живых» вкусов
-    # (надо положить это туда до вызова функции)
     user_data[chat_id]["current_flavors"] = [
         item for item in menu[cat]["flavors"]
         if int(item.get("stock", 0)) > 0
@@ -330,8 +329,10 @@ def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
         emoji  = item.get("emoji", "")
         flavor = item["flavor"]
         stock  = int(item.get("stock", 0))
-        label  = f"{emoji} {flavor} — {price}₺ [{stock}шт]"
-        # callback_data теперь просто «flavor|0», «flavor|1» и т.д.
+        # Берём средний рейтинг из menu.json, если он есть
+        rating = item.get("rating")
+        rating_str = f" ⭐{rating}" if rating else ""
+        label  = f"{emoji} {flavor}{rating_str} — {price}₺ [{stock} шт]"
         kb.add(types.InlineKeyboardButton(
             text=label,
             callback_data=f"flavor|{idx}"
