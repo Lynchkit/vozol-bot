@@ -1733,6 +1733,41 @@ def handle_review_comment(message):
         reply_markup=get_inline_main_menu(chat_id)
     )
 
+@ensure_user
+@bot.message_handler(commands=['show_reviews'])
+def cmd_show_reviews(message):
+    chat_id = message.chat.id
+    parts = message.text.split(maxsplit=1)
+    if len(parts) != 2:
+        return bot.send_message(chat_id, "Использование: /show_reviews <название_вкуса>")
+
+    flavor_query = parts[1].strip()
+    conn = get_db_connection()
+    cur = conn.cursor()
+    # выбираем рейтинг, комментарий и время для всех отзывов по этому вкусу
+    cur.execute(
+        "SELECT rating, comment, timestamp FROM reviews "
+        "WHERE flavor = ? ORDER BY timestamp DESC",
+        (flavor_query,)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    if not rows:
+        return bot.send_message(chat_id, f"Для вкуса «{flavor_query}» ещё нет отзывов.")
+
+    # Формируем текст ответа
+    lines = [f"Все отзывы на «{flavor_query}»:"] 
+    for rating, comment, ts in rows:
+        date = ts.split("T")[0]
+        # если комментарий пустой, просто покажем звёзды и дату
+        if comment:
+            lines.append(f"⭐️ {rating} — {comment} ({date})")
+        else:
+            lines.append(f"⭐️ {rating} — без комментария ({date})")
+
+    bot.send_message(chat_id, "\n".join(lines))
 
 
 @ensure_user
