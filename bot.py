@@ -1406,7 +1406,7 @@ def handle_comment_input(message):
 
 @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("delivered|"))
 def handle_delivered(call):
-    if call.message.chat.id != GROUP_CHAT_ID:
+    print("DELIVERED CLICKED:", call.message.chat.id, "expected:", GROUP_CHAT_ID)
         return bot.answer_callback_query(call.id, "Не в том чате", show_alert=True)
     _, oid = call.data.split("|", 1)
 
@@ -3122,23 +3122,32 @@ def universal_handler(message):
 
 @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("paid|"))
 def handle_paid(call):
+    # Сначала логируем, куда приходит колбэк
+    print("PAID CLICKED:", call.message.chat.id, "expected:", GROUP_CHAT_ID)
+
+    # Проверяем, что нажали именно в том чате
     if call.message.chat.id != GROUP_CHAT_ID:
         return bot.answer_callback_query(call.id, "Не в том чате", show_alert=True)
-    _, oid, method = call.data.split("|", 2)
 
-    ctr = load_counter()
-    ctr["count"] += 1
-    save_counter(ctr)
+    # Колбэк из нужного чата — логгируем и исполняем основную логику
+    print("PAID handler enter:", call.data)
+    try:
+        _, oid, method = call.data.split("|", 2)
+        # ваша существующая логика:
+        ctr = load_counter()
+        ctr["count"] += 1
+        save_counter(ctr)
+        bot.send_message(
+            COUNTER_CHAT_ID,
+            f"✅ Доставка #{ctr['count']}/{ctr['supply']} завершена! "
+            f"Заказ #{oid}, оплата — {method.capitalize()}."
+        )
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+        bot.answer_callback_query(call.id, "Зачтено!")
+    except Exception as e:
+        print("ERROR in handle_paid:", e)
+        bot.answer_callback_query(call.id, "Ошибка сервера", show_alert=True)
 
-    # Отправляем итоговое сообщение
-    bot.send_message(
-        COUNTER_CHAT_ID,
-        f"✅ Доставка #{ctr['count']}/{ctr['supply']} завершена! "
-        f"Заказ #{oid}, оплата — {method.capitalize()}."
-    )
-    # Убираем клавиатуру из исходного уведомления
-    bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
-    bot.answer_callback_query(call.id, "Зачтено!")
 
 
 
