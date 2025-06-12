@@ -1285,12 +1285,20 @@ def handle_comment_input(message):
             f"📱 Contact: {data.get('contact','—')}\n"
             f"💬 Comment: {translate_to_en(data.get('comment',''))}"
         )
-        kb = types.InlineKeyboardMarkup()
-        kb.add(types.InlineKeyboardButton(
-            text="❌ Отменить заказ",
-            callback_data=f"cancel_order|{order_id}"
-        ))
+        # новый вариант — Cancel + Delivered
+        kb = types.InlineKeyboardMarkup(row_width=2)
+        kb.add(
+            types.InlineKeyboardButton(
+                text="❌ Отменить заказ",
+                callback_data=f"cancel_order|{order_id}"
+            ),
+            types.InlineKeyboardButton(
+                text="🚚 Доставлено",
+                callback_data=f"delivered|{order_id}"
+            )
+        )
         bot.send_message(GROUP_CHAT_ID, full_en, reply_markup=kb)
+        # больше не возвращаемся отсюда — дальше отработает ваш обработчик delivered|
 
         # Завершаем диалог с пользователем
         bot.send_message(
