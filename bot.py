@@ -10,6 +10,21 @@ import string
 from apscheduler.schedulers.background import BackgroundScheduler
 from telebot import TeleBot, types
 
+def _normalize(text: str) -> str:
+    """
+    Убирает эмодзи и любые спецсимволы, заменяя их на пробел,
+    сводит к нижнему регистру и склеивает повторяющиеся пробелы.
+    """
+    # всё, что не буква/цифра → пробел
+    cleaned = re.sub(r'[^0-9A-Za-zА-Яа-я]+', ' ', text)
+    # убрать «лишние» пробелы и привести к lower
+    return re.sub(r'\s+', ' ', cleaned).strip().lower()
+
+
+
+def _normalize(text: str) -> str:
+    cleaned = re.sub(r'[^0-9A-Za-z\u0400-\u04FF]+', ' ', text)
+    return re.sub(r'\s+', ' ', cleaned).strip().lower()
 # ------------------------------------------------------------------------
 #   1. Загрузка переменных окружения и инициализация бота
 # ------------------------------------------------------------------------
@@ -1721,21 +1736,7 @@ def cmd_stats(message: types.Message):
 
 
 
-def _normalize(text: str) -> str:
-    """
-    Убирает эмодзи и любые спецсимволы, заменяя их на пробел,
-    сводит к нижнему регистру и склеивает повторяющиеся пробелы.
-    """
-    # всё, что не буква/цифра → пробел
-    cleaned = re.sub(r'[^0-9A-Za-zА-Яа-я]+', ' ', text)
-    # убрать «лишние» пробелы и привести к lower
-    return re.sub(r'\s+', ' ', cleaned).strip().lower()
 
-import re
-
-def _normalize(text: str) -> str:
-    cleaned = re.sub(r'[^0-9A-Za-z\u0400-\u04FF]+', ' ', text)
-    return re.sub(r'\s+', ' ', cleaned).strip().lower()
 
 @ensure_user
 @bot.message_handler(commands=['review'])
@@ -1747,7 +1748,7 @@ def cmd_review(message):
 
     q = _normalize(parts[1])
     matches = []
-    for cat, cat_data in menu.items():
+    for cat_data in menu.values():
         for itm in cat_data["flavors"]:
             if q in _normalize(itm["flavor"]):
                 matches.append(itm["flavor"])
@@ -1755,10 +1756,7 @@ def cmd_review(message):
 
     if not matches:
         all_flavors = sorted({itm["flavor"] for cat in menu.values() for itm in cat["flavors"]})
-        return bot.send_message(
-            chat_id,
-            "Вкус не найден. Доступные вкусы:\n" + "\n".join(all_flavors)
-        )
+        return bot.send_message(chat_id, "Вкус не найден. Доступные вкусы:\n" + "\n".join(all_flavors))
 
     if len(matches) > 1:
         return bot.send_message(
@@ -1768,7 +1766,7 @@ def cmd_review(message):
         )
 
     flavor = matches[0]
-    user_data[chat_id]["temp_review_flavor"] = flavor
+    user_data[chat_id]["temp_review_flavor"]    = flavor
     user_data[chat_id]["awaiting_review_comment"] = False
 
     kb = types.InlineKeyboardMarkup(row_width=5)
@@ -1788,7 +1786,7 @@ def callback_review_rate(call):
     _, rating_str = call.data.split("|", 1)
     rating = int(rating_str)
     data = user_data[chat_id]
-    data["temp_review_rating"]   = rating
+    data["temp_review_rating"]     = rating
     data["awaiting_review_comment"] = True
     user_data[chat_id] = data
 
@@ -1810,7 +1808,7 @@ def handle_review_comment(message):
 
     flavor = data.pop("temp_review_flavor")
     rating = data.pop("temp_review_rating")
-    raw     = message.text.strip()
+    raw    = message.text.strip()
     comment = "" if raw.lower() == "/skip" else raw
 
     data["awaiting_review_comment"] = False
@@ -1825,12 +1823,12 @@ def handle_review_comment(message):
         (chat_id, None, flavor, rating, comment, now)
     )
     conn.commit()
-
     cur.execute("SELECT AVG(rating) FROM reviews WHERE flavor = ?", (flavor,))
     avg = round(cur.fetchone()[0] or 0, 1)
     cur.close()
     conn.close()
 
+    # Обновляем рейтинг в menu.json
     for cat_data in menu.values():
         for itm in cat_data["flavors"]:
             if itm["flavor"] == flavor:
@@ -1843,6 +1841,7 @@ def handle_review_comment(message):
         f"Спасибо за отзыв! Средний рейтинг «{flavor}» теперь {avg}⭐️",
         reply_markup=get_inline_main_menu(chat_id)
     )
+
 
 
 
