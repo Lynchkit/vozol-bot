@@ -10,21 +10,7 @@ import string
 from apscheduler.schedulers.background import BackgroundScheduler
 from telebot import TeleBot, types
 
-def _normalize(text: str) -> str:
-    """
-    Убирает эмодзи и любые спецсимволы, заменяя их на пробел,
-    сводит к нижнему регистру и склеивает повторяющиеся пробелы.
-    """
-    # всё, что не буква/цифра → пробел
-    cleaned = re.sub(r'[^0-9A-Za-zА-Яа-я]+', ' ', text)
-    # убрать «лишние» пробелы и привести к lower
-    return re.sub(r'\s+', ' ', cleaned).strip().lower()
 
-
-
-def _normalize(text: str) -> str:
-    cleaned = re.sub(r'[^0-9A-Za-z\u0400-\u04FF]+', ' ', text)
-    return re.sub(r'\s+', ' ', cleaned).strip().lower()
 # ------------------------------------------------------------------------
 #   1. Загрузка переменных окружения и инициализация бота
 # ------------------------------------------------------------------------
@@ -51,6 +37,20 @@ bot = TeleBot(TOKEN, parse_mode="HTML")
 MENU_PATH = "/data/menu.json"
 LANG_PATH = "/data/languages.json"
 DB_PATH = "/data/database.db"
+# Чат и файл для учёта поставок/доставок
+COUNTER_CHAT_ID = -1002376475786
+COUNTER_PATH = "/data/deliveries_counter.json"
+
+def load_counter():
+    if not os.path.exists(COUNTER_PATH):
+        return {"count": 0, "supply": 0}
+    with open(COUNTER_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_counter(data):
+    with open(COUNTER_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
 
 
 # ------------------------------------------------------------------------
@@ -1329,23 +1329,27 @@ def handle_comment_input(message):
             f"💬 Comment: {translate_to_en(data.get('comment', ''))}"
         )
 
-        # 2) Создать инлайн-клавиатуру с кнопкой отмены
-        kb = types.InlineKeyboardMarkup()
-        kb.add(
-            types.InlineKeyboardButton(
-                text="❌ Отменить заказ",
-                callback_data=f"cancel_order|{order_id}"
-            )
-        )
+        # создаём InlineKeyboardMarkup, указывая, что в ряд по 2 кнопки
+        kb = types.InlineKeyboardMarkup(row_width=2)
 
-        # 3) Отправить сообщение вместе с кнопкой
+        # кнопки
+        # … внутри handle_comment_input, вместо текущего фрагмента с cancel-only:
+        cancel_btn = types.InlineKeyboardButton(
+            text="❌ Отменить заказ",
+            callback_data=f"cancel_order|{order_id}"
+        )
+        delivered_btn = types.InlineKeyboardButton(
+            text="🚚 Delivered",
+            callback_data=f"delivered|{order_id}"
+        )
+        kb = types.InlineKeyboardMarkup(row_width=2)
+        kb.add(cancel_btn, delivered_btn)
+
         bot.send_message(
             GROUP_CHAT_ID,
             full_en,
             reply_markup=kb
         )
-
-
 
         summary = "\n".join(f"{i['category']}: {i['flavor']} — {i['price']}₺" for i in cart)
         rates = fetch_rates()
@@ -1391,6 +1395,30 @@ def handle_comment_input(message):
         })
         user_data[chat_id] = data
         return
+
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("delivered|"))
+def handle_delivered(call):
+    if call.message.chat.id != GROUP_CHAT_ID:
+        return bot.answer_callback_query(call.id, "Не в том чате", show_alert=True)
+    _, oid = call.data.split("|", 1)
+
+    # Собираем кнопки способов оплаты
+    methods = ["cash", "euro", "dolar", "iban", "ruble", "uah"]
+    kb = types.InlineKeyboardMarkup(row_width=3)
+    for m in methods:
+        kb.add(types.InlineKeyboardButton(
+            text=m.capitalize(),
+            callback_data=f"paid|{oid}|{m}"
+        ))
+
+    # Меняем клавиатуру у сообщения
+    bot.edit_message_reply_markup(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=kb
+    )
+    bot.answer_callback_query(call.id, "Выберите способ оплаты")
+
 
 
 # ------------------------------------------------------------------------
@@ -3084,6 +3112,25 @@ def universal_handler(message):
         bot.send_message(chat_id, "\n\n".join(texts))
         return
 
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("paid|"))
+def handle_paid(call):
+    if call.message.chat.id != GROUP_CHAT_ID:
+        return bot.answer_callback_query(call.id, "Не в том чате", show_alert=True)
+    _, oid, method = call.data.split("|", 2)
+
+    ctr = load_counter()
+    ctr["count"] += 1
+    save_counter(ctr)
+
+    # Отправляем итоговое сообщение
+    bot.send_message(
+        COUNTER_CHAT_ID,
+        f"✅ Доставка #{ctr['count']}/{ctr['supply']} завершена! "
+        f"Заказ #{oid}, оплата — {method.capitalize()}."
+    )
+    # Убираем клавиатуру из исходного уведомления
+    bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    bot.answer_callback_query(call.id, "Зачтено!")
 
 
 
@@ -3178,6 +3225,22 @@ def handle_cancel_order(call):
     )
     bot.answer_callback_query(call.id, "Заказ отменён")
 
+
+@bot.message_handler(commands=['new_supply'])
+def cmd_new_supply(message):
+    if message.chat.id != COUNTER_CHAT_ID:
+        return
+    parts = message.text.split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        return bot.reply_to(message, "Использование: /new_supply <число_штук>")
+    total = int(parts[1])
+    ctr = {"count": 0, "supply": total}
+    save_counter(ctr)
+    bot.send_message(
+        COUNTER_CHAT_ID,
+        f"📦 Новая поставка: {total} шт.\n"
+        f"Счётчик доставок сброшен (0/{total})."
+    )
 
 
 
