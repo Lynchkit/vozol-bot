@@ -3245,46 +3245,56 @@ def handle_order_delivered(call: types.CallbackQuery):
 # 2) Обработка выбора валюты — опять же редактируем то же сообщение и накапливаем счётчик
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("deliver_currency|"))
 def handle_deliver_currency(call: types.CallbackQuery):
-    bot.answer_callback_query(call.id)
+    # 1) Сразу закрываем «крутилку»
+    call.answer()
+
+    # 2) Парсим order_id и валюту
     _, oid, currency = call.data.split("|", 2)
     order_id = int(oid)
 
-    # достаём из БД items_json и считаем qty
+    # 3) Достаём из orders items_json и считаем количество штук
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("SELECT items_json FROM orders WHERE order_id = ?", (order_id,))
     row = cur.fetchone()
     if not row:
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
         return bot.answer_callback_query(call.id, "Заказ не найден", show_alert=True)
 
     items = json.loads(row[0])
     qty = len(items)
 
-    # теперь при конфликте прибавляем к существующему count
-    cur.execute("""
-        INSERT INTO delivered_counts(currency, count)
-        VALUES (?, ?)
-        ON CONFLICT(currency) DO UPDATE
-          SET count = count + excluded.count
-    """, (currency, qty))
+    # 4) Читаем текущее общее значение для этой валюты
+    cur.execute("SELECT count FROM delivered_counts WHERE currency = ?", (currency,))
+    existing = cur.fetchone()
+    current_total = existing[0] if existing else 0
+
+    # 5) Считаем новый итог и записываем обратно
+    new_total = current_total + qty
+    if existing:
+        cur.execute(
+            "UPDATE delivered_counts SET count = ? WHERE currency = ?",
+            (new_total, currency)
+        )
+    else:
+        cur.execute(
+            "INSERT INTO delivered_counts(currency, count) VALUES(?, ?)",
+            (currency, qty)
+        )
     conn.commit()
 
-    # читаем обновлённый общий счётчик
-    cur.execute("SELECT count FROM delivered_counts WHERE currency = ?", (currency,))
-    total = cur.fetchone()[0]
-    cur.close(); conn.close()
-
-    # готовим новое тело сообщения
+    # 6) Готовим текст для обновлённого сообщения
+    # Берём оригинальную часть до «Select payment currency:»
     original = call.message.text.split("Select payment currency:")[0].rstrip()
-    new_text = (
+    updated = (
         f"{original}\n\n"
-        f"Delivered in {currency.upper()}: +{qty} pcs → total {total} pcs."
+        f"Delivered in {currency.upper()}: +{qty} pcs → total {new_total} pcs."
     )
 
-    # возвращаем исходную клавиатуру «Cancel / Order Delivered»
-    back_kb = types.InlineKeyboardMarkup(row_width=2)
-    back_kb.add(
+    # 7) Восстанавливаем клавиатуру ❌ Cancel / ✅ Order Delivered
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
         types.InlineKeyboardButton(
             text="❌ Cancel",
             callback_data=f"cancel_order|{order_id}"
@@ -3295,12 +3305,17 @@ def handle_deliver_currency(call: types.CallbackQuery):
         )
     )
 
+    # 8) Редактируем то же сообщение
     bot.edit_message_text(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
-        text=new_text,
-        reply_markup=back_kb
+        text=updated,
+        reply_markup=kb
     )
+
+    cur.close()
+    conn.close()
+
 
 
 
