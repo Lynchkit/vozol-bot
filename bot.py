@@ -60,6 +60,7 @@ def get_db_connection():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     return conn
 
+# ------------------------------------------------------------------------
 
 # ------------------------------------------------------------------------
 # ------------------------------------------------------------------------
@@ -69,6 +70,16 @@ import sqlite3
 
 conn_init = get_db_connection()
 cursor_init = conn_init.cursor()
+
+#   Инициализация таблицы для хранения счётчиков доставленных товаров
+# ------------------------------------------------------------------------
+cursor_init.execute("""
+    CREATE TABLE IF NOT EXISTS delivered_counts (
+        currency TEXT PRIMARY KEY,
+        count    INTEGER DEFAULT 0
+    )
+""")
+conn_init.commit()
 
 # Попытка добавить новые столбцы — выполнится только один раз
 try:
@@ -1285,11 +1296,17 @@ def handle_comment_input(message):
             f"📱 Contact: {data.get('contact','—')}\n"
             f"💬 Comment: {translate_to_en(data.get('comment',''))}"
         )
-        kb = types.InlineKeyboardMarkup()
-        kb.add(types.InlineKeyboardButton(
-            text="❌ Отменить заказ",
-            callback_data=f"cancel_order|{order_id}"
-        ))
+        kb = types.InlineKeyboardMarkup(row_width=2)
+        kb.add(
+            types.InlineKeyboardButton(
+                text="❌ Отменить заказ",
+                callback_data=f"cancel_order|{order_id}"
+            ),
+            types.InlineKeyboardButton(
+                text="✅ Order Delivered",
+                callback_data=f"order_delivered|{order_id}"
+            )
+        )
         bot.send_message(GROUP_CHAT_ID, full_en, reply_markup=kb)
 
         # Завершаем диалог с пользователем
@@ -1453,6 +1470,20 @@ def cmd_change(message):
     user_data[chat_id] = data
 
 
+@ensure_user
+@bot.message_handler(commands=['again'])
+def cmd_again(message):
+    user_id = message.chat.id
+    if user_id not in ADMINS:
+        return bot.send_message(user_id, "Нет доступа.")
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM delivered_counts")
+    conn.commit()
+    cursor.close(); conn.close()
+
+    bot.send_message(user_id, "Счётчики доставленных товаров сброшены.")
 
 # ------------------------------------------------------------------------
 #   30. Хендлер /points
@@ -3178,6 +3209,66 @@ def handle_cancel_order(call):
     )
     bot.answer_callback_query(call.id, "Заказ отменён")
 
+@bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("order_delivered|"))
+def handle_order_delivered(call):
+    call.answer()
+    _, oid = call.data.split("|", 1)
+    order_id = int(oid)
+
+    # клавиатура с выбором валют
+    currencies = ["cash", "rub", "dollar", "euro", "uah", "iban"]
+    kb = types.InlineKeyboardMarkup(row_width=3)
+    for cur in currencies:
+        kb.add(types.InlineKeyboardButton(
+            text=cur.upper(),
+            callback_data=f"deliver_currency|{order_id}|{cur}"
+        ))
+    kb.add(types.InlineKeyboardButton(text="⏪ Back", callback_data=f"back_to_group|{order_id}"))
+
+    bot.send_message(call.message.chat.id, "Выберите валюту оплаты:", reply_markup=kb)
+@bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("deliver_currency|"))
+def callback_deliver_currency(call):
+    call.answer()
+    _, oid, currency = call.data.split("|", 2)
+    order_id = int(oid)
+
+    # вытягиваем заказ из БД
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT items_json FROM orders WHERE order_id = ?", (order_id,))
+    row = cursor.fetchone()
+    if not row:
+        bot.send_message(call.message.chat.id, "Заказ не найден.")
+        cursor.close(); conn.close()
+        return
+
+    items = json.loads(row[0])
+    qty = len(items)
+
+    # обновляем счётчик для этой валюты
+    cursor.execute("""
+        INSERT INTO delivered_counts(currency, count)
+        VALUES (?, ?)
+        ON CONFLICT(currency) DO UPDATE SET count = count + ?
+    """, (currency, qty, qty))
+    conn.commit()
+
+    # читаем новый общий счётчик
+    cursor.execute("SELECT count FROM delivered_counts WHERE currency = ?", (currency,))
+    total = cursor.fetchone()[0]
+
+    cursor.close(); conn.close()
+
+    bot.send_message(call.message.chat.id, f"{total} ({currency})")
+@bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("back_to_group|"))
+def callback_back_to_group(call):
+    call.answer()
+    # просто удаляем клавиатуру, или пересылаем админу исходное сообщение
+    bot.edit_message_reply_markup(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=None
+    )
 
 
 
