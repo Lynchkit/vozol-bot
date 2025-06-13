@@ -3300,8 +3300,7 @@ def handle_deliver_currency(call: types.CallbackQuery):
     new_text = (
         f"{original}\n\n"
         f"<b>Already delivered:</b>\n"
-        f"{currency.upper()}: {current_total} pcs\n\n"
-        f"<b>Already delivered:</b>\n"
+        f"PAYED IN {currency.upper()}: {qty} pcs\n\n"
         f"<b>Total:</b> {overall_total} pcs"
     )
 
