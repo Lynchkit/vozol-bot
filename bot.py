@@ -1487,22 +1487,22 @@ def cmd_again(message):
 
 @bot.message_handler(commands=['stock'])
 def cmd_stock(message: types.Message):
-    # 1) Разрешаем только в админ-группе
+    # 1) Only allow in the admin group
     if message.chat.id != GROUP_CHAT_ID:
-        return bot.reply_to(message, "❌ Эта команда доступна только в админ-группе.")
+        return bot.reply_to(message, "❌ This command is available only in the admin group.")
 
     parts = message.text.strip().split()
-    # 2) Ожидаем ровно один аргумент — число
+    # 2) Expect exactly one numeric argument
     if len(parts) != 2 or not parts[1].isdigit():
         return bot.reply_to(
             message,
-            "Использование: /stock <общее_число_доставок>\n"
-            "Например: /stock 42"
+            "Usage: /stock <total_deliveries>\n"
+            "Example: /stock 42"
         )
 
     total = int(parts[1])
 
-    # 3) Сохраняем в БД как запись с currency='total'
+    # 3) Save under currency='total' so it tracks the overall count
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -1515,8 +1515,8 @@ def cmd_stock(message: types.Message):
     cur.close()
     conn.close()
 
-    # 4) Ответ пользователю
-    bot.reply_to(message, f"✅ Общее количество доставленных заказов установлено: {total} шт.")
+    # 4) Acknowledge to the user
+    bot.reply_to(message, f"✅ Overall delivered orders count set to {total} pcs.")
 
 
 # ------------------------------------------------------------------------
