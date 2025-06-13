@@ -3205,16 +3205,19 @@ def handle_cancel_order(call):
     bot.answer_callback_query(call.id, "Заказ отменён")
 
 # 1) Обработчик нажатия "Order Delivered"
+# 1) When “Order Delivered” is pressed, show currency choices (EN only)
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("order_delivered|"))
-def handle_order_delivered(call: types.CallbackQuery):
-    order_msg = call.message
-    bot.answer_callback_query(call.id)  # убрать «крутилку»
+def handle_order_delivered(call):
+    # Only allow in your admin group
+    if call.message.chat.id != GROUP_CHAT_ID:
+        return bot.answer_callback_query(call.id, "This button can only be used in the admin group.", show_alert=True)
+    # stop the loading spinner
+    bot.answer_callback_query(call.id)
 
-    # Извлекаем order_id
     _, oid = call.data.split("|", 1)
     order_id = int(oid)
 
-    # Собираем клавиатуру выбора валюты
+    # build currency‐selection keyboard
     currencies = ["cash", "rub", "dollar", "euro", "uah", "iban"]
     kb = types.InlineKeyboardMarkup(row_width=3)
     for cur in currencies:
@@ -3222,52 +3225,51 @@ def handle_order_delivered(call: types.CallbackQuery):
             text=cur.upper(),
             callback_data=f"deliver_currency|{order_id}|{cur}"
         ))
-    # Кнопка "Back" вернёт нас к начальной разметке
-    kb.add(types.InlineKeyboardButton(
-        text="⏪ Back",
-        callback_data=f"back_to_group|{order_id}"
-    ))
+    kb.add(types.InlineKeyboardButton(text="⏪ Back", callback_data=f"back_to_group|{order_id}"))
 
-    # ВТКОРОЕ изменяем кнопки у того же сообщения
-    bot.edit_message_reply_markup(
-        chat_id=order_msg.chat.id,
-        message_id=order_msg.message_id,
-        reply_markup=kb
-    )
+    bot.send_message(call.message.chat.id, "Select payment currency for this delivery:", reply_markup=kb)
 
 
-# 2) Обработчик выбора валюты
+# 2) When a currency is picked, add exactly N items to that currency’s counter
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("deliver_currency|"))
-def handle_deliver_currency(call: types.CallbackQuery):
+def callback_deliver_currency(call):
+    # stop the loading spinner
     bot.answer_callback_query(call.id)
 
     _, oid, currency = call.data.split("|", 2)
     order_id = int(oid)
 
+    # fetch how many items were in this order
     conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT items_json FROM orders WHERE order_id = ?", (order_id,))
-    row = cur.fetchone()
+    cursor = conn.cursor()
+    cursor.execute("SELECT items_json FROM orders WHERE order_id = ?", (order_id,))
+    row = cursor.fetchone()
     if not row:
-        conn.close()
-        return bot.send_message(call.message.chat.id, "Заказ не найден.")
+        cursor.close(); conn.close()
+        return bot.send_message(call.message.chat.id, "Order not found.")
 
     items = json.loads(row[0])
-    qty = len(items)
+    qty = len(items)  # number of delivered items
 
-    cur.execute("""
+    # increment that currency’s counter by qty
+    cursor.execute("""
         INSERT INTO delivered_counts(currency, count)
         VALUES (?, ?)
         ON CONFLICT(currency) DO UPDATE SET count = count + ?
     """, (currency, qty, qty))
     conn.commit()
-    cur.execute("SELECT count FROM delivered_counts WHERE currency = ?", (currency,))
-    total = cur.fetchone()[0]
-    conn.close()
 
-    # Отправляем уведомление админу (можно тоже через edit_message_text, но проще новым сообщением)
-    bot.send_message(call.message.chat.id,
-                     f"✔️ Отмечено доставленным ({currency.upper()}): всего {total} шт.")
+    # read back the new total
+    cursor.execute("SELECT count FROM delivered_counts WHERE currency = ?", (currency,))
+    total = cursor.fetchone()[0]
+    cursor.close(); conn.close()
+
+    # report in English
+    bot.send_message(
+        call.message.chat.id,
+        f"Total delivered in {currency.upper()}: {total} pcs."
+    )
+
 
 
 # 3) Обработчик "Back" – восстанавливаем исходную клавиатуру с Cancel и Order Delivered
@@ -3296,7 +3298,7 @@ def handle_back_to_group(call: types.CallbackQuery):
         message_id=order_msg.message_id,
         reply_markup=original_kb
     )
- 
+
 
 # ------------------------------------------------------------------------
 #   36. Запуск бота
