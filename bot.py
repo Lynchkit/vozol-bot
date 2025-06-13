@@ -1844,37 +1844,64 @@ def cmd_show_reviews(message):
     bot.send_message(chat_id, "\n".join(lines))
 
 
+# где-то в начале вашего скрипта, сразу после get_db_connection()
+conn = get_db_connection()
+cur  = conn.cursor()
+# лог доставок
+cur.execute("""
+CREATE TABLE IF NOT EXISTS delivered_log (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id   INTEGER,
+    category   TEXT,
+    flavor     TEXT,
+    currency   TEXT,
+    qty        INTEGER,
+    timestamp  TEXT
+)
+""")
+# счётчики по валютам
+cur.execute("""
+CREATE TABLE IF NOT EXISTS delivered_counts (
+    currency TEXT PRIMARY KEY,
+    count    INTEGER
+)
+""")
+conn.commit()
+cur.close()
+conn.close()
+
 # 1) Listen for /sold in groups only
 # должен идти до universal_handler
 
-@bot.message_handler(func=lambda m:
-    m.chat.id == GROUP_CHAT_ID
-    and m.text
-    and (m.text.strip() == "/sold"
-         or m.text.strip() == f"/sold@{bot.get_me().username}")
+@bot.message_handler(
+    commands=['sold'],
+    func=lambda m: m.chat.id == GROUP_CHAT_ID
 )
 def cmd_sold_group(message: types.Message):
-    print("[DEBUG] /sold fired:", message.text)
     chat_id = message.chat.id
 
-    # 1) если весь сток нулевой — очищаем логи
+    # 1) Если весь сток = 0 → очищаем логи
     total_stock = sum(
         int(it.get("stock", 0))
-        for cat in menu.values()
-        for it in cat.get("flavors", [])
+        for cat_data in menu.values()
+        for it in cat_data.get("flavors", [])
     )
     if total_stock == 0:
-        conn = get_db_connection(); cur = conn.cursor()
-        cur.execute("DELETE FROM delivered_log"); conn.commit()
-        cur.close(); conn.close()
+        conn = get_db_connection()
+        cur  = conn.cursor()
+        cur.execute("DELETE FROM delivered_log")
+        conn.commit()
+        cur.close()
+        conn.close()
 
-    # 2) начало «сегодня» по UTC
+    # 2) Начало «сегодня» по UTC
     today_start = datetime.datetime.utcnow().replace(
         hour=0, minute=0, second=0, microsecond=0
     ).isoformat()
 
-    # 3) вытягиваем все записи с полуночи
-    conn = get_db_connection(); cur = conn.cursor()
+    # 3) Достаём все записи delivered_log с полуночи
+    conn = get_db_connection()
+    cur  = conn.cursor()
     cur.execute("""
         SELECT order_id, category, flavor, currency, qty, timestamp
           FROM delivered_log
@@ -1882,33 +1909,37 @@ def cmd_sold_group(message: types.Message):
       ORDER BY timestamp ASC
     """, (today_start,))
     rows = cur.fetchall()
-    cur.close(); conn.close()
+    cur.close()
+    conn.close()
 
     if not rows:
         return bot.send_message(chat_id, "No deliveries recorded today.")
 
-    # 4) группируем по дате и считаем по валютам
+    # 4) Группируем по дате и суммируем по валютам
     by_date = {}
-    totals = {}
-    for oid, cat, flavor, curr, qty, ts in rows:
+    totals  = {}
+    for order_id, category, flavor, currency, qty, ts in rows:
         date_str, time_str = ts.split("T")
         time_str = time_str.split(".")[0]
-        entry = f"{time_str} — Order #{oid} — {cat}/{flavor} — {curr.upper()}: {qty} pcs"
+        entry = (
+            f"{time_str} — Order #{order_id} — "
+            f"{category}/{flavor} — {currency.upper()}: {qty} pcs"
+        )
         by_date.setdefault(date_str, []).append(entry)
-        totals[curr] = totals.get(curr, 0) + qty
+        totals[currency] = totals.get(currency, 0) + qty
 
-    # 5) собираем текст
+    # 5) Формируем итоговый текст
     parts = ["📊 Deliveries today:\n"]
-    for date, entries in by_date.items():
-        parts.append(f"<b>{date}</b>:")
+    for date_str, entries in by_date.items():
+        parts.append(f"<b>{date_str}</b>:")
         parts.extend(entries)
-        parts.append("")
-
+        parts.append("")  # пустая строка
     parts.append("<b>Summary:</b>")
-    for curr, cnt in totals.items():
-        parts.append(f"{curr.upper()}: {cnt} pcs")
+    for cur_code, cnt in totals.items():
+        parts.append(f"{cur_code.upper()}: {cnt} pcs")
 
     bot.send_message(chat_id, "\n".join(parts), parse_mode="HTML")
+
 
 
 # ------------------------------------------------------------------------
