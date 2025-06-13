@@ -1638,15 +1638,28 @@ def cmd_payment(message):
 @bot.message_handler(commands=['sold'])
 def cmd_sold(message: types.Message):
     chat_id = message.chat.id
-    # consider from midnight UTC
-    today_start = datetime.datetime.utcnow() \
-        .replace(hour=0, minute=0, second=0, microsecond=0) \
-        .isoformat()
+
+    # 0) If all stock is zero → reset delivered_log
+    total_stock = 0
+    for cat in menu.values():
+        for itm in cat.get("flavors", []):
+            total_stock += int(itm.get("stock", 0))
+    if total_stock == 0:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM delivered_log")
+        conn.commit()
+        cur.close()
+        conn.close()
+
+    # 1) Count from midnight UTC
+    today_start = datetime.datetime.utcnow().replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).isoformat()
 
     conn = get_db_connection()
     cur = conn.cursor()
-    # Assume your delivered_log table has columns:
-    # order_id, category, flavor, currency, qty, timestamp
+    # delivered_log must have: order_id, category, flavor, currency, qty, timestamp
     cur.execute("""
         SELECT order_id, category, flavor, currency, qty, timestamp
         FROM delivered_log
@@ -1660,27 +1673,32 @@ def cmd_sold(message: types.Message):
     if not rows:
         return bot.send_message(chat_id, "No deliveries recorded today.")
 
-    lines = []
-    totals = {}
+    # Group by date and accumulate totals
+    by_date: dict[str, list[str]] = {}
+    totals: dict[str, int] = {}
     for order_id, category, flavor, currency, qty, ts in rows:
-        time_str = ts.split("T")[1].split(".")[0]  # HH:MM:SS
-        lines.append(
+        date_str, time_str = ts.split("T")
+        time_str = time_str.split(".")[0]
+        entry = (
             f"{time_str} — Order #{order_id} — {category}/{flavor} — "
             f"{currency.upper()}: {qty} pcs"
         )
+        by_date.setdefault(date_str, []).append(entry)
         totals[currency] = totals.get(currency, 0) + qty
 
-    # summary by currency
+    # Build the message
+    parts = ["📊 Deliveries today:\n"]
+    for date_str, entries in by_date.items():
+        parts.append(f"<b>{date_str}</b>:")
+        parts.extend(entries)
+        parts.append("")  # blank line
+
     summary = "\n".join(f"{cur.upper()}: {cnt} pcs" for cur, cnt in totals.items())
+    parts.append("<b>Summary:</b>")
+    parts.append(summary)
 
-    text = (
-        "📊 Deliveries today:\n\n"
-        + "\n".join(lines)
-        + "\n\n<b>Summary:</b>\n"
-        + summary
-    )
+    bot.send_message(chat_id, "\n".join(parts), parse_mode="HTML")
 
-    bot.send_message(chat_id, text, parse_mode="HTML")
 
 
 
