@@ -3204,25 +3204,24 @@ def handle_cancel_order(call):
     )
     bot.answer_callback_query(call.id, "Заказ отменён")
 
+# 1) Обработчик нажатия "Order Delivered"
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("order_delivered|"))
-def handle_order_delivered(call):
-    # 1) Проверяем, что колбэк пришёл именно из группового чата
-    if call.message.chat.id != GROUP_CHAT_ID:
-        # отвечаем на колбэк и выходим
-        return bot.answer_callback_query(
-            call.id,
-            "Не в том чате",
-            show_alert=True
-        )
+def handle_order_delivered(call: types.CallbackQuery):
+    # Только админы могут нажимать
+    if call.from_user.id not in ADMINS:
+        return bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
 
-    # 2) Подтверждаем приём колбэка (убираем «крутилку»)
+    # Убираем «крутилку»
     bot.answer_callback_query(call.id)
 
-    # 3) Разбираем order_id
-    _, oid = call.data.split("|", 1)
-    order_id = int(oid)
+    # Извлекаем order_id
+    try:
+        _, oid = call.data.split("|", 1)
+        order_id = int(oid)
+    except ValueError:
+        return bot.send_message(call.message.chat.id, "Ошибка: неверный формат данных.")
 
-    # 4) Собираем клавиатуру с выбором валют
+    # Строим клавиатуру выбора валюты
     currencies = ["cash", "rub", "dollar", "euro", "uah", "iban"]
     kb = types.InlineKeyboardMarkup(row_width=3)
     for cur in currencies:
@@ -3235,18 +3234,63 @@ def handle_order_delivered(call):
         callback_data=f"back_to_group|{order_id}"
     ))
 
-    # 5) Отправляем сообщение
-    bot.send_message(
-        call.message.chat.id,
-        "Выберите валюту оплаты:",
-        reply_markup=kb
+    bot.send_message(call.message.chat.id, "Выберите валюту оплаты:", reply_markup=kb)
+
+
+# 2) Обработчик выбора валюты доставки
+@bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("deliver_currency|"))
+def handle_deliver_currency(call: types.CallbackQuery):
+    bot.answer_callback_query(call.id)
+
+    parts = call.data.split("|")
+    if len(parts) != 3:
+        return bot.send_message(call.message.chat.id, "Ошибка: неверный формат данных.")
+
+    _, oid, currency = parts
+    try:
+        order_id = int(oid)
+    except ValueError:
+        return bot.send_message(call.message.chat.id, "Ошибка: неверный номер заказа.")
+
+    # Достаём из БД заказ
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT items_json FROM orders WHERE order_id = ?", (order_id,))
+    row = cursor.fetchone()
+    if not row:
+        cursor.close()
+        conn.close()
+        return bot.send_message(call.message.chat.id, "Заказ не найден.")
+
+    items = json.loads(row[0])
+    qty = len(items)
+
+    # Обновляем счётчик доставленных
+    cursor.execute("""
+        INSERT INTO delivered_counts(currency, count)
+        VALUES (?, ?)
+        ON CONFLICT(currency) DO UPDATE SET count = count + ?
+    """, (currency, qty, qty))
+    conn.commit()
+
+    # Читаем новый итог
+    cursor.execute("SELECT count FROM delivered_counts WHERE currency = ?", (currency,))
+    total = cursor.fetchone()[0]
+    cursor.close()
+    conn.close()
+
+    bot.send_message(call.message.chat.id, f"Всего доставлено ({currency.upper()}): {total}")
+
+
+# 3) Обработчик кнопки «Back» (возврат в админский чат без клавиатуры)
+@bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("back_to_group|"))
+def handle_back_to_group(call: types.CallbackQuery):
+    bot.answer_callback_query(call.id)
+    bot.edit_message_reply_markup(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=None
     )
-
-
-
-
-
-
 
 # ------------------------------------------------------------------------
 #   36. Запуск бота
