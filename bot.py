@@ -1649,12 +1649,16 @@ def cmd_payment(message):
 @bot.message_handler(commands=['sold'])
 def cmd_sold(message: types.Message):
     chat_id = message.chat.id
-    # считаем с полуночи UTC
-    today_start = datetime.datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    # start of today (UTC)
+    today_start = datetime.datetime.utcnow() \
+        .replace(hour=0, minute=0, second=0, microsecond=0) \
+        .isoformat()
+
     conn = get_db_connection()
     cur = conn.cursor()
+    # delivered_log must have: order_id, category, flavor, currency, qty, timestamp
     cur.execute("""
-        SELECT order_id, currency, qty, timestamp
+        SELECT order_id, category, flavor, currency, qty, timestamp
         FROM delivered_log
         WHERE timestamp >= ?
         ORDER BY timestamp ASC
@@ -1664,20 +1668,35 @@ def cmd_sold(message: types.Message):
     conn.close()
 
     if not rows:
-        return bot.send_message(chat_id, "За сегодня ещё не было ни одной доставки.")
+        return bot.send_message(chat_id, "No deliveries recorded today.")
 
-    lines = []
-    totals = {}
-    for order_id, currency, qty, ts in rows:
-        t = ts.split("T")[1].split(".")[0]  # оставим только ЧЧ:ММ:СС
-        lines.append(f"{t} — Order #{order_id} — {currency.upper()}: {qty} pcs")
+    # Group by date
+    by_date: dict[str, list[str]] = {}
+    totals: dict[str, int] = {}
+    for order_id, category, flavor, currency, qty, ts in rows:
+        date_str, time_str = ts.split("T")
+        time_str = time_str.split(".")[0]  # HH:MM:SS
+        line = (
+            f"{time_str} — Order #{order_id} — {category}/{flavor} — "
+            f"{currency.upper()}: {qty} pcs"
+        )
+        by_date.setdefault(date_str, []).append(line)
         totals[currency] = totals.get(currency, 0) + qty
 
-    # сводка по валютам
-    summary = "\n".join(f"{cur.upper()}: {cnt} pcs" for cur, cnt in totals.items())
-    text = "📊 Продано сегодня:\n\n" + "\n".join(lines) + "\n\n<b>Итого:</b>\n" + summary
+    # Build the message
+    parts = ["📊 Deliveries today:\n"]
+    for date_str, entries in by_date.items():
+        parts.append(f"<b>{date_str}</b>:")
+        parts.extend(entries)
+        parts.append("")  # blank line between dates
 
-    bot.send_message(chat_id, text, parse_mode="HTML")
+    # summary by currency
+    summary = "\n".join(f"{cur.upper()}: {cnt} pcs" for cur, cnt in totals.items())
+    parts.append("<b>Summary:</b>")
+    parts.append(summary)
+
+    bot.send_message(chat_id, "\n".join(parts), parse_mode="HTML")
+
 
 # 1) Определяем отдельный хендлер прямо рядом с /convert, /points и т.д.
 @ensure_user
