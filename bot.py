@@ -1639,10 +1639,10 @@ def cmd_payment(message):
 def cmd_sold_group(message: types.Message):
     chat_id = message.chat.id
 
-    # 2) If all stock is zero → reset delivered_log
+    # 1) Если весь сток обнулён → очищаем логи доставок
     total_stock = 0
-    for cat in menu.values():
-        for itm in cat.get("flavors", []):
+    for cat_data in menu.values():
+        for itm in cat_data.get("flavors", []):
             total_stock += int(itm.get("stock", 0))
     if total_stock == 0:
         conn = get_db_connection()
@@ -1652,11 +1652,12 @@ def cmd_sold_group(message: types.Message):
         cur.close()
         conn.close()
 
-    # 3) Count from midnight UTC
+    # 2) Время начала «сегодняшнего» дня (UTC)
     today_start = datetime.datetime.utcnow().replace(
         hour=0, minute=0, second=0, microsecond=0
     ).isoformat()
 
+    # 3) Извлекаем записи доставок с полуночи
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -1672,12 +1673,12 @@ def cmd_sold_group(message: types.Message):
     if not rows:
         return bot.send_message(chat_id, "No deliveries recorded today.")
 
-    # 4) Group by date and build per‐currency totals
+    # 4) Группируем по дате и считаем итоги по валютам
     by_date: dict[str, list[str]] = {}
     totals: dict[str, int] = {}
     for order_id, category, flavor, currency, qty, ts in rows:
         date_str, time_str = ts.split("T")
-        time_str = time_str.split(".")[0]
+        time_str = time_str.split(".")[0]  # ЧЧ:ММ:СС
         entry = (
             f"{time_str} — Order #{order_id} — {category}/{flavor} — "
             f"{currency.upper()}: {qty} pcs"
@@ -1685,18 +1686,19 @@ def cmd_sold_group(message: types.Message):
         by_date.setdefault(date_str, []).append(entry)
         totals[currency] = totals.get(currency, 0) + qty
 
-    # 5) Assemble the message
-    parts = ["📊 Deliveries today:\n"]
+    # 5) Собираем текст ответа
+    parts: list[str] = ["📊 Deliveries today:\n"]
     for date_str, entries in by_date.items():
         parts.append(f"<b>{date_str}</b>:")
         parts.extend(entries)
-        parts.append("")  # blank line
+        parts.append("")  # пустая строка между датами
 
-    summary = "\n".join(f"{cur.upper()}: {cnt} pcs" for cur, cnt in totals.items())
+    summary_lines = [f"{cur.upper()}: {cnt} pcs" for cur, cnt in totals.items()]
     parts.append("<b>Summary:</b>")
-    parts.append(summary)
+    parts.extend(summary_lines)
 
     bot.send_message(chat_id, "\n".join(parts), parse_mode="HTML")
+
 
 
 
