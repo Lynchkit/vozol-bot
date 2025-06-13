@@ -3217,35 +3217,43 @@ from telebot import types
 # 1) Заказ доставлен → предложить валюту «внутри» того же сообщения
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("order_delivered|"))
 def handle_order_delivered(call: types.CallbackQuery):
-    # проверяем, что это наш админ-чат
+    # 1. Логируем факт нажатия (для отладки)
+    print(f"[DEBUG] order_delivered invoked: chat_id={call.message.chat.id}, data={call.data}")
+
+    # 2. Проверяем, что это именно наш админ-чат
     if call.message.chat.id != GROUP_CHAT_ID:
-        return bot.answer_callback_query(call.id, "Не в том чате", show_alert=True)
+        return bot.answer_callback_query(call.id, "Нажали не в том чате", show_alert=True)
+
+    # 3. Подтверждаем callback, чтобы убрать спиннер
     bot.answer_callback_query(call.id)
 
+    # 4. Извлекаем order_id из callback_data
     _, oid = call.data.split("|", 1)
     order_id = int(oid)
 
-    # собираем клавиатуру
+    # 5. Формируем клавиатуру выбора валют
     currencies = ["cash", "rub", "dollar", "euro", "uah", "iban"]
     kb = types.InlineKeyboardMarkup(row_width=3)
     for cur in currencies:
-        kb.add(types.InlineKeyboardButton(
-            text=cur.upper(),
-            callback_data=f"deliver_currency|{order_id}|{cur}"
-        ))
-    kb.add(types.InlineKeyboardButton(
-        text="⏪ Back",
-        callback_data=f"back_to_group|{order_id}"
-    ))
-
-    # редактируем само исходное сообщение
-    bot.edit_message_text(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        text=call.message.text + "\n\nSelect payment currency:",
-        reply_markup=kb
+        kb.add(
+            types.InlineKeyboardButton(
+                text=cur.upper(),
+                callback_data=f"deliver_currency|{order_id}|{cur}"
+            )
+        )
+    kb.add(
+        types.InlineKeyboardButton(
+            text="⏪ Back",
+            callback_data=f"back_to_group|{order_id}"
+        )
     )
 
+    # 6. Меняем только inline-кнопки у существующего сообщения
+    bot.edit_message_reply_markup(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=kb
+    )
 
 
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("deliver_currency|"))
