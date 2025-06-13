@@ -1634,12 +1634,12 @@ def cmd_payment(message):
     # Дополнительно Тинькофф в рублях
     bot.send_message(chat_id, "Артур Маратович (RUB)")
 
-@ensure_user
-@bot.message_handler(commands=['sold'])
-def cmd_sold(message: types.Message):
+# 1) Listen for /sold in groups only
+@bot.message_handler(func=lambda m: m.chat.id == GROUP_CHAT_ID and m.text and m.text.startswith('/sold'))
+def cmd_sold_group(message: types.Message):
     chat_id = message.chat.id
 
-    # 0) If all stock is zero → reset delivered_log
+    # 2) If all stock is zero → reset delivered_log
     total_stock = 0
     for cat in menu.values():
         for itm in cat.get("flavors", []):
@@ -1652,14 +1652,13 @@ def cmd_sold(message: types.Message):
         cur.close()
         conn.close()
 
-    # 1) Count from midnight UTC
+    # 3) Count from midnight UTC
     today_start = datetime.datetime.utcnow().replace(
         hour=0, minute=0, second=0, microsecond=0
     ).isoformat()
 
     conn = get_db_connection()
     cur = conn.cursor()
-    # delivered_log must have: order_id, category, flavor, currency, qty, timestamp
     cur.execute("""
         SELECT order_id, category, flavor, currency, qty, timestamp
         FROM delivered_log
@@ -1673,7 +1672,7 @@ def cmd_sold(message: types.Message):
     if not rows:
         return bot.send_message(chat_id, "No deliveries recorded today.")
 
-    # Group by date and accumulate totals
+    # 4) Group by date and build per‐currency totals
     by_date: dict[str, list[str]] = {}
     totals: dict[str, int] = {}
     for order_id, category, flavor, currency, qty, ts in rows:
@@ -1686,7 +1685,7 @@ def cmd_sold(message: types.Message):
         by_date.setdefault(date_str, []).append(entry)
         totals[currency] = totals.get(currency, 0) + qty
 
-    # Build the message
+    # 5) Assemble the message
     parts = ["📊 Deliveries today:\n"]
     for date_str, entries in by_date.items():
         parts.append(f"<b>{date_str}</b>:")
@@ -1698,6 +1697,7 @@ def cmd_sold(message: types.Message):
     parts.append(summary)
 
     bot.send_message(chat_id, "\n".join(parts), parse_mode="HTML")
+
 
 
 
