@@ -3210,15 +3210,18 @@ from telebot import types
 
 # 1) Заказ доставлен → предложить валюту «внутри» того же сообщения
 # 1) Нажали «✅ Order Delivered»
+# 1) Нажали «✅ Order Delivered»
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("order_delivered|"))
 def handle_order_delivered(call: types.CallbackQuery):
-    # Проверка чата
-    if call.message.chat.id != GROUP_CHAT_ID:
-        return call.answer("Не в том чате", show_alert=True)
+    # сразу прекращаем крутилку
     call.answer()
 
+    # Проверяем, что колл пришёл из админской группы
+    if call.message.chat.id != GROUP_CHAT_ID:
+        return call.answer("Не в том чате", show_alert=True)
+
     order_id = int(call.data.split("|", 1)[1])
-    # Собираем клавиатуру валют + кнопку Back
+    # Строим клавиатуру с валютами + Back
     kb = types.InlineKeyboardMarkup(row_width=3)
     for cur in ["cash", "rub", "dollar", "euro", "uah", "iban"]:
         kb.add(types.InlineKeyboardButton(
@@ -3230,7 +3233,7 @@ def handle_order_delivered(call: types.CallbackQuery):
         callback_data=f"back_to_options|{order_id}"
     ))
 
-    # Редактируем лишь клавиатуру (не текст!)
+    # Редактируем только клавиатуру у того же сообщения
     bot.edit_message_reply_markup(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
@@ -3241,13 +3244,14 @@ def handle_order_delivered(call: types.CallbackQuery):
 # 2) Выбрали валюту
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("deliver_currency|"))
 def handle_deliver_currency(call: types.CallbackQuery):
+    # сразу прекращаем крутилку
     call.answer()
+
     _, oid, currency = call.data.split("|", 2)
     order_id = int(oid)
 
     conn = get_db_connection()
     cur = conn.cursor()
-    # Получаем items_json и считаем qty
     cur.execute("SELECT items_json FROM orders WHERE order_id = ?", (order_id,))
     row = cur.fetchone()
     if not row:
@@ -3257,13 +3261,12 @@ def handle_deliver_currency(call: types.CallbackQuery):
     items = json.loads(row[0])
     qty = len(items)
 
-    # Читаем старый total
+    # текущий total из БД
     cur.execute("SELECT count FROM delivered_counts WHERE currency = ?", (currency,))
     res = cur.fetchone()
     old_total = res[0] if res else 0
     new_total = old_total + qty
 
-    # Сохраняем обратно
     if res:
         cur.execute("UPDATE delivered_counts SET count = ? WHERE currency = ?", (new_total, currency))
     else:
@@ -3271,16 +3274,16 @@ def handle_deliver_currency(call: types.CallbackQuery):
     conn.commit()
     cur.close(); conn.close()
 
-    # Добавляем строку к существующему тексту
+    # добавляем строку к уже существующему тексту
     updated_text = (
         call.message.text
         + f"\n\nDelivered in {currency.upper()}: +{qty} pcs → total {new_total} pcs."
     )
 
-    # Восстанавливаем клавиатуру Cancel/Order Delivered
+    # восстанавливаем клавиатуру Cancel/Order Delivered
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
-        types.InlineKeyboardButton(text="❌ Cancel", callback_data=f"cancel_order|{order_id}"),
+        types.InlineKeyboardButton(text="❌ Cancel",   callback_data=f"cancel_order|{order_id}"),
         types.InlineKeyboardButton(text="✅ Order Delivered", callback_data=f"order_delivered|{order_id}")
     )
 
@@ -3292,15 +3295,16 @@ def handle_deliver_currency(call: types.CallbackQuery):
     )
 
 
-# 3) Нажали «⏪ Back» — возвращаем клавиатуру ❌/✅
+# 3) Нажали «⏪ Back»
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("back_to_options|"))
 def handle_back_to_options(call: types.CallbackQuery):
+    # сразу прекращаем крутилку
     call.answer()
     order_id = int(call.data.split("|", 1)[1])
 
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
-        types.InlineKeyboardButton(text="❌ Cancel", callback_data=f"cancel_order|{order_id}"),
+        types.InlineKeyboardButton(text="❌ Cancel",   callback_data=f"cancel_order|{order_id}"),
         types.InlineKeyboardButton(text="✅ Order Delivered", callback_data=f"order_delivered|{order_id}")
     )
 
@@ -3309,6 +3313,7 @@ def handle_back_to_options(call: types.CallbackQuery):
         message_id=call.message.message_id,
         reply_markup=kb
     )
+
 
 
 # ------------------------------------------------------------------------
