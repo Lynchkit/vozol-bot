@@ -3211,11 +3211,23 @@ def handle_cancel_order(call):
 
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("order_delivered|"))
 def handle_order_delivered(call):
+    # 1) Проверяем, что колбэк прилетел из нужного чата
+    if call.message.chat.id != GROUP_CHAT_ID:
+        # уведомляем пользователя и выходим
+        return bot.answer_callback_query(
+            call.id,
+            "Не в том чате",
+            show_alert=True
+        )
+
+    # 2) Подтверждаем приём колбэка (уберёт «крутилку» в клиенте)
     call.answer()
+
+    # 3) Достаём order_id из callback_data
     _, oid = call.data.split("|", 1)
     order_id = int(oid)
 
-    # клавиатура с выбором валют
+    # 4) Собираем клавиатуру с вариантами валюты
     currencies = ["cash", "rub", "dollar", "euro", "uah", "iban"]
     kb = types.InlineKeyboardMarkup(row_width=3)
     for cur in currencies:
@@ -3223,9 +3235,14 @@ def handle_order_delivered(call):
             text=cur.upper(),
             callback_data=f"deliver_currency|{order_id}|{cur}"
         ))
-    kb.add(types.InlineKeyboardButton(text="⏪ Back", callback_data=f"back_to_group|{order_id}"))
+    kb.add(types.InlineKeyboardButton(
+        text="⏪ Back",
+        callback_data=f"back_to_group|{order_id}"
+    ))
 
+    # 5) Отправляем сообщение с выбором валюты
     bot.send_message(call.message.chat.id, "Выберите валюту оплаты:", reply_markup=kb)
+
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("deliver_currency|"))
 def callback_deliver_currency(call):
     call.answer()
