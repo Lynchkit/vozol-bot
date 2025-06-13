@@ -1698,6 +1698,7 @@ def cmd_sold(message: types.Message):
     bot.send_message(chat_id, "\n".join(parts), parse_mode="HTML")
 
 
+
 # 1) Определяем отдельный хендлер прямо рядом с /convert, /points и т.д.
 @ensure_user
 @bot.message_handler(commands=['stats'])
