@@ -1645,8 +1645,10 @@ def cmd_sold(message: types.Message):
 
     conn = get_db_connection()
     cur = conn.cursor()
+    # Assume your delivered_log table has columns:
+    # order_id, category, flavor, currency, qty, timestamp
     cur.execute("""
-        SELECT order_id, currency, qty, timestamp
+        SELECT order_id, category, flavor, currency, qty, timestamp
         FROM delivered_log
         WHERE timestamp >= ?
         ORDER BY timestamp ASC
@@ -1660,9 +1662,12 @@ def cmd_sold(message: types.Message):
 
     lines = []
     totals = {}
-    for order_id, currency, qty, ts in rows:
+    for order_id, category, flavor, currency, qty, ts in rows:
         time_str = ts.split("T")[1].split(".")[0]  # HH:MM:SS
-        lines.append(f"{time_str} — Order #{order_id} — {currency.upper()}: {qty} pcs")
+        lines.append(
+            f"{time_str} — Order #{order_id} — {category}/{flavor} — "
+            f"{currency.upper()}: {qty} pcs"
+        )
         totals[currency] = totals.get(currency, 0) + qty
 
     # summary by currency
@@ -1676,6 +1681,7 @@ def cmd_sold(message: types.Message):
     )
 
     bot.send_message(chat_id, text, parse_mode="HTML")
+
 
 
 # 1) Определяем отдельный хендлер прямо рядом с /convert, /points и т.д.
