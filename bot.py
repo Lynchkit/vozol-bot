@@ -3114,8 +3114,6 @@ def universal_handler(message):
 
 
 
-
-
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("cancel_order|"))
 def handle_cancel_order(call):
     user_id = call.from_user.id
@@ -3206,21 +3204,25 @@ def handle_cancel_order(call):
     )
     bot.answer_callback_query(call.id, "Заказ отменён")
 
-# 1) Обработчик нажатия "Order Delivered"
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("order_delivered|"))
 def handle_order_delivered(call):
-    # Проверяем, что инициатор — админ
-    if call.from_user.id not in ADMINS:
-        return bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
+    # 1) Проверяем, что колбэк пришёл именно из группового чата
+    if call.message.chat.id != GROUP_CHAT_ID:
+        # отвечаем на колбэк и выходим
+        return bot.answer_callback_query(
+            call.id,
+            "Не в том чате",
+            show_alert=True
+        )
 
-    # Убираем «крутилку» в клиенте
-    call.answer()
+    # 2) Подтверждаем приём колбэка (убираем «крутилку»)
+    bot.answer_callback_query(call.id)
 
-    # Извлекаем order_id
+    # 3) Разбираем order_id
     _, oid = call.data.split("|", 1)
     order_id = int(oid)
 
-    # Формируем список валют для отчёта о доставке
+    # 4) Собираем клавиатуру с выбором валют
     currencies = ["cash", "rub", "dollar", "euro", "uah", "iban"]
     kb = types.InlineKeyboardMarkup(row_width=3)
     for cur in currencies:
@@ -3233,56 +3235,13 @@ def handle_order_delivered(call):
         callback_data=f"back_to_group|{order_id}"
     ))
 
-    # Выводим кнопки
-    bot.send_message(call.message.chat.id, "Выберите валюту оплаты:", reply_markup=kb)
-
-
-# 2) Обработчик выбора валюты доставки
-@bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("deliver_currency|"))
-def callback_deliver_currency(call):
-    call.answer()
-
-    _, oid, currency = call.data.split("|", 2)
-    order_id = int(oid)
-
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT items_json FROM orders WHERE order_id = ?", (order_id,))
-    row = cursor.fetchone()
-    if not row:
-        bot.send_message(call.message.chat.id, "Заказ не найден.")
-        cursor.close(); conn.close()
-        return
-
-    items = json.loads(row[0])
-    qty = len(items)
-
-    # Обновляем счётчик доставленных товаров
-    cursor.execute("""
-        INSERT INTO delivered_counts(currency, count)
-        VALUES (?, ?)
-        ON CONFLICT(currency) DO UPDATE SET count = count + ?
-    """, (currency, qty, qty))
-    conn.commit()
-
-    # Читаем новый общий счётчик
-    cursor.execute("SELECT count FROM delivered_counts WHERE currency = ?", (currency,))
-    total = cursor.fetchone()[0]
-    cursor.close(); conn.close()
-
-    bot.send_message(call.message.chat.id, f"Всего доставлено ({currency.upper()}): {total}")
-
-
-# 3) Обработчик кнопки «Back»
-@bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("back_to_group|"))
-def callback_back_to_group(call):
-    call.answer()
-    # Просто убираем клавиатуру с кнопками валют
-    bot.edit_message_reply_markup(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        reply_markup=None
+    # 5) Отправляем сообщение
+    bot.send_message(
+        call.message.chat.id,
+        "Выберите валюту оплаты:",
+        reply_markup=kb
     )
+
 
 
 
