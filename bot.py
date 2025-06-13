@@ -3217,32 +3217,53 @@ from telebot import types
 # 1) Заказ доставлен → предложить валюту «внутри» того же сообщения
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("order_delivered|"))
 def handle_order_delivered(call: types.CallbackQuery):
-    # проверяем, что это наш админ-чат
+    # 1) проверяем, что это наш админ-чат
     if call.message.chat.id != GROUP_CHAT_ID:
         return bot.answer_callback_query(call.id, "Не в том чате", show_alert=True)
     bot.answer_callback_query(call.id)
 
+    # 2) вытягиваем текущее состояние delivered_counts
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT currency, count FROM delivered_counts")
+    stats = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    # формируем блок «уже доставлено»
+    if stats:
+        stats_block = "\n".join(f"{c.upper()}: {n} pcs" for c,n in stats)
+    else:
+        stats_block = "— No deliveries yet —"
+
+    # 3) готовим клавиатуру выбора валюты
     _, oid = call.data.split("|", 1)
     order_id = int(oid)
-
-    # собираем клавиатуру
     currencies = ["cash", "rub", "dollar", "euro", "uah", "iban"]
+
     kb = types.InlineKeyboardMarkup(row_width=3)
-    for cur in currencies:
+    for cur_code in currencies:
         kb.add(types.InlineKeyboardButton(
-            text=cur.upper(),
-            callback_data=f"deliver_currency|{order_id}|{cur}"
+            text=cur_code.upper(),
+            callback_data=f"deliver_currency|{order_id}|{cur_code}"
         ))
     kb.add(types.InlineKeyboardButton(
         text="⏪ Back",
         callback_data=f"back_to_group|{order_id}"
     ))
 
-    # редактируем само исходное сообщение
+    # 4) редактируем сообщение, вставляя раздел с уже доставленным
+    new_text = (
+        call.message.text
+        + "\n\n<b>Already delivered:</b>\n"
+        + stats_block
+        + "\n\nSelect payment currency:"
+    )
     bot.edit_message_text(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
-        text=call.message.text + "\n\nSelect payment currency:",
+        text=new_text,
+        parse_mode="HTML",
         reply_markup=kb
     )
 
@@ -3252,10 +3273,12 @@ def handle_order_delivered(call: types.CallbackQuery):
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("deliver_currency|"))
 def handle_deliver_currency(call: types.CallbackQuery):
     bot.answer_callback_query(call.id)
+
+    # разбираем callback_data
     _, oid, currency = call.data.split("|", 2)
     order_id = int(oid)
 
-    # достаём из БД items_json, считаем qty
+    # 1) достаём из БД JSON заказа
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("SELECT items_json FROM orders WHERE order_id = ?", (order_id,))
@@ -3264,31 +3287,41 @@ def handle_deliver_currency(call: types.CallbackQuery):
         cur.close(); conn.close()
         return bot.answer_callback_query(call.id, "Заказ не найден", show_alert=True)
 
-    items = json.loads(row[0])
-    qty = len(items)
+    # 2) парсим JSON и вычисляем qty
+    data = json.loads(row[0])
+    if isinstance(data, dict):
+        # если JSON — словарь flavor→qty
+        qty = sum(data.values())
+    else:
+        # иначе считаем длину списка
+        qty = len(data)
 
-    # накопительный апдейт delivered_counts
+    # 3) накапливаем в delivered_counts
     cur.execute("""
         INSERT INTO delivered_counts(currency, count)
         VALUES (?, ?)
-        ON CONFLICT(currency)
-          DO UPDATE SET count = delivered_counts.count + excluded.count
+        ON CONFLICT(currency) DO UPDATE
+          SET count = delivered_counts.count + excluded.count
     """, (currency, qty))
     conn.commit()
 
-    # прочитаем новое общее значение
-    cur.execute("SELECT count FROM delivered_counts WHERE currency = ?", (currency,))
-    total = cur.fetchone()[0]
-    cur.close(); conn.close()
+    # 4) снова читаем все валюты для отчёта
+    cur.execute("SELECT currency, count FROM delivered_counts")
+    stats = cur.fetchall()
+    cur.close()
+    conn.close()
 
-    # подправляем текст — убираем наново prompt, вставляем итог
-    original = call.message.text.split("Select payment currency:")[0].rstrip()
+    stats_block = "\n".join(f"{c.upper()}: {n} pcs" for c,n in stats)
+
+    # 5) собираем итоговый текст (без «Select payment currency»)
+    original = call.message.text.split("<b>Already delivered:</b>")[0].rstrip()
     new_text = (
         f"{original}\n\n"
-        f"Delivered in {currency.upper()}: +{qty} pcs → total {total} pcs."
+        f"<b>Already delivered:</b>\n"
+        f"{stats_block}"
     )
 
-    # клавиатура «Back» возвращает к двум кнопкам
+    # 6) клавиатура «Back» с двумя кнопками
     back_kb = types.InlineKeyboardMarkup(row_width=2)
     back_kb.add(
         types.InlineKeyboardButton(
@@ -3300,10 +3333,12 @@ def handle_deliver_currency(call: types.CallbackQuery):
             callback_data=f"order_delivered|{order_id}"
         )
     )
+
     bot.edit_message_text(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         text=new_text,
+        parse_mode="HTML",
         reply_markup=back_kb
     )
 
