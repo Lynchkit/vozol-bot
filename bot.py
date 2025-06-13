@@ -1865,127 +1865,53 @@ conn.close()
 #Тут должны быть дата, время, категория, количество в этом(текущем) заказе, валюта
 from datetime import datetime, timezone
 from telebot import types
-
+@ensure_user
 @bot.message_handler(commands=['sold'])
-def cmd_sold_group(message: types.Message):
-    # 1) Проверяем, что команда именно в нужной группе
-    if message.chat.id != GROUP_CHAT_ID:
-        return
+def cmd_sold(message: types.Message):
+    chat_id = message.chat.id
+    # consider from midnight UTC
+    today_start = datetime.datetime.utcnow() \
+        .replace(hour=0, minute=0, second=0, microsecond=0) \
+        .isoformat()
 
-    print("[DEBUG] /sold fired in group:", message.chat.id)
-
-    # 2) Начало «сегодня» по UTC
-    today_start = datetime.now(timezone.utc) \
-                     .replace(hour=0, minute=0, second=0, microsecond=0) \
-                     .isoformat()
-
-    # 3) Читаем из БД все delivered_log с полуночи
     conn = get_db_connection()
-    cur  = conn.cursor()
+    cur = conn.cursor()
+    # Assume your delivered_log table has columns:
+    # order_id, category, flavor, currency, qty, timestamp
     cur.execute("""
-      SELECT order_id, category, flavor, currency, qty, timestamp
+        SELECT order_id, category, flavor, currency, qty, timestamp
         FROM delivered_log
-       WHERE timestamp >= ?
-    ORDER BY timestamp ASC
+        WHERE timestamp >= ?
+        ORDER BY timestamp ASC
     """, (today_start,))
     rows = cur.fetchall()
     cur.close()
     conn.close()
 
-    # 4) Если записей нет — сообщаем
     if not rows:
-        bot.send_message(message.chat.id, "No deliveries recorded today.")
-        return
+        return bot.send_message(chat_id, "No deliveries recorded today.")
 
-    # 5) Группируем по дате и считаем по валютам
-    by_date = {}
-    totals  = {}
-    for oid, cat, flav, cur_code, qty, ts in rows:
-        date_str, time_str = ts.split("T")
-        time_str = time_str.split("+")[0]
-        entry = f"{time_str} — Order #{oid} — {cat}/{flav} — {cur_code.upper()}: {qty} pcs"
-        by_date.setdefault(date_str, []).append(entry)
-        totals[cur_code] = totals.get(cur_code, 0) + qty
+    lines = []
+    totals = {}
+    for order_id, category, flavor, currency, qty, ts in rows:
+        time_str = ts.split("T")[1].split(".")[0]  # HH:MM:SS
+        lines.append(
+            f"{time_str} — Order #{order_id} — {category}/{flavor} — "
+            f"{currency.upper()}: {qty} pcs"
+        )
+        totals[currency] = totals.get(currency, 0) + qty
 
-    # 6) Формируем итоговый текст
-    parts = ["📊 Deliveries today:\n"]
-    for date_str, entries in by_date.items():
-        parts.append(f"<b>{date_str}</b>:")
-        parts.extend(entries)
-        parts.append("")
-    parts.append("<b>Summary:</b>")
-    for code, cnt in totals.items():
-        parts.append(f"{code.upper()}: {cnt} pcs")
+    # summary by currency
+    summary = "\n".join(f"{cur.upper()}: {cnt} pcs" for cur, cnt in totals.items())
 
-    # 7) Отправляем в чат
-    bot.send_message(
-        message.chat.id,
-        "\n".join(parts),
-        parse_mode="HTML"
+    text = (
+        "📊 Deliveries today:\n\n"
+        + "\n".join(lines)
+        + "\n\n<b>Summary:</b>\n"
+        + summary
     )
 
-    # @bot.message_handler(commands=['sold'], chat_types=['private', 'group', 'supergroup'])
-    # def cmd_sold(message: types.Message):
-    #     print(f"[DEBUG] Got /sold in chat {message.chat.id} of type {message.chat.type}")
-    #     # ваша логика
-    #     bot.send_message(message.chat.id, "Вызываю отчёт о доставках…")
-    # 
-    #     # 1) Проверяем, что команда именно в нужной группе
-    #     if message.chat.id != GROUP_CHAT_ID:
-    #         return
-    # 
-    #     print("[DEBUG] /sold fired in group:", message.chat.id)
-    # 
-    #     # 2) Начало «сегодня» по UTC
-    #     today_start = datetime.now(timezone.utc) \
-    #         .replace(hour=0, minute=0, second=0, microsecond=0) \
-    #         .isoformat()
-    # 
-    #     # 3) Читаем из БД все delivered_log с полуночи
-    #     conn = get_db_connection()
-    #     cur = conn.cursor()
-    #     cur.execute("""
-    #                 SELECT order_id, category, flavor, currency, qty, timestamp
-    #                 FROM delivered_log
-    #                 WHERE timestamp >= ?
-    #                 ORDER BY timestamp ASC
-    #                 """, (today_start,))
-    #     rows = cur.fetchall()
-    #     cur.close()
-    #     conn.close()
-    # 
-    #     # 4) Если записей нет — сообщаем
-    #     if not rows:
-    #         bot.send_message(message.chat.id, "No deliveries recorded today.")
-    #         return
-    # 
-    #     # 5) Группируем по дате и считаем по валютам
-    #     by_date = {}
-    #     totals = {}
-    #     for oid, cat, flav, cur_code, qty, ts in rows:
-    #         date_str, time_str = ts.split("T")
-    #         time_str = time_str.split("+")[0]
-    #         entry = f"{time_str} — Order #{oid} — {cat}/{flav} — {cur_code.upper()}: {qty} pcs"
-    #         by_date.setdefault(date_str, []).append(entry)
-    #         totals[cur_code] = totals.get(cur_code, 0) + qty
-    # 
-    #     # 6) Формируем итоговый текст
-    #     parts = ["📊 Deliveries today:\n"]
-    #     for date_str, entries in by_date.items():
-    #         parts.append(f"<b>{date_str}</b>:")
-    #         parts.extend(entries)
-    #         parts.append("")
-    #     parts.append("<b>Summary:</b>")
-    #     for code, cnt in totals.items():
-    #         parts.append(f"{code.upper()}: {cnt} pcs")
-    # 
-    #     # 7) Отправляем в чат
-    #     bot.send_message(
-    #         message.chat.id,
-    #         "\n".join(parts),
-    #         parse_mode="HTML"
-    #     )
-    # 
+    bot.send_message(chat_id, text, parse_mode="HTML")
 
 
 
