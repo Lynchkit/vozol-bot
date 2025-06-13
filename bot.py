@@ -6,9 +6,18 @@ import datetime
 import random
 import re
 import string
+import datetime
+import sqlite3
 
+from zoneinfo import ZoneInfo
+from apscheduler.schedulers.background import BackgroundScheduler
+from telebot import TeleBot
 from apscheduler.schedulers.background import BackgroundScheduler
 from telebot import TeleBot, types
+
+
+MSK = ZoneInfo("Europe/Moscow")
+UTC = datetime.timezone.utc
 
 def _normalize(text: str) -> str:
     """
@@ -953,7 +962,7 @@ def handle_clear_cart(call):
 # ------------------------------------------------------------------------
 @ensure_user
 @bot.callback_query_handler(func=lambda call: call.data == "finish_order")
-def handle_finish_order(call):
+def handle_finish_order(call: types.CallbackQuery):
     chat_id = call.from_user.id
     bot.answer_callback_query(call.id)
     data = user_data.get(chat_id, {})
@@ -963,41 +972,84 @@ def handle_finish_order(call):
         bot.send_message(chat_id, t(chat_id, "cart_empty"))
         return
 
+    # 1) Считаем сумму
     total_try = sum(item["price"] for item in cart)
 
+    # 2) Берём и списываем баллы, если нужно
     conn_local = get_db_connection()
     cursor_local = conn_local.cursor()
     cursor_local.execute("SELECT points FROM users WHERE chat_id = ?", (chat_id,))
     row = cursor_local.fetchone()
+    user_points = row[0] if row else 0
+
+    # ... ваш код проверки points_spent и запросов адреса/контакта/комментария ...
+    # допустим, вы дошли до момента, когда нужно сохранить заказ:
+
+    # 3) Собираем JSON корзины и текущее время UTC
+    items_json = json.dumps(cart, ensure_ascii=False)
+    now = datetime.datetime.utcnow().isoformat()
+
+    # 4) Вставляем заказ в таблицу orders
+    cursor_local.execute(
+        "INSERT INTO orders "
+        "(chat_id, items_json, total, timestamp, points_spent, points_earned) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            chat_id,
+            items_json,
+            total_try,        # итоговая сумма
+            now,              # время создания
+            data.get("pending_points_spent", 0),
+            total_try // 30   # пример начисления баллов
+        )
+    )
+    order_id = cursor_local.lastrowid
+
+    # 5) Логируем каждую позицию в delivered_log
+    for item in cart:
+        cursor_local.execute(
+            "INSERT INTO delivered_log(order_id, category, flavor, currency, qty, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                order_id,
+                item["category"],
+                item["flavor"],
+                "TRY",   # здесь валюта
+                1,       # по одной штуке
+                now
+            )
+        )
+
+    # 6) Обновляем общий счётчик delivered_counts для TRY
+    total_qty = len(cart)
+    cursor_local.execute("""
+        INSERT INTO delivered_counts(currency, count)
+        VALUES ('TRY', ?)
+        ON CONFLICT(currency) DO UPDATE
+          SET count = delivered_counts.count + excluded.count
+    """, (total_qty,))
+
+    # 7) Фиксируем всё разом
+    conn_local.commit()
     cursor_local.close()
     conn_local.close()
 
-    user_points = row[0] if row else 0
-
-    if user_points > 0:
-        max_points = min(user_points, total_try)
-        points_try = user_points * 1
-        msg = (
-                t(chat_id, "points_info").format(points=user_points, points_try=points_try)
-                + "\n"
-                + t(chat_id, "enter_points").format(max_points=max_points)
-        )
-        bot.send_message(chat_id, msg, reply_markup=types.ReplyKeyboardRemove())
-        data["wait_for_points"] = True
-        data["temp_total_try"] = total_try
-        data["temp_user_points"] = user_points
-    else:
-        kb = address_keyboard()
-        bot.send_message(
-            chat_id,
-            f"🛒 {t(chat_id, 'view_cart')}:\n\n" +
-            "\n".join(f"{item['category']}: {item['flavor']} — {item['price']}₺" for item in cart) +
-            f"\n\n{t(chat_id, 'enter_address')}",
-            reply_markup=kb
-        )
-        data["wait_for_address"] = True
-
+    # 8) Очищаем корзину и отправляем пользователю подтверждение
+    data.update({
+        "cart": [],
+        "pending_points_spent": 0,
+        # … остальные поля …
+    })
     user_data[chat_id] = data
+
+    bot.send_message(
+        chat_id,
+        t(chat_id, "order_accepted"),
+        reply_markup=types.InlineKeyboardMarkup().add(
+            types.InlineKeyboardButton(f"➕ {t(chat_id, 'add_more')}", callback_data="go_back_to_categories")
+        )
+    )
+
 
 
 # ------------------------------------------------------------------------
@@ -1645,51 +1697,131 @@ def cmd_payment(message):
     # Дополнительно Тинькофф в рублях
     bot.send_message(chat_id, "Артур Маратович (RUB)")
 
+
+bot = TeleBot(TOKEN, parse_mode="HTML")
+
+def get_db_connection():
+    return sqlite3.connect("/data/database.db", check_same_thread=False)
+
+# ------------ Функции по логике ------------
+def reset_delivered_log():
+    """Очищает таблицы delivered_log и delivered_counts."""
+    conn = get_db_connection()
+    cur  = conn.cursor()
+    cur.execute("DELETE FROM delivered_log")
+    cur.execute("DELETE FROM delivered_counts")
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def send_daily_sold_report():
+    """Собирает логи за текущий московский день и шлёт админу."""
+    # 1) Начало дня в MSK → в UTC
+    now_msk   = datetime.datetime.now(ZoneInfo("Europe/Moscow"))
+    start_msk = now_msk.replace(hour=0, minute=0, second=0, microsecond=0)
+    start_utc = start_msk.astimezone(datetime.timezone.utc).isoformat()
+
+    # 2) Читаем логи
+    conn = get_db_connection()
+    cur  = conn.cursor()
+    cur.execute("""
+        SELECT order_id, category, flavor, currency, qty, timestamp
+          FROM delivered_log
+         WHERE timestamp >= ?
+      ORDER BY timestamp ASC
+    """, (start_utc,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    # 3) Формируем текст
+    if not rows:
+        text = "📊 Deliveries today:\n\nNo deliveries recorded today."
+    else:
+        lines  = []
+        totals = {}
+        for oid, cat, flav, cur_code, qty, ts in rows:
+            dt_utc   = datetime.datetime.fromisoformat(ts).replace(tzinfo=datetime.timezone.utc)
+            dt_msk   = dt_utc.astimezone(ZoneInfo("Europe/Moscow"))
+            time_str = dt_msk.strftime("%H:%M:%S")
+            lines.append(f"{time_str} — Order #{oid} — {cat}/{flav} — {cur_code.upper()}: {qty} pcs")
+            totals[cur_code] = totals.get(cur_code, 0) + qty
+
+        summary = "\n".join(f"{c.upper()}: {n} pcs" for c, n in totals.items())
+        text    = (
+            "📊 Deliveries today:\n\n"
+            + "\n".join(lines)
+            + "\n\n<b>Summary:</b>\n"
+            + summary
+        )
+
+    bot.send_message(ADMIN_ID, text, parse_mode="HTML")
+
+# ------------ Планировщик ------------
+scheduler = BackgroundScheduler(timezone=ZoneInfo("Europe/Moscow"))
+# ⏰ каждый день в 23:55 MSK отчёт админу
+scheduler.add_job(
+    send_daily_sold_report,
+    trigger="cron",
+    hour=23, minute=55,
+    id="daily_sold_report"
+)
+# 🧹 каждый день в 00:00 UTC — чистим логи
+scheduler.add_job(
+    reset_delivered_log,
+    trigger="cron",
+    hour=0, minute=0,
+    timezone=datetime.timezone.utc,
+    id="reset_delivered_log"
+)
+scheduler.start()
+
+# ------------ Хендлер /sold ------------
 @ensure_user
 @bot.message_handler(commands=['sold'])
-def cmd_sold(message: types.Message):
+def cmd_sold(message):
     chat_id = message.chat.id
-    # consider from midnight UTC
+
+    # начало «сегодня» по UTC
     today_start = datetime.datetime.utcnow() \
         .replace(hour=0, minute=0, second=0, microsecond=0) \
         .isoformat()
 
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur  = conn.cursor()
     cur.execute("""
-        SELECT order_id, currency, qty, timestamp
-        FROM delivered_log
-        WHERE timestamp >= ?
-        ORDER BY timestamp ASC
+        SELECT order_id, category, flavor, currency, qty, timestamp
+          FROM delivered_log
+         WHERE timestamp >= ?
+      ORDER BY timestamp ASC
     """, (today_start,))
     rows = cur.fetchall()
     cur.close()
     conn.close()
 
     if not rows:
-        return bot.send_message(chat_id, "No deliveries recorded today.")
+        return bot.send_message(chat_id, "No orders recorded today.")
 
+    # собираем текст
     lines = []
     totals = {}
-    for order_id, currency, qty, ts in rows:
+    for oid, cat, flav, cur_code, qty, ts in rows:
         time_str = ts.split("T")[1].split(".")[0]  # HH:MM:SS
-        lines.append(f"{time_str} — Order #{order_id} — {currency.upper()}: {qty} pcs")
-        totals[currency] = totals.get(currency, 0) + qty
+        lines.append(
+            f"{time_str} — Order #{oid} — {cat}/{flav} — "
+            f"{cur_code.upper()}: {qty} pcs"
+        )
+        totals[cur_code] = totals.get(cur_code, 0) + qty
 
-    # summary by currency
-    summary = "\n".join(f"{cur.upper()}: {cnt} pcs" for cur, cnt in totals.items())
-
+    summary = "\n".join(f"{c.upper()}: {n} pcs" for c, n in totals.items())
     text = (
-        "📊 Deliveries today:\n\n"
+        "📊 Orders today:\n\n"
         + "\n".join(lines)
         + "\n\n<b>Summary:</b>\n"
         + summary
     )
 
     bot.send_message(chat_id, text, parse_mode="HTML")
-
-
-
 
 
 # 1) Определяем отдельный хендлер прямо рядом с /convert, /points и т.д.
