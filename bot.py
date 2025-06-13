@@ -40,6 +40,8 @@ ADMINS        = {ADMIN_ID, ADMIN_ID_TWO, ADMIN_ID_THREE}
 GROUP_CHAT_ID    = int(os.getenv("GROUP_CHAT_ID",    "0"))
 PERSONAL_CHAT_ID = int(os.getenv("PERSONAL_CHAT_ID", "0"))
 
+print("GROUP_CHAT_ID =", GROUP_CHAT_ID)
+
 bot = TeleBot(TOKEN, parse_mode="HTML")
 
 # ------------------------------------------------------------------------
@@ -2871,6 +2873,7 @@ def universal_handler(message):
                 (chat_id, items_json, total_after, now)
             )
             conn_local.commit()
+            order_id = cursor_local.lastrowid
 
             earned = total_after // 30
             if earned > 0:
