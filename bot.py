@@ -1842,39 +1842,39 @@ def cmd_show_reviews(message):
             lines.append(f"⭐️ {rating} — без комментария ({date})")
 
     bot.send_message(chat_id, "\n".join(lines))
-    
+
 
 # 1) Listen for /sold in groups only
-@ensure_user
-@bot.message_handler(
-    commands=['sold'],
-    func=lambda m: m.chat.id == GROUP_CHAT_ID
+# должен идти до universal_handler
+
+@bot.message_handler(func=lambda m:
+    m.chat.id == GROUP_CHAT_ID
+    and m.text
+    and (m.text.strip() == "/sold"
+         or m.text.strip() == f"/sold@{bot.get_me().username}")
 )
 def cmd_sold_group(message: types.Message):
+    print("[DEBUG] /sold fired:", message.text)
     chat_id = message.chat.id
 
-    # 1) Если весь сток обнулён — очищаем логи доставок
+    # 1) если весь сток нулевой — очищаем логи
     total_stock = sum(
         int(it.get("stock", 0))
-        for cat_data in menu.values()
-        for it in cat_data.get("flavors", [])
+        for cat in menu.values()
+        for it in cat.get("flavors", [])
     )
     if total_stock == 0:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("DELETE FROM delivered_log")
-        conn.commit()
-        cur.close()
-        conn.close()
+        conn = get_db_connection(); cur = conn.cursor()
+        cur.execute("DELETE FROM delivered_log"); conn.commit()
+        cur.close(); conn.close()
 
-    # 2) Начало «сегодня» (UTC)
+    # 2) начало «сегодня» по UTC
     today_start = datetime.datetime.utcnow().replace(
         hour=0, minute=0, second=0, microsecond=0
     ).isoformat()
 
-    # 3) Достаём из delivered_log записи с полуночи
-    conn = get_db_connection()
-    cur = conn.cursor()
+    # 3) вытягиваем все записи с полуночи
+    conn = get_db_connection(); cur = conn.cursor()
     cur.execute("""
         SELECT order_id, category, flavor, currency, qty, timestamp
           FROM delivered_log
@@ -1882,37 +1882,34 @@ def cmd_sold_group(message: types.Message):
       ORDER BY timestamp ASC
     """, (today_start,))
     rows = cur.fetchall()
-    cur.close()
-    conn.close()
+    cur.close(); conn.close()
 
     if not rows:
         return bot.send_message(chat_id, "No deliveries recorded today.")
 
-    # 4) Группируем по датам и суммируем по валютам
+    # 4) группируем по дате и считаем по валютам
     by_date = {}
     totals = {}
-    for order_id, category, flavor, currency, qty, ts in rows:
+    for oid, cat, flavor, curr, qty, ts in rows:
         date_str, time_str = ts.split("T")
         time_str = time_str.split(".")[0]
-        entry = (
-            f"{time_str} — Order #{order_id} — {category}/{flavor} — "
-            f"{currency.upper()}: {qty} pcs"
-        )
+        entry = f"{time_str} — Order #{oid} — {cat}/{flavor} — {curr.upper()}: {qty} pcs"
         by_date.setdefault(date_str, []).append(entry)
-        totals[currency] = totals.get(currency, 0) + qty
+        totals[curr] = totals.get(curr, 0) + qty
 
-    # 5) Собираем итоговый текст
+    # 5) собираем текст
     parts = ["📊 Deliveries today:\n"]
-    for date_str, entries in by_date.items():
-        parts.append(f"<b>{date_str}</b>:")
+    for date, entries in by_date.items():
+        parts.append(f"<b>{date}</b>:")
         parts.extend(entries)
-        parts.append("")  # пустая строка
+        parts.append("")
 
     parts.append("<b>Summary:</b>")
-    for cur_code, cnt in totals.items():
-        parts.append(f"{cur_code.upper()}: {cnt} pcs")
+    for curr, cnt in totals.items():
+        parts.append(f"{curr.upper()}: {cnt} pcs")
 
     bot.send_message(chat_id, "\n".join(parts), parse_mode="HTML")
+
 
 # ------------------------------------------------------------------------
 #   35. Универсальный хендлер (всё остальное, включая /change логику)
