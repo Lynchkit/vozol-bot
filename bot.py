@@ -37,7 +37,7 @@ ADMIN_ID_TWO  = int(os.getenv("ADMIN_ID_TWO",  "748250885"))
 ADMIN_ID_THREE= int(os.getenv("ADMIN_ID_THREE","6492697568"))
 ADMINS        = {ADMIN_ID, ADMIN_ID_TWO, ADMIN_ID_THREE}
 
-GROUP_CHAT_ID    = int(os.getenv("GROUP_CHAT_ID",    "0"))
+GROUP_CHAT_ID    = int(os.getenv("GROUP_CHAT_ID",    "-1002414380144"))
 PERSONAL_CHAT_ID = int(os.getenv("PERSONAL_CHAT_ID", "0"))
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID)
@@ -3286,8 +3286,10 @@ def handle_deliver_currency(call: types.CallbackQuery):
     # восстанавливаем клавиатуру Cancel/Order Delivered
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
-        types.InlineKeyboardButton(text="❌ Cancel",   callback_data=f"cancel_order|{order_id}"),
-        types.InlineKeyboardButton(text="✅ Order Delivered", callback_data=f"order_delivered|{order_id}")
+        types.InlineKeyboardButton(text="❌ Cancel",
+        callback_data=f"cancel_order|{order_id}"),
+        types.InlineKeyboardButton(text="✅ Order Delivered",
+        callback_data=f"order_delivered|{order_id}")
     )
 
     bot.edit_message_text(
