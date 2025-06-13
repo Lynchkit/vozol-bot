@@ -72,15 +72,10 @@ cursor_init = conn_init.cursor()
 
 #   Инициализация таблицы для хранения счётчиков доставленных товаров
 # ------------------------------------------------------------------------
-# лог всех нажатий "Order Delivered"
-
 cursor_init.execute("""
-    CREATE TABLE IF NOT EXISTS delivered_log (
-        id         INTEGER PRIMARY KEY AUTOINCREMENT,
-        order_id   INTEGER,
-        currency   TEXT,
-        qty        INTEGER,
-        timestamp  TEXT
+    CREATE TABLE IF NOT EXISTS delivered_counts (
+        currency TEXT PRIMARY KEY,
+        count    INTEGER DEFAULT 0
     )
 """)
 conn_init.commit()
@@ -1634,76 +1629,6 @@ def cmd_payment(message):
     bot.send_message(chat_id, "+7 996 996 12 99")
     # Дополнительно Тинькофф в рублях
     bot.send_message(chat_id, "Артур Маратович (RUB)")
-    
-    # Тут должны быть дата, время, категория, количество в этом(текущем) заказе, валюта
-@ensure_user
-@bot.message_handler(commands=['sold'])
-def cmd_sold(message: types.Message):
-    chat_id = message.chat.id
-    # считаем с полуночи UTC
-    today_start = datetime.datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT order_id, currency, qty, timestamp
-        FROM delivered_log
-        WHERE timestamp >= ?
-        ORDER BY timestamp ASC
-    """, (today_start,))
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    if not rows:
-        return bot.send_message(chat_id, "За сегодня ещё не было ни одной доставки.")
-
-    lines = []
-    totals = {}
-    for order_id, currency, qty, ts in rows:
-        t = ts.split("T")[1].split(".")[0]  # оставим только ЧЧ:ММ:СС
-        lines.append(f"{t} — Order #{order_id} — {currency.upper()}: {qty} pcs")
-        totals[currency] = totals.get(currency, 0) + qty
-
-    # сводка по валютам
-    summary = "\n".join(f"{cur.upper()}: {cnt} pcs" for cur, cnt in totals.items())
-    text = "📊 Продано сегодня:\n\n" + "\n".join(lines) + "\n\n<b>Итого:</b>\n" + summary
-
-    bot.send_message(chat_id, text, parse_mode="HTML")
-
-    @ensure_user
-    @bot.message_handler(commands=['sold'])
-    def cmd_sold(message: types.Message):
-        chat_id = message.chat.id
-        # считаем с полуночи UTC
-        today_start = datetime.datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("""
-                    SELECT order_id, currency, qty, timestamp
-                    FROM delivered_log
-                    WHERE timestamp >= ?
-                    ORDER BY timestamp ASC
-                    """, (today_start,))
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-
-        if not rows:
-            return bot.send_message(chat_id, "За сегодня ещё не было ни одной доставки.")
-
-        lines = []
-        totals = {}
-        for order_id, currency, qty, ts in rows:
-            t = ts.split("T")[1].split(".")[0]  # оставим только ЧЧ:ММ:СС
-            lines.append(f"{t} — Order #{order_id} — {currency.upper()}: {qty} pcs")
-            totals[currency] = totals.get(currency, 0) + qty
-
-        # сводка по валютам
-        summary = "\n".join(f"{cur.upper()}: {cnt} pcs" for cur, cnt in totals.items())
-        text = "📊 Продано сегодня:\n\n" + "\n".join(lines) + "\n\n<b>Итого:</b>\n" + summary
-
-        bot.send_message(chat_id, text, parse_mode="HTML")
-
 
 # 1) Определяем отдельный хендлер прямо рядом с /convert, /points и т.д.
 @ensure_user
@@ -1913,20 +1838,6 @@ def cmd_show_reviews(message):
 
     bot.send_message(chat_id, "\n".join(lines))
 
-
-# после определения get_db_connection(), но до bot = TeleBot(...)
-
-# лог всех нажатий "Order Delivered"
-cursor_init.execute("""
-    CREATE TABLE IF NOT EXISTS delivered_log (
-        id         INTEGER PRIMARY KEY AUTOINCREMENT,
-        order_id   INTEGER,
-        currency   TEXT,
-        qty        INTEGER,
-        timestamp  TEXT
-    )
-""")
-conn_init.commit()
 
 
 # ------------------------------------------------------------------------
@@ -3316,7 +3227,6 @@ def handle_cancel_order(call):
 
 # 1) Обработчик нажатия "Order Delivered"
 # 1) When “Order Delivered” is pressed, show currency choices (EN only)
-from telebot import types
 
 # 1) Заказ доставлен → предложить валюту «внутри» того же сообщения
 # 1) Нажали «✅ Order Delivered»
@@ -3442,7 +3352,6 @@ def handle_deliver_currency(call: types.CallbackQuery):
         parse_mode="HTML",
         reply_markup=kb
     )
-
 
 
 # 3) Нажали «⏪ Back»
