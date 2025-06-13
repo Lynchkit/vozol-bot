@@ -3206,19 +3206,18 @@ def handle_cancel_order(call):
 
 # 1) Обработчик нажатия "Order Delivered"
 # 1) When “Order Delivered” is pressed, show currency choices (EN only)
-@bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("order_delivered|"))
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("order_delivered|"))
 def handle_order_delivered(call):
-    # Only allow in your admin group
+    # only in admin group
     if call.message.chat.id != GROUP_CHAT_ID:
-        return bot.answer_callback_query(call.id, "This button can only be used in the admin group.", show_alert=True)
-    # stop the loading spinner
+        return bot.answer_callback_query(call.id, "This button only works in the admin group.", show_alert=True)
     bot.answer_callback_query(call.id)
 
     _, oid = call.data.split("|", 1)
     order_id = int(oid)
 
-    # build currency‐selection keyboard
-    currencies = ["cash", "rub", "dollar", "euro", "uah", "iban"]
+    # present currencies
+    currencies = ["cash","rub","dollar","euro","uah","iban"]
     kb = types.InlineKeyboardMarkup(row_width=3)
     for cur in currencies:
         kb.add(types.InlineKeyboardButton(
@@ -3227,48 +3226,57 @@ def handle_order_delivered(call):
         ))
     kb.add(types.InlineKeyboardButton(text="⏪ Back", callback_data=f"back_to_group|{order_id}"))
 
-    bot.send_message(call.message.chat.id, "Select payment currency for this delivery:", reply_markup=kb)
+    # edit the *same* message to show the choices
+    bot.edit_message_reply_markup(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=kb
+    )
 
 
-# 2) When a currency is picked, add exactly N items to that currency’s counter
-@bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("deliver_currency|"))
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("deliver_currency|"))
 def callback_deliver_currency(call):
-    # stop the loading spinner
     bot.answer_callback_query(call.id)
-
     _, oid, currency = call.data.split("|", 2)
     order_id = int(oid)
 
-    # fetch how many items were in this order
+    # fetch how many items were in that order
     conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT items_json FROM orders WHERE order_id = ?", (order_id,))
-    row = cursor.fetchone()
+    cur = conn.cursor()
+    cur.execute("SELECT items_json FROM orders WHERE order_id = ?", (order_id,))
+    row = cur.fetchone()
     if not row:
-        cursor.close(); conn.close()
+        cur.close(); conn.close()
         return bot.send_message(call.message.chat.id, "Order not found.")
 
     items = json.loads(row[0])
-    qty = len(items)  # number of delivered items
+    qty = len(items)
 
-    # increment that currency’s counter by qty
-    cursor.execute("""
+    # increment by qty
+    cur.execute("""
         INSERT INTO delivered_counts(currency, count)
         VALUES (?, ?)
         ON CONFLICT(currency) DO UPDATE SET count = count + ?
     """, (currency, qty, qty))
     conn.commit()
+    # get new total
+    cur.execute("SELECT count FROM delivered_counts WHERE currency = ?", (currency,))
+    total = cur.fetchone()[0]
+    cur.close(); conn.close()
 
-    # read back the new total
-    cursor.execute("SELECT count FROM delivered_counts WHERE currency = ?", (currency,))
-    total = cursor.fetchone()[0]
-    cursor.close(); conn.close()
+    # build a little summary line
+    summary = f"Delivered in {currency.upper()}: +{qty} pcs → total {total} pcs."
 
-    # report in English
-    bot.send_message(
-        call.message.chat.id,
-        f"Total delivered in {currency.upper()}: {total} pcs."
+    # edit the original order message text, appending our summary
+    orig = call.message.text or ""
+    new_text = orig + "\n\n" + summary
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text=new_text,
+        parse_mode="HTML"
     )
+
 
 
 
