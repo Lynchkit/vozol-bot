@@ -1484,6 +1484,41 @@ def cmd_again(message):
 
     bot.send_message(user_id, "Счётчики доставленных товаров сброшены.")
 
+
+@bot.message_handler(commands=['stock'])
+def cmd_stock(message: types.Message):
+    # 1) Разрешаем только в админ-группе
+    if message.chat.id != GROUP_CHAT_ID:
+        return bot.reply_to(message, "❌ Эта команда доступна только в админ-группе.")
+
+    parts = message.text.strip().split()
+    # 2) Ожидаем ровно один аргумент — число
+    if len(parts) != 2 or not parts[1].isdigit():
+        return bot.reply_to(
+            message,
+            "Использование: /stock <общее_число_доставок>\n"
+            "Например: /stock 42"
+        )
+
+    total = int(parts[1])
+
+    # 3) Сохраняем в БД как запись с currency='total'
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+                INSERT INTO delivered_counts(currency, count)
+                VALUES ('total', ?) ON CONFLICT(currency)
+          DO
+                UPDATE SET count = excluded.count
+                """, (total,))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    # 4) Ответ пользователю
+    bot.reply_to(message, f"✅ Общее количество доставленных заказов установлено: {total} шт.")
+
+
 # ------------------------------------------------------------------------
 #   30. Хендлер /points
 # ------------------------------------------------------------------------
