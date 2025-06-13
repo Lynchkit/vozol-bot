@@ -3214,91 +3214,98 @@ from telebot import types
 # 1) Заказ доставлен → предложить валюту «внутри» того же сообщения
 # 1) Нажали «✅ Order Delivered»
 # 1) Нажали «✅ Order Delivered»
+# 1) Заказ доставлен → предложить валюту «внутри» того же сообщения
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("order_delivered|"))
 def handle_order_delivered(call: types.CallbackQuery):
-    # сразу прекращаем крутилку
-    call.answer()
-
-    # Проверяем, что колл пришёл из админской группы
+    # проверяем, что это наш админ-чат
     if call.message.chat.id != GROUP_CHAT_ID:
-        return call.answer("Не в том чате", show_alert=True)
+        return bot.answer_callback_query(call.id, "Не в том чате", show_alert=True)
+    bot.answer_callback_query(call.id)
 
-    order_id = int(call.data.split("|", 1)[1])
-    # Строим клавиатуру с валютами + Back
+    _, oid = call.data.split("|", 1)
+    order_id = int(oid)
+
+    # собираем клавиатуру
+    currencies = ["cash", "rub", "dollar", "euro", "uah", "iban"]
     kb = types.InlineKeyboardMarkup(row_width=3)
-    for cur in ["cash", "rub", "dollar", "euro", "uah", "iban"]:
+    for cur in currencies:
         kb.add(types.InlineKeyboardButton(
             text=cur.upper(),
             callback_data=f"deliver_currency|{order_id}|{cur}"
         ))
     kb.add(types.InlineKeyboardButton(
         text="⏪ Back",
-        callback_data=f"back_to_options|{order_id}"
+        callback_data=f"back_to_group|{order_id}"
     ))
 
-    # Редактируем только клавиатуру у того же сообщения
-    bot.edit_message_reply_markup(
+    # редактируем само исходное сообщение
+    bot.edit_message_text(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
+        text=call.message.text + "\n\nSelect payment currency:",
         reply_markup=kb
     )
 
 
-# 2) Выбрали валюту
+
+# 2) Обработка выбора валюты — опять же редактируем то же сообщение и накапливаем счётчик
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("deliver_currency|"))
 def handle_deliver_currency(call: types.CallbackQuery):
-    # сразу прекращаем крутилку
-    call.answer()
-
+    bot.answer_callback_query(call.id)
     _, oid, currency = call.data.split("|", 2)
     order_id = int(oid)
 
+    # достаём из БД items_json, считаем qty
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("SELECT items_json FROM orders WHERE order_id = ?", (order_id,))
     row = cur.fetchone()
     if not row:
         cur.close(); conn.close()
-        return call.answer("Заказ не найден", show_alert=True)
+        return bot.answer_callback_query(call.id, "Заказ не найден", show_alert=True)
 
     items = json.loads(row[0])
     qty = len(items)
 
-    # текущий total из БД
-    cur.execute("SELECT count FROM delivered_counts WHERE currency = ?", (currency,))
-    res = cur.fetchone()
-    old_total = res[0] if res else 0
-    new_total = old_total + qty
-
-    if res:
-        cur.execute("UPDATE delivered_counts SET count = ? WHERE currency = ?", (new_total, currency))
-    else:
-        cur.execute("INSERT INTO delivered_counts(currency, count) VALUES(?, ?)", (currency, qty))
+    # накопительный апдейт delivered_counts
+    cur.execute("""
+        INSERT INTO delivered_counts(currency, count)
+        VALUES (?, ?)
+        ON CONFLICT(currency)
+          DO UPDATE SET count = delivered_counts.count + excluded.count
+    """, (currency, qty))
     conn.commit()
+
+    # прочитаем новое общее значение
+    cur.execute("SELECT count FROM delivered_counts WHERE currency = ?", (currency,))
+    total = cur.fetchone()[0]
     cur.close(); conn.close()
 
-    # добавляем строку к уже существующему тексту
-    updated_text = (
-        call.message.text
-        + f"\n\nDelivered in {currency.upper()}: +{qty} pcs → total {new_total} pcs."
+    # подправляем текст — убираем наново prompt, вставляем итог
+    original = call.message.text.split("Select payment currency:")[0].rstrip()
+    new_text = (
+        f"{original}\n\n"
+        f"Delivered in {currency.upper()}: +{qty} pcs → total {total} pcs."
     )
 
-    # восстанавливаем клавиатуру Cancel/Order Delivered
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        types.InlineKeyboardButton(text="❌ Cancel",
-        callback_data=f"cancel_order|{order_id}"),
-        types.InlineKeyboardButton(text="✅ Order Delivered",
-        callback_data=f"order_delivered|{order_id}")
+    # клавиатура «Back» возвращает к двум кнопкам
+    back_kb = types.InlineKeyboardMarkup(row_width=2)
+    back_kb.add(
+        types.InlineKeyboardButton(
+            text="❌ Cancel",
+            callback_data=f"cancel_order|{order_id}"
+        ),
+        types.InlineKeyboardButton(
+            text="✅ Order Delivered",
+            callback_data=f"order_delivered|{order_id}"
+        )
     )
-
     bot.edit_message_text(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
-        text=updated_text,
-        reply_markup=kb
+        text=new_text,
+        reply_markup=back_kb
     )
-
 
 # 3) Нажали «⏪ Back»
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("back_to_options|"))
@@ -3318,7 +3325,29 @@ def handle_back_to_options(call: types.CallbackQuery):
         message_id=call.message.message_id,
         reply_markup=kb
     )
+# 3) «Back» — возвращаем оригинальную клавиатуру (❌ и ✅) без изменения текста
+@bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("back_to_group|"))
+def handle_back_to_group(call: types.CallbackQuery):
+    bot.answer_callback_query(call.id)
+    _, oid = call.data.split("|", 1)
+    order_id = int(oid)
 
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton(
+            text="❌ Cancel",
+            callback_data=f"cancel_order|{order_id}"
+        ),
+        types.InlineKeyboardButton(
+            text="✅ Order Delivered",
+            callback_data=f"order_delivered|{order_id}"
+        )
+    )
+    bot.edit_message_reply_markup(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=kb
+    )
 
 
 # ------------------------------------------------------------------------
