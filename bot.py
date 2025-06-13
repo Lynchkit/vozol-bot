@@ -1649,14 +1649,15 @@ def cmd_payment(message):
 @bot.message_handler(commands=['sold'])
 def cmd_sold(message: types.Message):
     chat_id = message.chat.id
-    # start of today (UTC)
+    # consider from midnight UTC
     today_start = datetime.datetime.utcnow() \
         .replace(hour=0, minute=0, second=0, microsecond=0) \
         .isoformat()
 
     conn = get_db_connection()
     cur = conn.cursor()
-    # delivered_log must have: order_id, category, flavor, currency, qty, timestamp
+    # Assume your delivered_log table has columns:
+    # order_id, category, flavor, currency, qty, timestamp
     cur.execute("""
         SELECT order_id, category, flavor, currency, qty, timestamp
         FROM delivered_log
@@ -1670,32 +1671,28 @@ def cmd_sold(message: types.Message):
     if not rows:
         return bot.send_message(chat_id, "No deliveries recorded today.")
 
-    # Group by date
-    by_date: dict[str, list[str]] = {}
-    totals: dict[str, int] = {}
+    lines = []
+    totals = {}
     for order_id, category, flavor, currency, qty, ts in rows:
-        date_str, time_str = ts.split("T")
-        time_str = time_str.split(".")[0]  # HH:MM:SS
-        line = (
+        time_str = ts.split("T")[1].split(".")[0]  # HH:MM:SS
+        lines.append(
             f"{time_str} — Order #{order_id} — {category}/{flavor} — "
             f"{currency.upper()}: {qty} pcs"
         )
-        by_date.setdefault(date_str, []).append(line)
         totals[currency] = totals.get(currency, 0) + qty
-
-    # Build the message
-    parts = ["📊 Deliveries today:\n"]
-    for date_str, entries in by_date.items():
-        parts.append(f"<b>{date_str}</b>:")
-        parts.extend(entries)
-        parts.append("")  # blank line between dates
 
     # summary by currency
     summary = "\n".join(f"{cur.upper()}: {cnt} pcs" for cur, cnt in totals.items())
-    parts.append("<b>Summary:</b>")
-    parts.append(summary)
 
-    bot.send_message(chat_id, "\n".join(parts), parse_mode="HTML")
+    text = (
+        "📊 Deliveries today:\n\n"
+        + "\n".join(lines)
+        + "\n\n<b>Summary:</b>\n"
+        + summary
+    )
+
+    bot.send_message(chat_id, text, parse_mode="HTML")
+
 
 
 
