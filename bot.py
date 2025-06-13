@@ -3217,53 +3217,32 @@ from telebot import types
 # 1) Заказ доставлен → предложить валюту «внутри» того же сообщения
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("order_delivered|"))
 def handle_order_delivered(call: types.CallbackQuery):
-    # 1) проверяем, что это наш админ-чат
+    # проверяем, что это наш админ-чат
     if call.message.chat.id != GROUP_CHAT_ID:
         return bot.answer_callback_query(call.id, "Не в том чате", show_alert=True)
     bot.answer_callback_query(call.id)
 
-    # 2) вытягиваем текущее состояние delivered_counts
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT currency, count FROM delivered_counts")
-    stats = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    # формируем блок «уже доставлено»
-    if stats:
-        stats_block = "\n".join(f"{c.upper()}: {n} pcs" for c,n in stats)
-    else:
-        stats_block = "— No deliveries yet —"
-
-    # 3) готовим клавиатуру выбора валюты
     _, oid = call.data.split("|", 1)
     order_id = int(oid)
-    currencies = ["cash", "rub", "dollar", "euro", "uah", "iban"]
 
+    # собираем клавиатуру
+    currencies = ["cash", "rub", "dollar", "euro", "uah", "iban"]
     kb = types.InlineKeyboardMarkup(row_width=3)
-    for cur_code in currencies:
+    for cur in currencies:
         kb.add(types.InlineKeyboardButton(
-            text=cur_code.upper(),
-            callback_data=f"deliver_currency|{order_id}|{cur_code}"
+            text=cur.upper(),
+            callback_data=f"deliver_currency|{order_id}|{cur}"
         ))
     kb.add(types.InlineKeyboardButton(
         text="⏪ Back",
         callback_data=f"back_to_group|{order_id}"
     ))
 
-    # 4) редактируем сообщение, вставляя раздел с уже доставленным
-    new_text = (
-        call.message.text
-        + "\n\n<b>Already delivered:</b>\n"
-        + stats_block
-        + "\n\nSelect payment currency:"
-    )
+    # редактируем само исходное сообщение
     bot.edit_message_text(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
-        text=new_text,
-        parse_mode="HTML",
+        text=call.message.text + "\n\nSelect payment currency:",
         reply_markup=kb
     )
 
