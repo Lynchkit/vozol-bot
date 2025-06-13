@@ -1468,23 +1468,6 @@ def cmd_change(message):
     bot.send_message(chat_id, "Menu editing: choose action", reply_markup=edit_action_keyboard())
     user_data[chat_id] = data
 
-
-@ensure_user
-@bot.message_handler(commands=['again'])
-def cmd_again(message):
-    user_id = message.chat.id
-    if user_id not in ADMINS:
-        return bot.send_message(user_id, "Нет доступа.")
-
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM delivered_counts")
-    conn.commit()
-    cursor.close(); conn.close()
-
-    bot.send_message(user_id, "Счётчики доставленных товаров сброшены.")
-
-
 @bot.message_handler(commands=['stock'])
 def cmd_stock(message: types.Message):
     # 1) Only allow in the admin group
