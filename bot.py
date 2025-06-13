@@ -3249,7 +3249,7 @@ def handle_deliver_currency(call: types.CallbackQuery):
     _, oid, currency = call.data.split("|", 2)
     order_id = int(oid)
 
-    # достаём из БД items_json, считаем qty
+    # достаём из БД items_json и считаем qty
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("SELECT items_json FROM orders WHERE order_id = ?", (order_id,))
@@ -3261,28 +3261,28 @@ def handle_deliver_currency(call: types.CallbackQuery):
     items = json.loads(row[0])
     qty = len(items)
 
-    # накопительный апдейт delivered_counts
+    # теперь при конфликте прибавляем к существующему count
     cur.execute("""
         INSERT INTO delivered_counts(currency, count)
         VALUES (?, ?)
-        ON CONFLICT(currency)
-          DO UPDATE SET count = delivered_counts.count + excluded.count
+        ON CONFLICT(currency) DO UPDATE
+          SET count = count + excluded.count
     """, (currency, qty))
     conn.commit()
 
-    # прочитаем новое общее значение
+    # читаем обновлённый общий счётчик
     cur.execute("SELECT count FROM delivered_counts WHERE currency = ?", (currency,))
     total = cur.fetchone()[0]
     cur.close(); conn.close()
 
-    # подправляем текст — убираем наново prompt, вставляем итог
+    # готовим новое тело сообщения
     original = call.message.text.split("Select payment currency:")[0].rstrip()
     new_text = (
         f"{original}\n\n"
         f"Delivered in {currency.upper()}: +{qty} pcs → total {total} pcs."
     )
 
-    # клавиатура «Back» возвращает к двум кнопкам
+    # возвращаем исходную клавиатуру «Cancel / Order Delivered»
     back_kb = types.InlineKeyboardMarkup(row_width=2)
     back_kb.add(
         types.InlineKeyboardButton(
@@ -3294,12 +3294,14 @@ def handle_deliver_currency(call: types.CallbackQuery):
             callback_data=f"order_delivered|{order_id}"
         )
     )
+
     bot.edit_message_text(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         text=new_text,
         reply_markup=back_kb
     )
+
 
 
 
