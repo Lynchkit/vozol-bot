@@ -73,16 +73,6 @@ cursor_init = conn_init.cursor()
 #   Инициализация таблицы для хранения счётчиков доставленных товаров
 # ------------------------------------------------------------------------
 # лог всех нажатий "Order Delivered"
-cursor_init.execute("""
-    CREATE TABLE IF NOT EXISTS delivered_log (
-        id         INTEGER PRIMARY KEY AUTOINCREMENT,
-        order_id   INTEGER,
-        currency   TEXT,
-        qty        INTEGER,
-        timestamp  TEXT
-    )
-""")
-conn_init.commit()
 
 # Попытка добавить новые столбцы — выполнится только один раз
 try:
@@ -1876,8 +1866,9 @@ conn.close()
 
 @bot.message_handler(commands=['sold'])
 def cmd_sold_group(message: types.Message):
+    print("[DEBUG] /sold received in chat", message.chat.id)
     # Убедимся, что команда в нужном групповом чате
-    if message.chat.id != GROUP_CHAT_ID:
+    if message.chat.id not in (GROUP_CHAT_ID, message.from_user.id):
         return
 
     print("[DEBUG] /sold fired:", message.chat.id, message.text)
