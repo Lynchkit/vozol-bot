@@ -2,6 +2,7 @@ import os
 import json
 import requests
 import sqlite3
+import datetime
 import random
 import re
 import string
@@ -72,6 +73,17 @@ cursor_init = conn_init.cursor()
 #   Инициализация таблицы для хранения счётчиков доставленных товаров
 # ------------------------------------------------------------------------
 # лог всех нажатий "Order Delivered"
+
+cursor_init.execute("""
+    CREATE TABLE IF NOT EXISTS delivered_log (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id   INTEGER,
+        currency   TEXT,
+        qty        INTEGER,
+        timestamp  TEXT
+    )
+""")
+conn_init.commit()
 
 # Попытка добавить новые столбцы — выполнится только один раз
 try:
@@ -1861,57 +1873,64 @@ CREATE TABLE IF NOT EXISTS delivered_counts (
 conn.commit()
 cur.close()
 conn.close()
-
 #Тут должны быть дата, время, категория, количество в этом(текущем) заказе, валюта
-from datetime import datetime, timezone
-from telebot import types
-@ensure_user
-@bot.message_handler(commands=['sold'])
-def cmd_sold(message: types.Message):
-    chat_id = message.chat.id
-    # consider from midnight UTC
-    today_start = datetime.datetime.utcnow() \
-        .replace(hour=0, minute=0, second=0, microsecond=0) \
-        .isoformat()
 
+@bot.message_handler(commands=['sold'])
+def cmd_sold_group(message: types.Message):
+    # Убедимся, что команда в нужном групповом чате
+    if message.chat.id != GROUP_CHAT_ID:
+        return
+
+    print("[DEBUG] /sold fired:", message.chat.id, message.text)
+
+    # Начало «сегодня» по UTC, timezone-aware
+    today_start = datetime.now(datetime.timezone.utc) \
+                     .replace(hour=0, minute=0, second=0, microsecond=0) \
+                     .isoformat()
+
+    # Извлекаем записи
     conn = get_db_connection()
-    cur = conn.cursor()
-    # Assume your delivered_log table has columns:
-    # order_id, category, flavor, currency, qty, timestamp
+    cur  = conn.cursor()
     cur.execute("""
         SELECT order_id, category, flavor, currency, qty, timestamp
-        FROM delivered_log
-        WHERE timestamp >= ?
-        ORDER BY timestamp ASC
+          FROM delivered_log
+         WHERE timestamp >= ?
+      ORDER BY timestamp ASC
     """, (today_start,))
     rows = cur.fetchall()
     cur.close()
     conn.close()
 
+    # Если нет записей — выходим
     if not rows:
-        return bot.send_message(chat_id, "No deliveries recorded today.")
+        return bot.send_message(message.chat.id, "No deliveries recorded today.")
 
-    lines = []
-    totals = {}
+    # Группируем по дате и считаем по валютам
+    by_date = {}
+    totals  = {}
     for order_id, category, flavor, currency, qty, ts in rows:
-        time_str = ts.split("T")[1].split(".")[0]  # HH:MM:SS
-        lines.append(
-            f"{time_str} — Order #{order_id} — {category}/{flavor} — "
-            f"{currency.upper()}: {qty} pcs"
-        )
+        date_str, time_str = ts.split("T")
+        time_str = time_str.split("+")[0]  # отбросим +00:00, если он есть
+        entry = f"{time_str} — Order #{order_id} — {category}/{flavor} — {currency.upper()}: {qty} pcs"
+        by_date.setdefault(date_str, []).append(entry)
         totals[currency] = totals.get(currency, 0) + qty
 
-    # summary by currency
-    summary = "\n".join(f"{cur.upper()}: {cnt} pcs" for cur, cnt in totals.items())
+    # Собираем финальный текст
+    parts = ["📊 Deliveries today:\n"]
+    for date_str, entries in by_date.items():
+        parts.append(f"<b>{date_str}</b>:")
+        parts.extend(entries)
+        parts.append("")  # пустая строка между днями
+    parts.append("<b>Summary:</b>")
+    for cur_code, count in totals.items():
+        parts.append(f"{cur_code.upper()}: {count} pcs")
 
-    text = (
-        "📊 Deliveries today:\n\n"
-        + "\n".join(lines)
-        + "\n\n<b>Summary:</b>\n"
-        + summary
+    # Отправляем
+    bot.send_message(
+        message.chat.id,
+        "\n".join(parts),
+        parse_mode="HTML"
     )
-
-    bot.send_message(chat_id, text, parse_mode="HTML")
 
 
 
