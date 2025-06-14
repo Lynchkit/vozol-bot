@@ -466,6 +466,42 @@ scheduler.add_job(
 scheduler.start()
 
 
+@ensure_user
+@bot.message_handler(regexp=r'^/faq(@' + bot.get_me().username + ')?$')
+def cmd_faq(message: types.Message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+
+    if chat_id == GROUP_CHAT_ID or user_id in ADMINS:
+        text = (
+            "<b>Admin Help:</b>\n\n"
+            "/stats      — View store statistics (ADMIN only)\n"
+            "/change     — Enter menu-edit mode (ADMIN only)\n"
+            "/stock <N>  — Set overall delivered count & clear log\n"
+            "/sold       — Today's deliveries report (MSK-based)\n"
+            "/payment    — Payment details\n"
+            "/total      — Show stock levels for all flavors\n"
+            "/faq        — This help message\n"
+        )
+    else:
+        text = (
+            "<b>Доступные команды:</b>\n\n"
+            "/start           — Запустить бота и зарегистрироваться\n"
+            "/points          — Узнать баланс бонусных баллов\n"
+            "/convert [сумма] — Курсы валют и конвертация TRY → RUB/USD/UAH\n"
+            "/review <вкус>   — Оставить отзыв о вкусе\n"
+            "/show_reviews <вкус> — Показать отзывы по вкусу\n"
+            "/reviewtop       — Топ-5 вкусов по отзывам\n"
+            "/history         — История ваших заказов\n"
+            "/faq             — Справка по доступным командам\n"
+            "/reviewstop      — Отключить уведомления о новых отзывах\n"
+        )
+
+    bot.send_message(chat_id, text, parse_mode="HTML")
+
+
+
+
 
 # ------------------------------------------------------------------------
 #   14. Хендлер /start – регистрация, реферальная система, выбор языка
@@ -1592,44 +1628,6 @@ def cmd_convert(message):
 
     # Если больше аргументов — просим уточнить
     return bot.send_message(chat_id, "Использование: /convert 1300")
-
-# ------------------------------------------------------------------------
-@ensure_user
-@bot.message_handler(regexp=r'^/faq(@' + bot.get_me().username + ')?$')
-def cmd_faq(message: types.Message):
-    chat_id = message.chat.id
-    user_id = message.from_user.id
-
-    if chat_id == GROUP_CHAT_ID or user_id in ADMINS:
-        text = (
-            "<b>Admin Help:</b>\n\n"
-            "/stats      — View store statistics (ADMIN only)\n"
-            "/change     — Enter menu-edit mode (ADMIN only)\n"
-            "/stock <N>  — Set overall delivered count & clear log\n"
-            "/sold       — Today's deliveries report (MSK-based)\n"
-            "/payment    — Payment details\n"
-            "/total      — Show stock levels for all flavors\n"
-            "/faq        — This help message\n"
-        )
-    else:
-        text = (
-            "<b>Доступные команды:</b>\n\n"
-            "/start           — Запустить бота и зарегистрироваться\n"
-            "/points          — Узнать баланс бонусных баллов\n"
-            "/convert [сумма] — Курсы валют и конвертация TRY → RUB/USD/UAH\n"
-            "/review <вкус>   — Оставить отзыв о вкусе\n"
-            "/show_reviews <вкус> — Показать отзывы по вкусу\n"
-            "/reviewtop       — Топ-5 вкусов по отзывам\n"
-            "/history         — История ваших заказов\n"
-            "/faq             — Справка по доступным командам\n"
-            "/reviewstop      — Отключить уведомления о новых отзывах\n"
-        )
-
-    bot.send_message(chat_id, text, parse_mode="HTML")
-
-
-
-
 
 @ensure_user
 @bot.message_handler(commands=['total'])
@@ -3343,47 +3341,64 @@ def handle_cancel_order(call):
 # 1) Нажали «✅ Order Delivered»
 # 1) Нажали «✅ Order Delivered»
 # 1) Заказ доставлен → предложить валюту «внутри» того же сообщения
-@bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("order_delivered|"))
-def handle_order_delivered(call: types.CallbackQuery):
-    # 1. Логируем факт нажатия (для отладки)
-    print(f"[DEBUG] order_delivered invoked: chat_id={call.message.chat.id}, data={call.data}")
+@bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("deliver_currency|"))
+def handle_deliver_currency(call: types.CallbackQuery):
+    bot.answer_callback_query(call.id)  # убрать спиннер
 
-    # 2. Проверяем, что это именно наш админ-чат
-    if call.message.chat.id != GROUP_CHAT_ID:
-        return bot.answer_callback_query(call.id, "Нажали не в том чате", show_alert=True)
-
-    # 3. Подтверждаем callback, чтобы убрать спиннер
-    bot.answer_callback_query(call.id)
-
-    # 4. Извлекаем order_id из callback_data
-    _, oid = call.data.split("|", 1)
+    _, oid, currency = call.data.split("|", 2)
     order_id = int(oid)
 
-    # 5. Формируем клавиатуру выбора валют
-    currencies = ["cash", "rub", "dollar", "euro", "uah", "iban", "crypto"]
-    kb = types.InlineKeyboardMarkup(row_width=3)
-    for cur in currencies:
-        kb.add(
-            types.InlineKeyboardButton(
-                text=cur.upper(),
-                callback_data=f"deliver_currency|{order_id}|{cur}"
-            )
-        )
-    kb.add(
-        types.InlineKeyboardButton(
-            text="⏪ Back",
-            callback_data=f"back_to_group|{order_id}"
-        )
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    # --- 1) Проверяем, не логировали ли мы этот order_id раньше ---
+    cur.execute("SELECT 1 FROM delivered_log WHERE order_id = ?", (order_id,))
+    if cur.fetchone():
+        # если уже есть — показываем алерт и выходим
+        return bot.answer_callback_query(call.id, "This order has already been marked as delivered.", show_alert=True)
+
+    # --- 2) Получаем items_json и считаем qty как раньше ---
+    cur.execute("SELECT items_json FROM orders WHERE order_id = ?", (order_id,))
+    row = cur.fetchone()
+    if not row:
+        cur.close(); conn.close()
+        return bot.answer_callback_query(call.id, "Order not found", show_alert=True)
+    items = json.loads(row[0])
+    qty = len(items)
+
+    # --- 3) Логируем доставку и обновляем счётчики ---
+    cur.execute("""
+        INSERT INTO delivered_counts(currency, count)
+        VALUES (?, ?)
+        ON CONFLICT(currency) DO UPDATE
+          SET count = delivered_counts.count + excluded.count
+    """, (currency, qty))
+    now = datetime.datetime.utcnow().isoformat()
+    cur.execute(
+        "INSERT INTO delivered_log(order_id, currency, qty, timestamp) VALUES (?, ?, ?, ?)",
+        (order_id, currency, qty, now)
+    )
+    conn.commit()
+
+    # --- 4) Читаем новые totals и готовим текст ---
+    cur.execute("SELECT count FROM delivered_counts WHERE currency = ?", (currency,))
+    current_total = cur.fetchone()[0]
+    cur.execute("SELECT SUM(count) FROM delivered_counts")
+    overall_total = cur.fetchone()[0] or 0
+    cur.close(); conn.close()
+
+    original = call.message.text.split("Select payment currency:")[0].rstrip()
+    new_text = (
+        f"{original}\n\n"
+        f"<b>Already delivered:</b>\n"
+        f"IN {currency.upper()}: {qty} pcs\n\n"
+        f"<b>Total:</b> {overall_total} pcs"
     )
 
-    # 6. Меняем только inline-кнопки у существующего сообщения
-    bot.edit_message_reply_markup(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        reply_markup=kb
-    )
-
-
+# 1) Заказ доставлен → предложить валюту «внутри» того же сообщения
+# 1) Нажали «✅ Order Delivered»
+# 1) Нажали «✅ Order Delivered»
+# 1) Заказ доставлен → предложить валюту «внутри» того же сообщения
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("deliver_currency|"))
 def handle_deliver_currency(call: types.CallbackQuery):
     # 1) Для отладки сразу логгируем
@@ -3453,7 +3468,7 @@ def handle_deliver_currency(call: types.CallbackQuery):
         message_id=call.message.message_id,
         text=new_text,
         parse_mode="HTML",
-        reply_markup=kb
+        reply_markup=None  # клавиатура убрана
     )
 
 
