@@ -3360,7 +3360,7 @@ def handle_order_delivered(call: types.CallbackQuery):
     order_id = int(oid)
 
     # 5. Формируем клавиатуру выбора валют
-    currencies = ["cash", "rub", "dollar", "euro", "uah", "iban"]
+    currencies = ["cash", "rub", "dollar", "euro", "uah", "iban", "crypto"]
     kb = types.InlineKeyboardMarkup(row_width=3)
     for cur in currencies:
         kb.add(
