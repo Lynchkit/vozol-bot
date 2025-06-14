@@ -1,7 +1,6 @@
 import os
 import json
 import requests
-import sqlite3
 import datetime
 import random
 import re
@@ -1485,7 +1484,6 @@ def cmd_change(message):
 
 @bot.message_handler(commands=['stock'])
 def cmd_stock(message: types.Message):
-    # 1) Только в админ-группе
     if message.chat.id != GROUP_CHAT_ID:
         return bot.reply_to(message, "❌ This command is available only in the admin group.")
 
@@ -1493,46 +1491,27 @@ def cmd_stock(message: types.Message):
     if len(parts) != 2 or not parts[1].isdigit():
         return bot.reply_to(
             message,
-            "Usage: /stock <total_deliveries>\n"
-            "Example: /stock 42"
+            "Usage: /stock <total_deliveries>\nExample: /stock 42"
         )
 
     new_total = int(parts[1])
-
     conn = get_db_connection()
     cur = conn.cursor()
 
-    # 0) Сохраняем старое значение
-    cur.execute("SELECT count FROM delivered_counts WHERE currency = 'total'")
-    row = cur.fetchone()
-    old_total = row[0] if row else None
-
-    # 1) Обновляем агрегат
-    cur.execute("""
-        INSERT INTO delivered_counts(currency, count)
-        VALUES ('total', ?)
-        ON CONFLICT(currency) DO UPDATE SET count = excluded.count
-    """, (new_total,))
-
-    # 2) Очищаем все записи лога доставок
+    # очищаем всё и вставляем новую метку
+    cur.execute("DELETE FROM delivered_counts")
+    cur.execute("INSERT INTO delivered_counts(currency, count) VALUES ('total', ?)", (new_total,))
     cur.execute("DELETE FROM delivered_log")
-    conn.commit()
 
+    conn.commit()
     cur.close()
     conn.close()
 
-    # 3) Ответ админу
-    if old_total is not None:
-        bot.reply_to(
-            message,
-            f"✅ Overall delivered orders count changed from {old_total} to {new_total} pcs, and delivery log cleared."
-        )
-    else:
-        bot.reply_to(
-            message,
-            f"✅ Overall delivered orders count set to {new_total} pcs (no previous value), and delivery log cleared."
-        )
-
+    # отвечаем коротко, без старого значения
+    bot.reply_to(
+        message,
+        f"✅ Overall delivered orders count set to {new_total} pcs, and delivery log cleared."
+    )
 
 
 
