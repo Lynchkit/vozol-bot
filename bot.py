@@ -1953,41 +1953,31 @@ def cmd_show_reviews(message):
 #   35. Универсальный хендлер (всё остальное, включая /change логику)
 # ------------------------------------------------------------------------
 @ensure_user
-@bot.message_handler(content_types=['text', 'location', 'venue', 'contact'])
+@bot.message_handler(
+    func=lambda m: not (m.text and m.text.startswith('/')),
+    content_types=['text', 'location', 'venue', 'contact']
+)
 def universal_handler(message):
     chat_id = message.chat.id
     text = message.text or ""
-    if chat_id not in user_data:
-        user_data[chat_id] = {
-            "lang": "ru",
-            "cart": [],
-            "current_category": None,
-            "wait_for_points": False,
-            "wait_for_address": False,
-            "wait_for_contact": False,
-            "wait_for_comment": False,
-            "address": "",
-            "contact": "",
-            "comment": "",
-            "pending_discount": 0,
-            "pending_points_spent": 0,
-            "temp_total_try": 0,
-            "temp_user_points": 0,
-            "edit_phase": None,
-            "edit_cat": None,
-            "edit_flavor": None,
-            "edit_index": None,
-            "edit_cart_phase": None,
-            "awaiting_review_flavor": None,
-            "awaiting_review_rating": False,
-            "awaiting_review_comment": False,
-            "temp_review_flavor": None,
-            "temp_review_rating": 0
-        }
-    data = user_data[chat_id]
-
-
-
+    # Теперь сюда **не** попадут команды вроде /faq, /start и т.д.
+    data = user_data.setdefault(chat_id, {
+        "lang": "ru",
+        "cart": [], "current_category": None,
+        "wait_for_points": False, "wait_for_address": False,
+        "wait_for_contact": False, "wait_for_comment": False,
+        "address": "", "contact": "", "comment": "",
+        "pending_discount": 0, "pending_points_spent": 0,
+        "temp_total_try": 0, "temp_user_points": 0,
+        "edit_phase": None, "edit_cat": None,
+        "edit_flavor": None, "edit_index": None,
+        "edit_cart_phase": None,
+        "awaiting_review_flavor": None,
+        "awaiting_review_rating": False,
+        "awaiting_review_comment": False,
+        "temp_review_flavor": None,
+        "temp_review_rating": 0
+    })
     # ─── Режим редактирования меню (/change) ────────────────────────────────────────
     if data.get('edit_phase'):
         phase = data['edit_phase']
