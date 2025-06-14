@@ -1746,6 +1746,41 @@ def cmd_stats(message: types.Message):
     bot.send_message(message.chat.id, report)
 
 @ensure_user
+@bot.message_handler(commands=['faq'])
+def cmd_faq(message: types.Message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+
+    # Если это админская группа или админский пользователь
+    if chat_id == GROUP_CHAT_ID or user_id in ADMINS:
+        text = (
+            "<b>Admin Help:</b>\n\n"
+            "/stats          — View store statistics (ADMIN only)\n"
+            "/change         — Enter menu-edit mode (ADMIN only)\n"
+            "/stock <N>      — Set overall delivered count & clear log\n"
+            "/sold           — Today's deliveries report (MSK-based)\n"
+            "/payment        — Payment details\n"
+            "/total          — Show stock levels for all flavors\n"
+            "/faq            — This help message\n"
+        )
+    else:
+        text = (
+            "<b>Доступные команды:</b>\n\n"
+            "/start             — Запустить бота и зарегистрироваться\n"
+            "/points            — Узнать баланс бонусных баллов\n"
+            "/convert [сумма]   — Курсы валют и конвертация TRY → RUB/USD/UAH\n"
+            "/review <вкус>     — Оставить отзыв о вкусе\n"
+            "/show_reviews <вкус> — Показать отзывы по вкусу\n"
+            "/reviewtop         — Топ-5 вкусов по отзывам\n"
+            "/history           — История ваших заказов\n"
+            "/faq               — Справка по доступным командам\n"
+            "/reviewstop        — Отключить уведомления о новых отзывах\n"
+        )
+
+    bot.send_message(chat_id, text, parse_mode="HTML")
+
+
+@ensure_user
 @bot.message_handler(commands=['review'])
 def cmd_review(message):
     chat_id = message.chat.id
