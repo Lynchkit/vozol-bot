@@ -1664,18 +1664,20 @@ def cmd_payment(message):
 @bot.message_handler(commands=['sold'])
 def cmd_sold(message: types.Message):
     chat_id = message.chat.id
-    # consider from midnight UTC
+    # начало суток UTC
     today_start = datetime.datetime.utcnow() \
         .replace(hour=0, minute=0, second=0, microsecond=0) \
         .isoformat()
 
     conn = get_db_connection()
     cur = conn.cursor()
+    # получаем все логи доставок за сегодня
     cur.execute("""
-        SELECT order_id, currency, qty, timestamp
-        FROM delivered_log
-        WHERE timestamp >= ?
-        ORDER BY timestamp ASC
+        SELECT dl.order_id, dl.currency, dl.qty, dl.timestamp, o.items_json
+        FROM delivered_log AS dl
+        JOIN orders AS o ON o.order_id = dl.order_id
+        WHERE dl.timestamp >= ?
+        ORDER BY dl.timestamp ASC
     """, (today_start,))
     rows = cur.fetchall()
     cur.close()
@@ -1685,23 +1687,38 @@ def cmd_sold(message: types.Message):
         return bot.send_message(chat_id, "No deliveries recorded today.")
 
     lines = []
-    totals = {}
-    for order_id, currency, qty, ts in rows:
-        time_str = ts.split("T")[1].split(".")[0]  # HH:MM:SS
-        lines.append(f"{time_str} — Order #{order_id} — {currency.upper()}: {qty} pcs")
+    totals = {}  # для сводки по валютам
+    for order_id, currency, qty, ts, items_json in rows:
+        # форматируем время HH:MM:SS
+        time_str = ts.split("T")[1].split(".")[0]
+
+        # парсим категории из items_json
+        items = json.loads(items_json)
+        cat_counts = {}
+        for it in items:
+            cat = it.get("category", "—")
+            cat_counts[cat] = cat_counts.get(cat, 0) + 1
+        # строка вида "Cat1: 2 шт., Cat2: 1 шт."
+        cat_str = ", ".join(f"{cat}: {count}" for cat, count in cat_counts.items())
+
+        lines.append(
+            f"{time_str} — Order #{order_id} — {currency.upper()}: {qty} pcs "
+            f"({cat_str})"
+        )
         totals[currency] = totals.get(currency, 0) + qty
 
-    # summary by currency
+    # сводка по валютам
     summary = "\n".join(f"{cur.upper()}: {cnt} pcs" for cur, cnt in totals.items())
 
     text = (
         "📊 Deliveries today:\n\n"
         + "\n".join(lines)
-        + "\n\n<b>Summary:</b>\n"
+        + "\n\n<b>Summary by currency:</b>\n"
         + summary
     )
 
     bot.send_message(chat_id, text, parse_mode="HTML")
+
 
 
 
