@@ -1483,7 +1483,7 @@ def cmd_change(message):
     bot.send_message(chat_id, "Menu editing: choose action", reply_markup=edit_action_keyboard())
     user_data[chat_id] = data
 
-@bot.message_handler(commands=['stock'])
+@@bot.message_handler(commands=['stock'])
 def cmd_stock(message: types.Message):
     # 1) Only allow in the admin group
     if message.chat.id != GROUP_CHAT_ID:
@@ -1498,23 +1498,38 @@ def cmd_stock(message: types.Message):
             "Example: /stock 42"
         )
 
-    total = int(parts[1])
+    new_total = int(parts[1])
 
-    # 3) Save under currency='total' so it tracks the overall count
     conn = get_db_connection()
     cur = conn.cursor()
+
+    # 0) Fetch the old value (if any)
+    cur.execute("SELECT count FROM delivered_counts WHERE currency = 'total'")
+    row = cur.fetchone()
+    old_total = row[0] if row else None
+
+    # 3) Upsert the new total
     cur.execute("""
-                INSERT INTO delivered_counts(currency, count)
-                VALUES ('total', ?) ON CONFLICT(currency)
-          DO
-                UPDATE SET count = excluded.count
-                """, (total,))
+        INSERT INTO delivered_counts(currency, count)
+        VALUES ('total', ?)
+        ON CONFLICT(currency) DO UPDATE SET count = excluded.count
+    """, (new_total,))
     conn.commit()
     cur.close()
     conn.close()
 
-    # 4) Acknowledge to the user
-    bot.reply_to(message, f"✅ Overall delivered orders count set to {total} pcs.")
+    # 4) Acknowledge with both old and new values
+    if old_total is not None:
+        bot.reply_to(
+            message,
+            f"✅ Overall delivered orders count changed from {old_total} to {new_total} pcs."
+        )
+    else:
+        bot.reply_to(
+            message,
+            f"✅ Overall delivered orders count set to {new_total} pcs (no previous value)."
+        )
+
 
 
 # ------------------------------------------------------------------------
