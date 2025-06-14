@@ -1595,13 +1595,12 @@ def cmd_convert(message):
 
 # ------------------------------------------------------------------------
 @ensure_user
-@bot.message_handler(commands=['faq', f'faq@{bot.get_me().username}'])
+@bot.message_handler(regexp=r'^/faq(@' + bot.get_me().username + ')?$')
 def cmd_faq(message: types.Message):
     chat_id = message.chat.id
     user_id = message.from_user.id
 
     if chat_id == GROUP_CHAT_ID or user_id in ADMINS:
-        # English admin help
         text = (
             "<b>Admin Help:</b>\n\n"
             "/stats      — View store statistics (ADMIN only)\n"
@@ -1613,7 +1612,6 @@ def cmd_faq(message: types.Message):
             "/faq        — This help message\n"
         )
     else:
-        # Russian user help
         text = (
             "<b>Доступные команды:</b>\n\n"
             "/start           — Запустить бота и зарегистрироваться\n"
@@ -1628,6 +1626,7 @@ def cmd_faq(message: types.Message):
         )
 
     bot.send_message(chat_id, text, parse_mode="HTML")
+
 
 
 
