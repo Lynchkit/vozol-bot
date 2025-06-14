@@ -1648,20 +1648,21 @@ def cmd_payment(message):
 def cmd_sold(message: types.Message):
     chat_id = message.chat.id
     # начало суток UTC
-    today_start = datetime.datetime.utcnow() \
-        .replace(hour=0, minute=0, second=0, microsecond=0) \
-        .isoformat()
+    # начало "сегодня" по московскому времени в UTC:
+    today_msk_start = (datetime.datetime.utcnow()
+                       - datetime.timedelta(hours=3)
+                       ).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
 
     conn = get_db_connection()
     cur = conn.cursor()
     # получаем все логи доставок за сегодня
     cur.execute("""
-        SELECT dl.order_id, dl.currency, dl.qty, dl.timestamp, o.items_json
-        FROM delivered_log AS dl
-        JOIN orders AS o ON o.order_id = dl.order_id
-        WHERE dl.timestamp >= ?
-        ORDER BY dl.timestamp ASC
-    """, (today_start,))
+                SELECT dl.order_id, dl.currency, dl.qty, dl.timestamp, o.items_json
+                FROM delivered_log AS dl
+                         JOIN orders AS o ON o.order_id = dl.order_id
+                WHERE dl.timestamp >= ?
+                ORDER BY dl.timestamp ASC
+                """, (today_msk_start,))
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -1694,16 +1695,13 @@ def cmd_sold(message: types.Message):
     summary = "\n".join(f"{cur.upper()}: {cnt} pcs" for cur, cnt in totals.items())
 
     text = (
-        "📊 Deliveries today:\n\n"
-        + "\n".join(lines)
-        + "\n\n<b>Summary by currency:</b>\n"
-        + summary
+            "📊 Deliveries today:\n\n"
+            + "\n".join(lines)
+            + "\n\n<b>Summary by currency:</b>\n"
+            + summary
     )
 
     bot.send_message(chat_id, text, parse_mode="HTML")
-
-
-
 
 
 
