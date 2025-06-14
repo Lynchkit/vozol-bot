@@ -5,6 +5,8 @@ import datetime
 import random
 import re
 import string
+import sqlite3
+
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from telebot import TeleBot, types
@@ -64,7 +66,6 @@ def get_db_connection():
 # ------------------------------------------------------------------------
 #   4. Инициализация SQLite и создание таблиц (при старте)
 # ------------------------------------------------------------------------
-import sqlite3
 
 
 conn_init = get_db_connection()
@@ -3378,22 +3379,6 @@ def handle_deliver_currency(call: types.CallbackQuery):
         ON CONFLICT(currency) DO UPDATE
           SET count = delivered_counts.count + excluded.count
     """, (currency, qty))
-    conn.commit()
-
-    # вставляем запись в лог
-    now = datetime.datetime.utcnow().isoformat()
-    cur.execute(
-        "INSERT INTO delivered_log(order_id, currency, qty, timestamp) VALUES (?, ?, ?, ?)",
-        (order_id, currency, qty, now)
-    )
-    conn.commit()
-
-    # вставляем запись в лог
-    now = datetime.datetime.utcnow().isoformat()
-    cur.execute(
-        "INSERT INTO delivered_log(order_id, currency, qty, timestamp) VALUES (?, ?, ?, ?)",
-        (order_id, currency, qty, now)
-    )
     conn.commit()
 
     # вставляем запись в лог
