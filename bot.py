@@ -467,7 +467,7 @@ scheduler.start()
 
 
 @ensure_user
-@bot.message_handler(regexp=r'^/faq(@' + bot.get_me().username + ')?$')
+@bot.message_handler(commands=['faq'])
 def cmd_faq(message: types.Message):
     chat_id = message.chat.id
     user_id = message.from_user.id
