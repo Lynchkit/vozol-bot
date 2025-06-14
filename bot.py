@@ -1485,12 +1485,11 @@ def cmd_change(message):
 
 @bot.message_handler(commands=['stock'])
 def cmd_stock(message: types.Message):
-    # 1) Only allow in the admin group
+    # 1) Только в админ-группе
     if message.chat.id != GROUP_CHAT_ID:
         return bot.reply_to(message, "❌ This command is available only in the admin group.")
 
     parts = message.text.strip().split()
-    # 2) Expect exactly one numeric argument
     if len(parts) != 2 or not parts[1].isdigit():
         return bot.reply_to(
             message,
@@ -1503,32 +1502,37 @@ def cmd_stock(message: types.Message):
     conn = get_db_connection()
     cur = conn.cursor()
 
-    # 0) Fetch the old value (if any)
+    # 0) Сохраняем старое значение
     cur.execute("SELECT count FROM delivered_counts WHERE currency = 'total'")
     row = cur.fetchone()
     old_total = row[0] if row else None
 
-    # 3) Upsert the new total
+    # 1) Обновляем агрегат
     cur.execute("""
         INSERT INTO delivered_counts(currency, count)
         VALUES ('total', ?)
         ON CONFLICT(currency) DO UPDATE SET count = excluded.count
     """, (new_total,))
+
+    # 2) Очищаем все записи лога доставок
+    cur.execute("DELETE FROM delivered_log")
     conn.commit()
+
     cur.close()
     conn.close()
 
-    # 4) Acknowledge with both old and new values
+    # 3) Ответ админу
     if old_total is not None:
         bot.reply_to(
             message,
-            f"✅ Overall delivered orders count changed from {old_total} to {new_total} pcs."
+            f"✅ Overall delivered orders count changed from {old_total} to {new_total} pcs, and delivery log cleared."
         )
     else:
         bot.reply_to(
             message,
-            f"✅ Overall delivered orders count set to {new_total} pcs (no previous value)."
+            f"✅ Overall delivered orders count set to {new_total} pcs (no previous value), and delivery log cleared."
         )
+
 
 
 
