@@ -1483,7 +1483,7 @@ def cmd_change(message):
     bot.send_message(chat_id, "Menu editing: choose action", reply_markup=edit_action_keyboard())
     user_data[chat_id] = data
 
-@@bot.message_handler(commands=['stock'])
+@bot.message_handler(commands=['stock'])
 def cmd_stock(message: types.Message):
     # 1) Only allow in the admin group
     if message.chat.id != GROUP_CHAT_ID:
