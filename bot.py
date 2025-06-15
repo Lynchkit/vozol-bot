@@ -1696,6 +1696,23 @@ def cmd_sold(message: types.Message):
 
     bot.send_message(chat_id, text, parse_mode="HTML")
 
+@ensure_user
+@bot.message_handler(commands=['faq'])
+def cmd_faq_group(message: types.Message):
+    # Только в админ-группе
+    if message.chat.id != GROUP_CHAT_ID:
+        return
+
+    help_text = (
+        "/stats      — View store statistics (ADMIN only)\n"
+        "/change     — Enter menu-edit mode (ADMIN only)\n"
+        "/stock <N>  — Set overall delivered count & clear log\n"
+        "/sold       — Today's deliveries report (MSK-based)\n"
+        "/payment    — Payment details\n"
+        "/total      — Show stock levels for all flavors\n"
+        "/faq        — This help message"
+    )
+    bot.send_message(message.chat.id, help_text)
 
 # 1) Определяем отдельный хендлер прямо рядом с /convert, /points и т.д.
 @ensure_user
