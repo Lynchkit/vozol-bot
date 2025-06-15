@@ -1904,35 +1904,55 @@ def cmd_show_reviews(message):
 @ensure_user
 @bot.message_handler(commands=['help'])
 def cmd_help(message: types.Message):
-    user_id = message.from_user.id
-    chat_id = message.chat.id
-
-    if user_id in ADMINS:
-        # Админский список команд
+    if message.chat.id == GROUP_CHAT_ID:
         help_text = (
-            "<b>🛠 Админские команды:</b>\n\n"
-            "• <code>/stats</code> — Статистика магазина\n"
-            "• <code>/change</code> — Редактирование меню\n"
-            "• <code>/stock &lt;N&gt;</code> — Установить общее кол-во доставок и очистить лог\n"
-            "• <code>/sold</code> — Отчёт по доставкам за сегодня (MSK)\n"
-            "• <code>/payment</code> — Платежные реквизиты\n"
-            "• <code>/total</code> — Остатки по вкусам\n"
-            "• <code>/help</code> — Это сообщение помощи"
+          "/stats      — View store statistics (ADMIN only)\n"
+          "/change     — Enter menu-edit mode (ADMIN only)\n"
+          "/stock <N>  — Set overall delivered count & clear log\n"
+          "/sold       — Today's deliveries report (MSK-based)\n"
+          "/payment    — Payment details\n"
+          "/total      — Show stock levels for all flavors\n"
+          "/help       — This help message"
+        )
+        # клавиатура для админ-чата
+        kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+        kb.add(
+            "/stats", "/change",
+            "/stock <N>", "/sold",
+            "/payment", "/total",
+            "/help"
+        )
+        bot.send_message(
+            message.chat.id,
+            help_text,
+            parse_mode="HTML",
+            reply_markup=kb
         )
     else:
-        # Пользовательский список команд
         help_text = (
-            "<b>🤖 Доступные команды:</b>\n\n"
-            "• <code>/start</code> — Перезапустить бота / регистрация\n"
-            "• <code>/points</code> — Баланс бонусных баллов\n"
-            "• <code>/convert [N]</code> — Курсы или конвертация TRY → RUB/USD/UAH/EUR\n"
-            "• <code>/review &lt;вкус&gt;</code> — Оставить отзыв\n"
-            "• <code>/show_reviews &lt;вкус&gt;</code> — Показать отзывы\n"
-            "• <code>/history</code> — История ваших заказов\n"
-            "• <code>/help</code> — Это сообщение помощи"
+          "<b>Доступные команды:</b>\n\n"
+          "/start         — Перезапустить бота / регистрация\n"
+          "/points        — Проверить баланс бонусных баллов\n"
+          "/convert [N]   — Курсы и конвертация TRY → RUB/USD/UAH\n"
+          "/review <вкус> — Оставить отзыв\n"
+          "/show_reviews  — Показать отзывы\n"
+          "/history       — История заказов\n"
+          "/help          — Это сообщение помощи"
         )
-
-    bot.send_message(chat_id, help_text, parse_mode="HTML")
+        # клавиатура для личного чата
+        kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+        kb.add(
+            "/start", "/points",
+            "/convert [N]", "/review <вкус>",
+            "/show_reviews", "/history",
+            "/help"
+        )
+        bot.send_message(
+            message.chat.id,
+            help_text,
+            parse_mode="HTML",
+            reply_markup=kb
+        )
 
 
 
