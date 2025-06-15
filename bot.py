@@ -8,8 +8,6 @@ import string
 import sqlite3
 import pytz
 
-
-
 from apscheduler.schedulers.background import BackgroundScheduler
 from telebot import TeleBot, types
 
@@ -22,8 +20,6 @@ def _normalize(text: str) -> str:
     cleaned = re.sub(r'[^0-9A-Za-zА-Яа-я]+', ' ', text)
     # убрать «лишние» пробелы и привести к lower
     return re.sub(r'\s+', ' ', cleaned).strip().lower()
-
-
 
 # ------------------------------------------------------------------------
 #   1. Загрузка переменных окружения и инициализация бота
@@ -53,8 +49,6 @@ bot = TeleBot(TOKEN, parse_mode="HTML")
 MENU_PATH = "/data/menu.json"
 LANG_PATH = "/data/languages.json"
 DB_PATH = "/data/database.db"
-
-
 # ------------------------------------------------------------------------
 #   3. Функция для получения локального подключения к БД
 # ------------------------------------------------------------------------
@@ -84,8 +78,6 @@ cursor_init.execute("""
     )
 """)
 conn_init.commit()
-
-
 
 #   Инициализация таблицы для хранения счётчиков доставленных товаров
 # ------------------------------------------------------------------------
@@ -145,9 +137,6 @@ cursor_init.execute("""
 conn_init.commit()
 cursor_init.close()
 conn_init.close()
-
-
-
 # ------------------------------------------------------------------------
 #   5. Загрузка menu.json и languages.json
 # ------------------------------------------------------------------------
@@ -163,7 +152,6 @@ def load_json(path):
 
 menu = load_json(MENU_PATH)
 translations = load_json(LANG_PATH)
-
 
 # 0. Убедимся, что у пользователя всегда есть запись в user_data, новое добавленное
 def init_user(chat_id: int):
@@ -195,13 +183,10 @@ def init_user(chat_id: int):
             "temp_review_rating": 0
         }
 
-
 # ------------------------------------------------------------------------
 #   6. Хранилище данных пользователей (in-memory)
 # ------------------------------------------------------------------------
 user_data = {}  # структура объяснялась ранее
-
-
 # 6.2 Декоратор для гарантированной инициализации
 def ensure_user(handler):
     def wrapper(message_or_call, *args, **kwargs):
@@ -227,11 +212,11 @@ def pop_state(chat_id: int) -> str | None:
     stack.pop()
     return stack[-1] if stack else None
 
-
-
 # ------------------------------------------------------------------------
 #   7. Утилиты
 # ------------------------------------------------------------------------
+import time
+
 def t(chat_id: int, key: str) -> str:
     """
     Возвращает перевод из languages.json по ключу.
@@ -241,11 +226,30 @@ def t(chat_id: int, key: str) -> str:
     return translations.get(lang, {}).get(key, key)
 
 
-def generate_ref_code(length=6):
+def generate_ref_code(length: int = 6) -> str:
+    """
+    Генерирует случайный реферальный код из заглавных букв и цифр.
+    """
     return "".join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
+# ─── Кешированные курсы валют ───────────────────────────────────────────────
+_RATE_CACHE: dict[str, float] | None = None
+_RATE_CACHE_TS: float = 0.0
+_RATE_TTL: int = 10 * 60  # 10 минут
 
-def fetch_rates():
+def fetch_rates() -> dict[str, float]:
+    """
+    Возвращает курсы валют TRY → RUB, USD, UAH, EUR,
+    кешируя результат на _RATE_TTL секунд.
+    """
+    global _RATE_CACHE, _RATE_CACHE_TS
+
+    now = time.time()
+    # Если кеш ещё «жив» — отдаём его
+    if _RATE_CACHE is not None and (now - _RATE_CACHE_TS) < _RATE_TTL:
+        return _RATE_CACHE
+
+    # Иначе запрашиваем из внешних источников
     sources = [
         ("https://api.exchangerate.host/latest", {"base": "TRY", "symbols": "RUB,USD,UAH,EUR"}),
         ("https://open.er-api.com/v6/latest/TRY", {})
@@ -256,13 +260,24 @@ def fetch_rates():
             data = r.json()
             rates = data.get("rates") or data.get("conversion_rates")
             if rates:
-                return {k: rates[k] for k in ("RUB", "USD", "UAH", "EUR") if k in rates}
-        except:
+                result = {k: rates[k] for k in ("RUB", "USD", "UAH", "EUR") if k in rates}
+                _RATE_CACHE = result
+                _RATE_CACHE_TS = now
+                return result
+        except Exception:
             continue
-    return {"RUB": 0, "USD": 0, "EUR": 0, "UAH": 0}
 
+    # Фоллбэк при ошибке
+    fallback = {"RUB": 0, "USD": 0, "EUR": 0, "UAH": 0}
+    _RATE_CACHE = fallback
+    _RATE_CACHE_TS = now
+    return fallback
 
 def translate_to_en(text: str) -> str:
+    """
+    Переводит русский текст на английский через Google Translate API.
+    Если что-то пошло не так — возвращает исходный текст.
+    """
     if not text:
         return ""
     try:
@@ -282,8 +297,6 @@ def translate_to_en(text: str) -> str:
     except Exception:
         return text
 
-
-
 # ------------------------------------------------------------------------
 #   8. Inline-кнопки для выбора языка
 # ------------------------------------------------------------------------
@@ -295,12 +308,9 @@ def get_inline_language_buttons(chat_id: int) -> types.InlineKeyboardMarkup:
     )
     return kb
 
-
 # ------------------------------------------------------------------------
 #   9. Inline-кнопки для главного меню
 # ------------------------------------------------------------------------
-
-
 def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=2)
     lang = user_data.get(chat_id, {}).get("lang") or "ru"
@@ -332,13 +342,6 @@ def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
         ))
 
     return kb
-
-
-
-
-
-
-
 # ------------------------------------------------------------------------
 #   10. Inline-кнопки для выбора вкусов
 # ------------------------------------------------------------------------
@@ -371,7 +374,6 @@ def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
     ))
     return kb
 
-
 # ------------------------------------------------------------------------
 #   11. Reply-клавиатуры (альтернатива inline)
 # ------------------------------------------------------------------------
@@ -398,8 +400,6 @@ def comment_keyboard() -> types.ReplyKeyboardMarkup:
     kb.add(t(None, "send_order"))
     kb.add(t(None, "back"))
     return kb
-
-
 # ------------------------------------------------------------------------
 #   12. Клавиатура редактирования меню (/change) — ВСЁ НА АНГЛИЙСКОМ
 # ------------------------------------------------------------------------
@@ -410,8 +410,6 @@ def edit_action_keyboard() -> types.ReplyKeyboardMarkup:
     kb.add("🖼️ Add Category Picture", "Set Category Flavor to 0")
     kb.add("⬅️ Back", "❌ Cancel")
     return kb
-
-
 # ------------------------------------------------------------------------
 #   13. Планировщик – еженедельный дайджест (необязательно)
 # ------------------------------------------------------------------------
@@ -451,7 +449,6 @@ def send_weekly_digest():
 
     cursor.close()
     conn.close()
-
 
 # Инициализация планировщика
 scheduler = BackgroundScheduler(timezone="Europe/Riga")
@@ -1636,8 +1633,8 @@ def cmd_payment(message):
     bot.send_message(chat_id, "+7 996 996 12 99")
     # Дополнительно Тинькофф в рублях
     bot.send_message(chat_id, "Артур Маратович (RUB)")
-    
-    
+
+
 @ensure_user
 @bot.message_handler(commands=['sold'])
 def cmd_sold(message: types.Message):
@@ -1698,40 +1695,6 @@ def cmd_sold(message: types.Message):
     )
 
     bot.send_message(chat_id, text, parse_mode="HTML")
-    
-@ensure_user
-@bot.message_handler(commands=['faq'])
-def cmd_faq(message: types.Message):
-    chat_id = message.chat.id
-    user_id = message.from_user.id
-
-    if chat_id == GROUP_CHAT_ID or user_id in ADMINS:
-        text = (
-            "<b>Admin Help:</b>\n\n"
-            "/stats      — View store statistics (ADMIN only)\n"
-            "/change     — Enter menu-edit mode (ADMIN only)\n"
-            "/stock <N>  — Set overall delivered count & clear log\n"
-            "/sold       — Today's deliveries report (MSK-based)\n"
-            "/payment    — Payment details\n"
-            "/total      — Show stock levels for all flavors\n"
-            "/faq        — This help message\n"
-        )
-    else:
-        text = (
-            "<b>Доступные команды:</b>\n\n"
-            "/start           — Запустить бота и зарегистрироваться\n"
-            "/points          — Узнать баланс бонусных баллов\n"
-            "/convert [сумма] — Курсы валют и конвертация TRY → RUB/USD/UAH\n"
-            "/review <вкус>   — Оставить отзыв о вкусе\n"
-            "/show_reviews <вкус> — Показать отзывы по вкусу\n"
-            "/reviewtop       — Топ-5 вкусов по отзывам\n"
-            "/history         — История ваших заказов\n"
-            "/faq             — Справка по доступным командам\n"
-            "/reviewstop      — Отключить уведомления о новых отзывах\n"
-        )
-
-    bot.send_message(chat_id, text, parse_mode="HTML")
-
 
 
 # 1) Определяем отдельный хендлер прямо рядом с /convert, /points и т.д.
@@ -1871,9 +1834,6 @@ def handle_review_comment(message):
         reply_markup=get_inline_main_menu(chat_id)
     )
 
-
-
-
 @ensure_user
 @bot.message_handler(commands=['reviewtop'])
 def cmd_reviewtop(message):
@@ -1942,8 +1902,6 @@ def cmd_show_reviews(message):
 
     bot.send_message(chat_id, "\n".join(lines))
 
-
-
 # ------------------------------------------------------------------------
 #   35. Универсальный хендлер (всё остальное, включая /change логику)
 # ------------------------------------------------------------------------
@@ -1980,8 +1938,6 @@ def universal_handler(message):
             "temp_review_rating": 0
         }
     data = user_data[chat_id]
-
-
 
     # ─── Режим редактирования меню (/change) ────────────────────────────────────────
     if data.get('edit_phase'):
