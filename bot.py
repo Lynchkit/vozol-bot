@@ -1696,25 +1696,6 @@ def cmd_sold(message: types.Message):
 
     bot.send_message(chat_id, text, parse_mode="HTML")
 
-@ensure_user
-@bot.message_handler(commands=['help'], chat_types=['group', 'supergroup'])
-def cmd_help_group(message: types.Message):
-    # Только наша админ-группа
-    if message.chat.id != GROUP_CHAT_ID:
-        return
-
-    help_text = (
-        "/stats      — View store statistics (ADMIN only)\n"
-        "/change     — Enter menu-edit mode (ADMIN only)\n"
-        "/stock <N>  — Set overall delivered count & clear log\n"
-        "/sold       — Today's deliveries report (MSK-based)\n"
-        "/payment    — Payment details\n"
-        "/total      — Show stock levels for all flavors\n"
-        "/help       — This help message"
-    )
-    bot.send_message(message.chat.id, help_text)
-
-
 # 1) Определяем отдельный хендлер прямо рядом с /convert, /points и т.д.
 @ensure_user
 @bot.message_handler(commands=['stats'])
@@ -3037,38 +3018,6 @@ def universal_handler(message):
 
     # ────────────────────────────────────────────────────────────────────────────────
 
-    # ——— Список команд ———
-    if text.strip() == "/":
-        commands_text = (
-            "<b>Available commands:</b>\n\n"
-            "/start           — Restart bot / registration\n"
-            "/points          — Check your bonus points balance\n"
-            "/convert [amount] — Currency rates and conversion TRY → RUB/USD/UAH\n"
-            "/review <flavor>   — Leave a review for a flavor\n"
-            "/show_reviews <flavor> — Show reviews for a flavor\n"
-            "/history         — Show your last orders\n"
-            "/stats           — Store statistics (ADMIN only)\n"
-            "/help            — This help message\n"
-        )
-        bot.send_message(chat_id, commands_text, parse_mode="HTML")
-        return
-
-    # ——— Команда /help ———
-    if text == "/help":
-        commands_text = (
-            "<b>Help: available commands</b>\n\n"
-            "/start           — Restart bot / registration\n"
-            "/points          — Check your bonus points balance\n"
-            "/convert [amount] — Currency rates and conversion TRY → RUB/USD/UAH\n"
-            "/review <flavor>   — Leave a review for a flavor\n"
-            "/show_reviews <flavor> — Show reviews for a flavor\n"
-            "/history         — Show your last orders\n"
-            "/stats           — Store statistics (ADMIN only)\n"
-            "/help            — This help message\n"
-        )
-        bot.send_message(chat_id, commands_text, parse_mode="HTML")
-        return
-
     # ——— «Back» во всём остальном ———
     if text == t(chat_id, "back"):
         data.update({
@@ -3460,7 +3409,23 @@ def handle_back_to_group(call: types.CallbackQuery):
         message_id=call.message.message_id,
         reply_markup=kb
     )
+@ensure_user
+@bot.message_handler(commands=['help'], chat_types=['group', 'supergroup'])
+def cmd_help_group(message: types.Message):
+    # Только наша админ-группа
+    if message.chat.id != GROUP_CHAT_ID:
+        return
 
+    help_text = (
+        "/stats      — View store statistics (ADMIN only)\n"
+        "/change     — Enter menu-edit mode (ADMIN only)\n"
+        "/stock <N>  — Set overall delivered count & clear log\n"
+        "/sold       — Today's deliveries report (MSK-based)\n"
+        "/payment    — Payment details\n"
+        "/total      — Show stock levels for all flavors\n"
+        "/help       — This help message"
+    )
+    bot.send_message(message.chat.id, help_text)
 # ------------------------------------------------------------------------
 #   36. Запуск бота
 # ------------------------------------------------------------------------
