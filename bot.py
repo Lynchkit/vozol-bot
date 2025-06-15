@@ -1901,59 +1901,31 @@ def cmd_show_reviews(message):
 
     bot.send_message(chat_id, "\n".join(lines))
 
-@ensure_user
 @bot.message_handler(commands=['help'])
 def cmd_help(message: types.Message):
     if message.chat.id == GROUP_CHAT_ID:
         help_text = (
-          "/stats      — View store statistics (ADMIN only)\n"
-          "/change     — Enter menu-edit mode (ADMIN only)\n"
-          "/stock <N>  — Set overall delivered count & clear log\n"
-          "/sold       — Today's deliveries report (MSK-based)\n"
-          "/payment    — Payment details\n"
-          "/total      — Show stock levels for all flavors\n"
-          "/help       — This help message"
+            "/stats — View store statistics (ADMIN only)\n"
+            "/change — Enter menu-edit mode (ADMIN only)\n"
+            "/stock <N> — Set overall delivered count & clear log\n"
+            "/sold — Today's deliveries report (MSK-based)\n"
+            "/payment — Payment details\n"
+            "/total — Show stock levels for all flavors\n"
+            "/help — This help message"
         )
-        # клавиатура для админ-чата
-        kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-        kb.add(
-            "/stats", "/change",
-            "/stock <N>", "/sold",
-            "/payment", "/total",
-            "/help"
-        )
-        bot.send_message(
-            message.chat.id,
-            help_text,
-            parse_mode="HTML",
-            reply_markup=kb
-        )
+        bot.send_message(message.chat.id, help_text, parse_mode="HTML")
     else:
         help_text = (
-          "<b>Доступные команды:</b>\n\n"
-          "/start         — Перезапустить бота / регистрация\n"
-          "/points        — Проверить баланс бонусных баллов\n"
-          "/convert [N]   — Курсы и конвертация TRY → RUB/USD/UAH\n"
-          "/review <вкус> — Оставить отзыв\n"
-          "/show_reviews  — Показать отзывы\n"
-          "/history       — История заказов\n"
-          "/help          — Это сообщение помощи"
+            "<b>Доступные команды:</b>\n\n"
+            "/start — Перезапустить бота / регистрация\n"
+            "/points — Проверить баланс бонусных баллов\n"
+            "/convert [N] — Курсы и конвертация TRY → RUB/USD/UAH\n"
+            "/review <вкус> — Оставить отзыв\n"
+            "/show_reviews — Показать отзывы\n"
+            "/history — История заказов\n"
+            "/help — Это сообщение помощи"
         )
-        # клавиатура для личного чата
-        kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-        kb.add(
-            "/start", "/points",
-            "/convert [N]", "/review <вкус>",
-            "/show_reviews", "/history",
-            "/help"
-        )
-        bot.send_message(
-            message.chat.id,
-            help_text,
-            parse_mode="HTML",
-            reply_markup=kb
-        )
-
+        bot.send_message(message.chat.id, help_text, parse_mode="HTML")
 
 
 
