@@ -1900,6 +1900,33 @@ def cmd_show_reviews(message):
             lines.append(f"⭐️ {rating} — без комментария ({date})")
 
     bot.send_message(chat_id, "\n".join(lines))
+    
+@ensure_user
+@bot.message_handler(commands=['help'])
+def cmd_help(message: types.Message):
+    if message.chat.id == GROUP_CHAT_ID:
+        help_text = (
+          "/stats      — View store statistics (ADMIN only)\n"
+          "/change     — Enter menu-edit mode (ADMIN only)\n"
+          "/stock <N>  — Set overall delivered count & clear log\n"
+          "/sold       — Today's deliveries report (MSK-based)\n"
+          "/payment    — Payment details\n"
+          "/total      — Show stock levels for all flavors\n"
+          "/help       — This help message"
+        )
+    else:
+        help_text = (
+          "<b>Доступные команды:</b>\n\n"
+          "/start         — Перезапустить бота / регистрация\n"
+          "/points        — Проверить баланс бонусных баллов\n"
+          "/convert [N]   — Курсы и конвертация TRY → RUB/USD/UAH\n"
+          "/review <вкус> — Оставить отзыв\n"
+          "/show_reviews  — Показать отзывы\n"
+          "/history       — История заказов\n"
+          "/help          — Это сообщение помощи"
+        )
+    bot.send_message(message.chat.id, help_text, parse_mode="HTML")
+
 
 # ------------------------------------------------------------------------
 #   35. Универсальный хендлер (всё остальное, включая /change логику)
@@ -3409,23 +3436,7 @@ def handle_back_to_group(call: types.CallbackQuery):
         message_id=call.message.message_id,
         reply_markup=kb
     )
-@ensure_user
-@bot.message_handler(commands=['help'], chat_types=['group', 'supergroup'])
-def cmd_help_group(message: types.Message):
-    # Только наша админ-группа
-    if message.chat.id != GROUP_CHAT_ID:
-        return
 
-    help_text = (
-        "/stats      — View store statistics (ADMIN only)\n"
-        "/change     — Enter menu-edit mode (ADMIN only)\n"
-        "/stock <N>  — Set overall delivered count & clear log\n"
-        "/sold       — Today's deliveries report (MSK-based)\n"
-        "/payment    — Payment details\n"
-        "/total      — Show stock levels for all flavors\n"
-        "/help       — This help message"
-    )
-    bot.send_message(message.chat.id, help_text)
 # ------------------------------------------------------------------------
 #   36. Запуск бота
 # ------------------------------------------------------------------------
