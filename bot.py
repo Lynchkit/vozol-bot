@@ -1697,9 +1697,9 @@ def cmd_sold(message: types.Message):
     bot.send_message(chat_id, text, parse_mode="HTML")
 
 @ensure_user
-@bot.message_handler(commands=['faq'])
-def cmd_faq_group(message: types.Message):
-    # Только в админ-группе
+@bot.message_handler(commands=['help'], chat_types=['group', 'supergroup'])
+def cmd_help_group(message: types.Message):
+    # Только наша админ-группа
     if message.chat.id != GROUP_CHAT_ID:
         return
 
@@ -1710,9 +1710,10 @@ def cmd_faq_group(message: types.Message):
         "/sold       — Today's deliveries report (MSK-based)\n"
         "/payment    — Payment details\n"
         "/total      — Show stock levels for all flavors\n"
-        "/faq        — This help message"
+        "/help       — This help message"
     )
     bot.send_message(message.chat.id, help_text)
+
 
 # 1) Определяем отдельный хендлер прямо рядом с /convert, /points и т.д.
 @ensure_user
