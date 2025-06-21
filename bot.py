@@ -1062,54 +1062,22 @@ def handle_points_input(message):
 )
 def handle_address_input(message):
     chat_id = message.chat.id
-    data    = user_data[chat_id]
-    text    = message.text or ""
+    data = user_data.get(chat_id, {})
+    text = message.text or ""
 
-    # === Обработка кнопки «Назад» ===
+    # ИСПРАВЛЁННЫЙ ВАРИАНТ
+
     if text == t(chat_id, "back"):
-        # 1) Выходим из режима ввода адреса
         data['wait_for_address'] = False
-        user_data[chat_id] = data
-
-        # 2) Повторяем handle_view_cart
-        cart = data.get("cart", [])
-        if not cart:
-            bot.send_message(chat_id, t(chat_id, "cart_empty"), reply_markup=get_inline_main_menu(chat_id))
-            return
-
-        # группируем
-        grouped = {}
-        for item in cart:
-            key = (item["category"], item["flavor"], item["price"])
-            grouped[key] = grouped.get(key, 0) + 1
-
-        # формируем текст
-        lines = [f"🛒 {t(chat_id, 'view_cart')}:"]
-        for idx, ((cat, flavor, price), qty) in enumerate(grouped.items(), start=1):
-            lines.append(f"{idx}. {cat} — {flavor} — {price}₺ x {qty}")
-        msg = "\n".join(lines)
-
-        # клавиатура
-        kb = types.InlineKeyboardMarkup(row_width=2)
-        for idx, ((cat, flavor, price), qty) in enumerate(grouped.items(), start=1):
-            kb.add(
-                types.InlineKeyboardButton(
-                    text=f"{t(chat_id, 'remove_item')} {idx}",
-                    callback_data=f"remove_item|{idx}"
-                ),
-                types.InlineKeyboardButton(
-                    text=f"{t(chat_id, 'edit_item')} {idx}",
-                    callback_data=f"edit_item|{idx}"
-                )
-            )
-        kb.add(
-            types.InlineKeyboardButton(
-                text=f"⬅️ {t(chat_id, 'back_to_categories')}",
-                callback_data="go_back_to_categories"
-            )
-        )
-
-        bot.send_message(chat_id, msg, reply_markup=kb)
+        data['current_category'] = None
+        # 1) Убираем клавиатуру запроса локации
+        bot.send_message(chat_id,
+                         t(chat_id, "choose_category"),
+                         reply_markup=types.ReplyKeyboardRemove())
+        # 2) Показываем основное inline-меню
+        bot.send_message(chat_id,
+                         t(chat_id, "choose_category"),
+                         reply_markup=get_inline_main_menu(chat_id))
         return
 
     if text == t(None, "choose_on_map"):
@@ -1157,17 +1125,15 @@ def handle_contact_input(message):
     text = message.text or ""
 
     # ИСПРАВЛЁННЫЙ ВАРИАНТ (если ты хочешь сразу в main-menu)
-    # Обработка кнопки «Назад»
     if text == t(chat_id, "back"):
-        # Возвращаем пользователя на шаг ввода адреса
+        data['wait_for_address'] = False
         data['wait_for_contact'] = False
-        data['wait_for_address'] = True
-        bot.send_message(
-            chat_id,
-            t(chat_id, "enter_address"),
-            reply_markup=address_keyboard()
-        )
-        user_data[chat_id] = data
+        bot.send_message(chat_id,
+                         t(chat_id, "choose_category"),
+                         reply_markup=types.ReplyKeyboardRemove())
+        bot.send_message(chat_id,
+                         t(chat_id, "choose_category"),
+                         reply_markup=get_inline_main_menu(chat_id))
         return
 
     if text == t(None, "enter_nickname"):
@@ -2735,48 +2701,11 @@ def universal_handler(message):
     # ——— Режим редактирования корзины — (оставляем без изменений) ———
     if data.get('edit_cart_phase'):
         if data['edit_cart_phase'] == 'choose_action':
-            # Обработка кнопки «Назад»
             if text == t(chat_id, "back"):
-                # 1) Выход из режима правки
                 data['edit_cart_phase'] = None
                 data['edit_index'] = None
+                bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
-
-                # 2) Собираем текущее содержимое корзины
-                grouped = {}
-                for item in data.get("cart", []):
-                    key = (item["category"], item["flavor"], item["price"])
-                    grouped[key] = grouped.get(key, 0) + 1
-
-                # 3) Формируем текст списка
-                lines = ["🛒 " + t(chat_id, "view_cart") + ":"]
-                for idx, ((cat, flavor, price), qty) in enumerate(grouped.items(), start=1):
-                    lines.append(f"{idx}. {cat} — {flavor} — {price}₺ x {qty}")
-                msg = "\n".join(lines)
-
-                # 4) Строим inline-кнопки для каждой позиции
-                kb = types.InlineKeyboardMarkup(row_width=2)
-                for idx, ((cat, flavor, price), _) in enumerate(grouped.items(), start=1):
-                    kb.add(
-                        types.InlineKeyboardButton(
-                            text=f"{t(chat_id, 'remove_item')} {idx}",
-                            callback_data=f"remove_item|{idx}"
-                        ),
-                        types.InlineKeyboardButton(
-                            text=f"{t(chat_id, 'edit_item')} {idx}",
-                            callback_data=f"edit_item|{idx}"
-                        )
-                    )
-                # 5) Кнопка «Назад к категориям»
-                kb.add(
-                    types.InlineKeyboardButton(
-                        text=f"⬅️ {t(chat_id, 'back_to_categories')}",
-                        callback_data="go_back_to_categories"
-                    )
-                )
-
-                # 6) Отправляем обновлённую «корзину»
-                bot.send_message(chat_id, msg, reply_markup=kb)
                 return
 
             if text.startswith(f"{t(chat_id, 'remove_item')} "):
@@ -3517,4 +3446,4 @@ if __name__ == "__main__":
     bot.delete_webhook()
     # timeout — время ожидания одного long-polling запроса (в секундах)
     # long_polling_timeout — пауза между запросами, если нет новых апдейтов
-    bot.infinity_polling(timeout=10, long_polling_timeout=5)
+    bot.infinity_polling(timeout=10, long_polling_timeout=5) 
