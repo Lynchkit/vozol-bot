@@ -1135,6 +1135,7 @@ def handle_address_input(message):
     else:
         # Неверный ввод — просим повторить
         kb_retry = address_keyboard()
+        kb_retry.add(types.KeyboardButton(t(chat_id, "back")))
         bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=kb_retry)
         return
 
@@ -1180,9 +1181,7 @@ def handle_contact_input(message):
 
     # Если пользователь хочет вручную ввести никнейм
     if text == t(None, "enter_nickname"):
-        kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-        kb.add(types.KeyboardButton(t(chat_id, "back")))
-        bot.send_message(chat_id, "Введите ваш Telegram-ник (без @):", reply_markup=kb)
+        bot.send_message(chat_id, "Введите ваш Telegram-ник (без @):", reply_markup=types.ReplyKeyboardRemove())
         return
 
     # Собираем контакт
@@ -2952,9 +2951,7 @@ def universal_handler(message):
             return
 
         if text == t(None, "enter_nickname"):
-            kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-            kb.add(types.KeyboardButton(t(chat_id, "back")))
-            bot.send_message(chat_id, "Введите ваш Telegram-ник (без @):", reply_markup=kb)
+            bot.send_message(chat_id, "Введите ваш Telegram-ник (без @):", reply_markup=types.ReplyKeyboardRemove())
             return
 
         if message.content_type == 'contact' and message.contact:
