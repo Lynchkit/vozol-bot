@@ -390,7 +390,6 @@ def contact_keyboard() -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add(types.KeyboardButton(t(None, "share_contact"), request_contact=True))
     kb.add(t(None, "enter_nickname"))
-    kb.add(t(None, "back"))
     return kb
 
 
