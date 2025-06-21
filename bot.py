@@ -1051,7 +1051,6 @@ def handle_points_input(message):
 
     user_data[chat_id] = data
 
-
 # ------------------------------------------------------------------------
 #   26. Handler: ввод адреса
 # ------------------------------------------------------------------------
@@ -1062,24 +1061,14 @@ def handle_points_input(message):
 )
 def handle_address_input(message):
     chat_id = message.chat.id
-    data = user_data.get(chat_id, {})
+    data = user_data[chat_id]
     text = message.text or ""
 
-    # ИСПРАВЛЁННЫЙ ВАРИАНТ
-
+    # 1) Если нажали «Back» — делегируем общему хэндлеру возврата
     if text == t(chat_id, "back"):
-        data['wait_for_address'] = False
-        data['current_category'] = None
-        # 1) Убираем клавиатуру запроса локации
-        bot.send_message(chat_id,
-                         t(chat_id, "choose_category"),
-                         reply_markup=types.ReplyKeyboardRemove())
-        # 2) Показываем основное inline-меню
-        bot.send_message(chat_id,
-                         t(chat_id, "choose_category"),
-                         reply_markup=get_inline_main_menu(chat_id))
-        return
+        return handle_back_global(message)
 
+    # 2) Выбор на карте
     if text == t(None, "choose_on_map"):
         bot.send_message(
             chat_id,
@@ -1088,28 +1077,30 @@ def handle_address_input(message):
         )
         return
 
+    # 3) Парсим venue или location
     if message.content_type == 'venue' and message.venue:
         v = message.venue
         address = f"{v.title}, {v.address}\n🌍 https://maps.google.com/?q={v.location.latitude},{v.location.longitude}"
     elif message.content_type == 'location' and message.location:
         lat, lon = message.location.latitude, message.location.longitude
         address = f"🌍 https://maps.google.com/?q={lat},{lon}"
+    # 4) Текстовый ввод адреса
     elif text == t(None, "enter_address_text"):
         bot.send_message(chat_id, t(chat_id, "enter_address"), reply_markup=types.ReplyKeyboardRemove())
         return
-    elif message.content_type == 'text' and message.text:
-        address = message.text.strip()
+    elif message.content_type == 'text':
+        address = text.strip()
     else:
-        bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=address_keyboard())
-        return
+        return bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=address_keyboard())
 
+    # 5) Переходим к вводу контакта
     data['address'] = address
     data['wait_for_address'] = False
     data['wait_for_contact'] = True
-    kb = contact_keyboard()
-    bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=kb)
     user_data[chat_id] = data
 
+    kb = contact_keyboard()
+    bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=kb)
 
 # ------------------------------------------------------------------------
 #   27. Handler: ввод контакта
@@ -1933,6 +1924,8 @@ def cmd_help(message: types.Message):
 # ------------------------------------------------------------------------
 #   35. Универсальный хендлер (всё остальное, включая /change логику)
 # ------------------------------------------------------------------------
+
+
 @ensure_user
 @bot.message_handler(content_types=['text', 'location', 'venue', 'contact'])
 def universal_handler(message):
@@ -1976,6 +1969,9 @@ def universal_handler(message):
             # Cancel
             # ИСПРАВЛЁННЫЙ ВАРИАНТ
 
+            if text == t(chat_id, "back"):
+                return handle_back_to_group(message)
+
             # Cancel
             if text == "❌ Cancel":
                 data['edit_phase'] = None
@@ -2002,6 +1998,8 @@ def universal_handler(message):
                                  t(chat_id, "choose_category"),
                                  reply_markup=get_inline_main_menu(chat_id))
                 return
+
+
 
             if text == "➕ Add Category":
                 data['edit_phase'] = 'add_category'
@@ -3118,6 +3116,7 @@ def universal_handler(message):
                 f"\n\n{t(chat_id, 'enter_address')}",
                 reply_markup=kb
             )
+            push_state(chat_id, "wait_for_address")
             data["wait_for_address"] = True
             user_data[chat_id] = data
         return
@@ -3438,6 +3437,33 @@ def handle_back_to_group(call: types.CallbackQuery):
         message_id=call.message.message_id,
         reply_markup=kb
     )
+@ensure_user
+@bot.message_handler(func=lambda m: m.text == t(m.chat.id, "back"), content_types=['text'])
+def handle_back_global(message):
+    chat_id = message.chat.id
+    data = user_data[chat_id]
+    prev = pop_state(chat_id)
+
+    # сбросим все флаги ввода
+    data.update({
+        "wait_for_address": False,
+        "wait_for_contact": False,
+        "wait_for_comment": False,
+        "edit_cart_phase": None,
+    })
+    user_data[chat_id] = data
+
+    if prev == "view_cart":
+        return handle_view_cart( types.SimpleNamespace(from_user=message.from_user, id=message.message_id, data="view_cart") )
+
+    if prev == "wait_for_address":
+        data["wait_for_address"] = True
+        user_data[chat_id] = data
+        return bot.send_message(chat_id, t(chat_id, "enter_address"), reply_markup=address_keyboard())
+
+    # по умолчанию — в главное меню
+    return bot.send_message(chat_id, t(chat_id, "choose_category"),
+                            reply_markup=get_inline_main_menu(chat_id))
 
 # ------------------------------------------------------------------------
 #   36. Запуск бота
@@ -3446,4 +3472,4 @@ if __name__ == "__main__":
     bot.delete_webhook()
     # timeout — время ожидания одного long-polling запроса (в секундах)
     # long_polling_timeout — пауза между запросами, если нет новых апдейтов
-    bot.infinity_polling(timeout=10, long_polling_timeout=5) 
+    bot.infinity_polling(timeout=10, long_polling_timeout=5)
