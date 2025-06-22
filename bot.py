@@ -390,6 +390,7 @@ def contact_keyboard() -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add(types.KeyboardButton(t(None, "share_contact"), request_contact=True))
     kb.add(t(None, "enter_nickname"))
+    kb.add(t(None, "back"))
     return kb
 
 
@@ -951,7 +952,7 @@ def handle_clear_cart(call):
 def handle_finish_order(call):
     chat_id = call.from_user.id
     bot.answer_callback_query(call.id)
-    data = user_data.setdefault(chat_id, {})
+    data = user_data.get(chat_id, {})
 
     cart = data.get("cart", [])
     if not cart:
@@ -960,7 +961,6 @@ def handle_finish_order(call):
 
     total_try = sum(item["price"] for item in cart)
 
-    # Получаем текущее количество баллов
     conn_local = get_db_connection()
     cursor_local = conn_local.cursor()
     cursor_local.execute("SELECT points FROM users WHERE chat_id = ?", (chat_id,))
@@ -971,47 +971,29 @@ def handle_finish_order(call):
     user_points = row[0] if row else 0
 
     if user_points > 0:
-        # Подготавливаем сообщение с выбором баллов
         max_points = min(user_points, total_try)
-        points_try = user_points  # коэффициент 1:1
+        points_try = user_points * 1
         msg = (
-            t(chat_id, "points_info").format(points=user_points, points_try=points_try)
-            + "\n"
-            + t(chat_id, "enter_points").format(max_points=max_points)
+                t(chat_id, "points_info").format(points=user_points, points_try=points_try)
+                + "\n"
+                + t(chat_id, "enter_points").format(max_points=max_points)
         )
-
-        # Клавиатура: ввод баллов + кнопка «Назад»
-        kb_points = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-        kb_points.add(types.KeyboardButton(t(chat_id, "back")))
-
-        bot.send_message(chat_id, msg, reply_markup=kb_points)
-
-        # Устанавливаем флаг ожидания баллов
+        bot.send_message(chat_id, msg, reply_markup=types.ReplyKeyboardRemove())
         data["wait_for_points"] = True
         data["temp_total_try"] = total_try
         data["temp_user_points"] = user_points
-
     else:
-        # Если баллов нет — сразу сбор адреса
-        summary = "\n".join(
-            f"{item['category']}: {item['flavor']} — {item['price']}₺"
-            for item in cart
+        kb = address_keyboard()
+        bot.send_message(
+            chat_id,
+            f"🛒 {t(chat_id, 'view_cart')}:\n\n" +
+            "\n".join(f"{item['category']}: {item['flavor']} — {item['price']}₺" for item in cart) +
+            f"\n\n{t(chat_id, 'enter_address')}",
+            reply_markup=kb
         )
-        text = (
-            f"🛒 {t(chat_id, 'view_cart')}:\n\n"
-            f"{summary}\n\n"
-            f"{t(chat_id, 'enter_address')}"
-        )
-
-        # Клавиатура для адреса + кнопка «Назад»
-        kb_address = address_keyboard()
-        kb_address.add(types.KeyboardButton(t(chat_id, "back")))
-
-        bot.send_message(chat_id, text, reply_markup=kb_address)
         data["wait_for_address"] = True
 
     user_data[chat_id] = data
-
 
 
 # ------------------------------------------------------------------------
@@ -1080,39 +1062,24 @@ def handle_points_input(message):
 )
 def handle_address_input(message):
     chat_id = message.chat.id
-    data = user_data.setdefault(chat_id, {})
+    data = user_data.get(chat_id, {})
     text = message.text or ""
 
-    # Обработка кнопки «Назад» — возвращаем на предыдущий шаг
+    # ИСПРАВЛЁННЫЙ ВАРИАНТ
+
     if text == t(chat_id, "back"):
-        # Снимаем флаг адреса
         data['wait_for_address'] = False
-
-        # Если пользователь сначала вводил баллы → возвращаем к вводу баллов
-        if data.get("temp_total_try") is not None and data.get("temp_user_points") is not None:
-            data['wait_for_points'] = True
-
-            # Клавиатура для ввода баллов + кнопка «Назад»
-            kb_points = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-            kb_points.add(types.KeyboardButton(t(chat_id, "back")))
-
-            max_points = min(data["temp_user_points"], data["temp_total_try"])
-            points_try = data["temp_user_points"]
-            msg = (
-                t(chat_id, "points_info").format(points=data["temp_user_points"], points_try=points_try)
-                + "\n"
-                + t(chat_id, "enter_points").format(max_points=max_points)
-            )
-            bot.send_message(chat_id, msg, reply_markup=kb_points)
-
-        else:
-            # Иначе — нет баллов, возвращаем к просмотру корзины
-            bot.send_message(chat_id, t(chat_id, "view_cart"), reply_markup=get_inline_main_menu(chat_id))
-
-        user_data[chat_id] = data
+        data['current_category'] = None
+        # 1) Убираем клавиатуру запроса локации
+        bot.send_message(chat_id,
+                         t(chat_id, "choose_category"),
+                         reply_markup=types.ReplyKeyboardRemove())
+        # 2) Показываем основное inline-меню
+        bot.send_message(chat_id,
+                         t(chat_id, "choose_category"),
+                         reply_markup=get_inline_main_menu(chat_id))
         return
 
-    # Обычные варианты ввода адреса
     if text == t(None, "choose_on_map"):
         bot.send_message(
             chat_id,
@@ -1133,23 +1100,15 @@ def handle_address_input(message):
     elif message.content_type == 'text' and message.text:
         address = message.text.strip()
     else:
-        # Неверный ввод — просим повторить
-        kb_retry = address_keyboard()
-        bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=kb_retry)
+        bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=address_keyboard())
         return
 
-    # Сохраняем адрес и переходим к вводу контакта
     data['address'] = address
     data['wait_for_address'] = False
     data['wait_for_contact'] = True
-
-    # Клавиатура контакта + кнопка «Назад»
-    kb_contact = contact_keyboard()
-    kb_contact.add(types.KeyboardButton(t(chat_id, "back")))
-
-    bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=kb_contact)
+    kb = contact_keyboard()
+    bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=kb)
     user_data[chat_id] = data
-
 
 
 # ------------------------------------------------------------------------
@@ -1162,53 +1121,39 @@ def handle_address_input(message):
 )
 def handle_contact_input(message):
     chat_id = message.chat.id
-    data = user_data.setdefault(chat_id, {})
+    data = user_data.get(chat_id, {})
     text = message.text or ""
 
-    # Обработка кнопки «Назад» — возвращаемся к вводу адреса
+    # ИСПРАВЛЁННЫЙ ВАРИАНТ (если ты хочешь сразу в main-menu)
     if text == t(chat_id, "back"):
+        data['wait_for_address'] = False
         data['wait_for_contact'] = False
-        data['wait_for_address'] = True
-
-        # Клавиатура адреса + кнопка «Назад»
-        kb_address = address_keyboard()
-        kb_address.add(types.KeyboardButton(t(chat_id, "back")))
-
-        bot.send_message(chat_id, t(chat_id, "enter_address"), reply_markup=kb_address)
-        user_data[chat_id] = data
+        bot.send_message(chat_id,
+                         t(chat_id, "choose_category"),
+                         reply_markup=types.ReplyKeyboardRemove())
+        bot.send_message(chat_id,
+                         t(chat_id, "choose_category"),
+                         reply_markup=get_inline_main_menu(chat_id))
         return
 
-    # Если пользователь хочет вручную ввести никнейм
     if text == t(None, "enter_nickname"):
-        kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-        kb.add(types.KeyboardButton(t(chat_id, "back")))
-        bot.send_message(chat_id, "Введите ваш Telegram-ник (без @):", reply_markup=kb)
+        bot.send_message(chat_id, "Введите ваш Telegram-ник (без @):", reply_markup=types.ReplyKeyboardRemove())
         return
 
-    # Собираем контакт
     if message.content_type == 'contact' and message.contact:
         contact = message.contact.phone_number
     elif message.content_type == 'text' and message.text:
         contact = "@" + message.text.strip().lstrip("@")
     else:
-        # Некорректный ввод — просим повторить
-        kb_retry = contact_keyboard()
-        kb_retry.add(types.KeyboardButton(t(chat_id, "back")))
-        bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=kb_retry)
+        bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=contact_keyboard())
         return
 
-    # Перешли к следующему шагу — вводу комментария
     data['contact'] = contact
     data['wait_for_contact'] = False
     data['wait_for_comment'] = True
-
-    # Клавиатура комментария + кнопка «Назад»
-    kb_comment = comment_keyboard()
-    kb_comment.add(types.KeyboardButton(t(chat_id, "back")))
-
-    bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=kb_comment)
+    kb = comment_keyboard()
+    bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=kb)
     user_data[chat_id] = data
-
 
 
 # ------------------------------------------------------------------------
@@ -1221,33 +1166,39 @@ def handle_contact_input(message):
 )
 def handle_comment_input(message):
     chat_id = message.chat.id
-    data = user_data.setdefault(chat_id, {})
+    data = user_data.get(chat_id, {})
     text = message.text or ""
 
-    # Обработка кнопки «Назад» — возвращаемся к вводу контакта
+    # Обработка кнопки «Назад»
+    # ИСПРАВЛЁННЫЙ ВАРИАНТ
+
     if text == t(chat_id, "back"):
         data['wait_for_comment'] = False
-        data['wait_for_contact'] = True
-
-        # Собираем клавиатуру контакта с кнопкой «Назад»
-        kb = contact_keyboard()
-        kb.add(types.KeyboardButton(t(chat_id, "back")))
-
-        bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=kb)
-        user_data[chat_id] = data
+        bot.send_message(chat_id,
+                         t(chat_id, "choose_category"),
+                         reply_markup=types.ReplyKeyboardRemove())
+        bot.send_message(chat_id,
+                         t(chat_id, "choose_category"),
+                         reply_markup=get_inline_main_menu(chat_id))
         return
 
-    # Если пользователь решил ещё раз ввести комментарий
+    # Пользователь вводит текст комментария
     if text == t(None, "enter_comment"):
         bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=types.ReplyKeyboardRemove())
         return
 
-    # Сохраняем сам текст комментария
-    if text != t(None, "send_order"):
+    if message.content_type == 'text' and text != t(None, "send_order"):
         data['comment'] = text.strip()
         bot.send_message(chat_id, t(chat_id, "comment_saved"), reply_markup=comment_keyboard())
         user_data[chat_id] = data
         return
+
+    # Пользователь подтвердил отправку заказа
+    if text == t(None, "send_order"):
+        cart = data.get('cart', [])
+        if not cart:
+            bot.send_message(chat_id, t(chat_id, "cart_empty"))
+            return
 
         # Считаем сумму заказа и скидку
         total_try = sum(i['price'] for i in cart)
@@ -2952,9 +2903,7 @@ def universal_handler(message):
             return
 
         if text == t(None, "enter_nickname"):
-            kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-            kb.add(types.KeyboardButton(t(chat_id, "back")))
-            bot.send_message(chat_id, "Введите ваш Telegram-ник (без @):", reply_markup=kb)
+            bot.send_message(chat_id, "Введите ваш Telegram-ник (без @):", reply_markup=types.ReplyKeyboardRemove())
             return
 
         if message.content_type == 'contact' and message.contact:
@@ -3498,3 +3447,4 @@ if __name__ == "__main__":
     # timeout — время ожидания одного long-polling запроса (в секундах)
     # long_polling_timeout — пауза между запросами, если нет новых апдейтов
     bot.infinity_polling(timeout=10, long_polling_timeout=5)
+
