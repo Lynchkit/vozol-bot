@@ -1614,6 +1614,20 @@ def cmd_total(message):
     bot.send_message(chat_id, text, parse_mode="HTML")
 
 @ensure_user
+@bot.message_handler(commands=['stocknow'])
+def cmd_stocknow(message: types.Message):
+    # суммируем всё поле "stock" по всем вкусам
+    total = sum(
+        int(item.get("stock", 0))
+        for cat_data in menu.values()
+        for item in cat_data.get("flavors", [])
+    )
+    bot.send_message(
+        message.chat.id,
+        f"Общее количество на складе: {total} шт."
+    )
+
+@ensure_user
 @bot.message_handler(commands=['payment'])
 def cmd_payment(message):
     chat_id = message.chat.id
