@@ -1615,11 +1615,10 @@ def cmd_total(message):
 
 @bot.message_handler(commands=['stocknow'])
 def cmd_stocknow(message: types.Message):
-    # Доступ только в админ-чате
+    # Доступ только в админ-группе
     if message.chat.id != GROUP_CHAT_ID:
         return
 
-    # Берём сумму всех доставленных через delivered_counts
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("SELECT SUM(count) FROM delivered_counts")
@@ -1627,7 +1626,8 @@ def cmd_stocknow(message: types.Message):
     cur.close()
     conn.close()
 
-    bot.reply_to(message, f"✅ Всего доставлено: {total} шт.")
+    bot.reply_to(message, f"✅ Total delivered: {total} pcs.")
+
 
 
 @ensure_user
