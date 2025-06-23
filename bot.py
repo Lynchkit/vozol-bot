@@ -1613,19 +1613,22 @@ def cmd_total(message):
     text = "\n".join(lines) if lines else "No flavors available."
     bot.send_message(chat_id, text, parse_mode="HTML")
 
-@ensure_user
 @bot.message_handler(commands=['stocknow'])
 def cmd_stocknow(message: types.Message):
-    # суммируем всё поле "stock" по всем вкусам
-    total = sum(
-        int(item.get("stock", 0))
-        for cat_data in menu.values()
-        for item in cat_data.get("flavors", [])
-    )
-    bot.send_message(
-        message.chat.id,
-        f"Общее количество на складе: {total} шт."
-    )
+    # Доступ только в админ-чате
+    if message.chat.id != GROUP_CHAT_ID:
+        return
+
+    # Берём сумму всех доставленных через delivered_counts
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT SUM(count) FROM delivered_counts")
+    total = cur.fetchone()[0] or 0
+    cur.close()
+    conn.close()
+
+    bot.reply_to(message, f"✅ Всего доставлено: {total} шт.")
+
 
 @ensure_user
 @bot.message_handler(commands=['payment'])
