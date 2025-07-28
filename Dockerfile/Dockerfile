@@ -1,15 +1,13 @@
-# базовый образ
 FROM python:3.11-slim
 
-# рабочая директория
 WORKDIR /app
 
-# 1) копируем зависимости и устанавливаем
-COPY requirements.txt .
+# 1) копируем зависимости и ставим
+COPY vozol_bot_windows_with_requirements/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 2) копируем весь код бота
-COPY . .
+COPY vozol_bot_windows_with_requirements .
 
 # 3) запускаем бота
 CMD ["python", "bot.py"]
