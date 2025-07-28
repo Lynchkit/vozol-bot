@@ -3460,4 +3460,16 @@ def handle_back_to_group(call: types.CallbackQuery):
 #   36. Запуск бота
 # ------------------------------------------------------------------------
 if __name__ == "__main__":
-    bot.infinity_polling(timeout=10, long_polling_timeout=5)
+    # устанавливаем webhook один раз
+    bot.set_webhook(url="https://ваш-домен.com/webhook")
+
+    app = Flask(__name__)
+
+    @app.route('/webhook', methods=['POST'])
+    def webhook_handler():
+        update = telebot.types.Update.de_json(request.get_data().decode('utf-8'))
+        bot.process_new_updates([update])
+        return '', 200
+
+    # запускаем HTTPS‑сервер (порт 443) с вашим SSL‑сертификатом
+    app.run(host='0.0.0.0', port=443, ssl_context=('cert.pem', 'privkey.pem'))
