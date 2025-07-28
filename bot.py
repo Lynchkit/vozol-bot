@@ -3464,4 +3464,3 @@ if __name__ == "__main__":
     # timeout — время ожидания одного long-polling запроса (в секундах)
     # long_polling_timeout — пауза между запросами, если нет новых апдейтов
     bot.infinity_polling(timeout=10, long_polling_timeout=5)
-
