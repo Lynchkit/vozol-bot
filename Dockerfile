@@ -1,9 +1,13 @@
 FROM python:3.11-slim
+
+# 1) задаём рабочую папку
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# 2) копируем всё из текущей папки в /app
+COPY . /app
 
-COPY . .
+# 3) устанавливаем зависимости
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
-CMD ["python", "bot.py"]
+# 4) запускаем бота
+CMD ["python", "/app/bot.py"]
