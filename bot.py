@@ -1693,14 +1693,20 @@ def cmd_sold(message: types.Message):
 
     # 5) Итог по валютам
     summary = "\n".join(f"{cur.upper()}: {cnt} pcs" for cur, cnt in totals.items())
+    paid_items = sum(qty for cur, qty in totals.items() if cur != 'free')
+    total_items = sum(totals.values())
+    earnings = paid_items * 150
+
     text = (
-        "📊 Deliveries today:\n\n"
-        + "\n".join(lines)
-        + "\n\n<b>Summary by currency:</b>\n"
-        + summary
+            "📊 Deliveries today:\n\n"
+            + "\n".join(lines)
+            + "\n\n<b>Summary by currency:</b>\n"
+            + summary
+            + f"\n\ncourier earned: {earnings} tl for {total_items} pcs"
     )
 
     bot.send_message(chat_id, text, parse_mode="HTML")
+
 
 # 1) Определяем отдельный хендлер прямо рядом с /convert, /points и т.д.
 @ensure_user
