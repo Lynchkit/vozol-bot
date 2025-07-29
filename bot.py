@@ -450,17 +450,6 @@ def send_weekly_digest():
     cursor.close()
     conn.close()
 
-# Инициализация планировщика
-scheduler = BackgroundScheduler(timezone="Europe/Riga")
-scheduler.add_job(
-    send_weekly_digest,
-    trigger="cron",
-    day_of_week="mon",
-    hour=9,
-    minute=0,
-    id="weekly_digest"
-)
-scheduler.start()
 # ------------------------------------------------------------------------
 #   14. Хендлер /start – регистрация, реферальная система, выбор языка
 # ------------------------------------------------------------------------
