@@ -3455,8 +3455,12 @@ def handle_back_to_group(call: types.CallbackQuery):
         message_id=call.message.message_id,
         reply_markup=kb
     )
-def send_daily_sold_report():
-    # повторяем ту же логику, что и в cmd_sold, но сразу шлём в админ‑группу
+@ensure_user
+@bot.message_handler(commands=['sold'])
+def cmd_sold(message: types.Message):
+    chat_id = message.chat.id
+
+    # Московское время
     msk = pytz.timezone("Europe/Moscow")
     now_msk = datetime.datetime.now(msk)
     today_start = now_msk.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -3465,38 +3469,54 @@ def send_daily_sold_report():
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT dl.order_id, dl.currency, dl.qty, dl.timestamp, o.items_json, o.total
+        SELECT
+            dl.order_id,
+            dl.currency,
+            dl.qty,
+            dl.timestamp,
+            o.items_json,
+            o.total
         FROM delivered_log AS dl
         JOIN orders AS o ON o.order_id = dl.order_id
         WHERE dl.timestamp >= ?
         ORDER BY dl.timestamp ASC
     """, (today_utc,))
     rows = cur.fetchall()
-    cur.close(); conn.close()
+    cur.close()
+    conn.close()
 
     if not rows:
-        bot.send_message(GROUP_CHAT_ID, "No deliveries recorded today.")
-        return
+        return bot.send_message(chat_id, "No deliveries recorded today.")
 
-    lines, totals = [], {}
+    lines = []
+    totals = {}
+    # rows — кортежи вида (order_id, currency, qty, ts, items_json, total)
     for order_id, currency, qty, ts, items_json, total in rows:
+        # время по МСК
         ts_dt = datetime.datetime.fromisoformat(ts)
-        time_str = ts_dt.replace(tzinfo=datetime.timezone.utc)\
-                        .astimezone(msk).strftime("%H:%M:%S")
+        ts_msk = ts_dt.replace(tzinfo=datetime.timezone.utc).astimezone(msk)
+        time_str = ts_msk.strftime("%H:%M:%S")
+
+        # разбиваем по категориям
         items = json.loads(items_json)
         cat_counts = {}
         for it in items:
-            cat_counts[it["category"]] = cat_counts.get(it["category"], 0) + 1
-        cat_str = ", ".join(f"{cat}: {c}" for cat, c in cat_counts.items())
-        lines.append(f"{time_str} — Order #{order_id} — {currency.upper()}: {qty} pcs ({cat_str})")
+            cat = it.get("category", "—")
+            cat_counts[cat] = cat_counts.get(cat, 0) + 1
+        cat_str = ", ".join(f"{cat}: {cnt}" for cat, cnt in cat_counts.items())
+
+        lines.append(
+            f"{time_str} — Order #{order_id} — {currency.upper()}: {qty} pcs ({cat_str})"
+        )
         totals[currency] = totals.get(currency, 0) + qty
 
-    summary      = "\n".join(f"{cur.upper()}: {cnt} pcs" for cur, cnt in totals.items())
-    paid_items   = sum(q for c, q in totals.items() if c != 'free')
-    total_items  = sum(totals.values())
-    earnings     = paid_items * 150
-    revenue      = sum(o_total for _o, c, _q, _ts, _ij, o_total in rows if c == 'cash')
-    net_remaining= revenue - earnings
+    # подсчёты
+    summary     = "\n".join(f"{curc.upper()}: {cnt} pcs" for curc, cnt in totals.items())
+    paid_items  = sum(q for curc, q in totals.items() if curc.lower() != 'free')
+    total_items = sum(totals.values())
+    earnings    = paid_items * 150
+    revenue     = sum(total for _oid, curc, _q, _ts, _ij, total in rows if curc.lower() == 'cash')
+    net_remain  = revenue - earnings
 
     text = (
         "📊 Deliveries today:\n\n"
@@ -3505,10 +3525,10 @@ def send_daily_sold_report():
         + summary
         + f"\n\ncourier earned: {earnings} tl for {total_items} pcs"
         + f"\ntotal revenue: {revenue} tl"
-        + f"\nnet remaining: {net_remaining} tl"
+        + f"\nnet remaining: {net_remain} tl"
     )
+    bot.send_message(chat_id, text, parse_mode="HTML")
 
-    bot.send_message(GROUP_CHAT_ID, text, parse_mode="HTML")
 from apscheduler.schedulers.background import BackgroundScheduler
 
 scheduler = BackgroundScheduler(timezone="Europe/Moscow")
