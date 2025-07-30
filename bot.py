@@ -1680,7 +1680,7 @@ def cmd_sold(message):
     detail_lines = []
     summary_by_currency = {}
     cash_revenue = 0
-    cash_qty = 0
+    delivered_qty_exc_free = 0
 
     for ts, order_id, currency, qty, items_json, order_total in rows:
         # timestamp → moscow local time
@@ -1699,10 +1699,13 @@ def cmd_sold(message):
         # summary by currency
         summary_by_currency[currency] = summary_by_currency.get(currency, 0) + qty
 
-        # accumulate cash metrics
+        # count all delivered items except those marked FREE
+        if currency.lower() != 'free':
+            delivered_qty_exc_free += qty
+
+        # accumulate revenue only for cash payments
         if currency.lower() == 'cash':
             cash_revenue += order_total
-            cash_qty     += qty
 
     # 5) format summary by currency
     summary_lines = ["Summary by currency:"]
@@ -1711,8 +1714,8 @@ def cmd_sold(message):
     summary_text = "\n".join(summary_lines)
 
     # 6) compute courier payout and remaining
-    courier_earnings   = cash_qty * 150
-    remaining_revenue  = cash_revenue - courier_earnings
+    courier_earnings  = delivered_qty_exc_free * 150
+    remaining_revenue = cash_revenue - courier_earnings
 
     # 7) send the full report
     report = (
@@ -1726,6 +1729,7 @@ def cmd_sold(message):
         f"💰 remaining revenue: {remaining_revenue}₺"
     )
     bot.send_message(chat_id, report)
+
 
 
 
