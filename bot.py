@@ -11,92 +11,6 @@ import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
 from telebot import TeleBot, types
 
-def compose_sold_report() -> str:
-    """
-    собирает из БД данные по доставкам с начала текущего дня
-    и возвращает готовый текст отчёта
-    """
-    import datetime, pytz, json
-    from sqlite3 import connect
-
-    # 1. считаем начало дня в МСК и переводим в UTC
-    moscow_tz = pytz.timezone("Europe/Moscow")
-    now_msk = datetime.datetime.now(moscow_tz)
-    start_msk = now_msk.replace(hour=0, minute=0, second=0, microsecond=0)
-    start_utc = start_msk.astimezone(pytz.utc).isoformat()
-
-    # 2. вытаскиваем записи
-    conn = connect(DB_PATH, check_same_thread=False)
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT dl.timestamp, dl.order_id, dl.currency, dl.qty, o.items_json, o.total
-        FROM delivered_log dl
-        JOIN orders o ON o.order_id = dl.order_id
-        WHERE dl.timestamp >= ?
-        ORDER BY dl.timestamp ASC
-    """, (start_utc,))
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    if not rows:
-        return "📊 deliveries report: no deliveries recorded today."
-
-    # 3. собираем детали и сводку
-    # (скопируйте сюда ту же логику, что в cmd_sold, по формированию detail_lines, summary и т.п.)
-    detail_lines = []
-    summary_by_currency = {}
-    cash_revenue = 0
-    delivered_qty_exc_free = 0
-    for ts, order_id, currency, qty, items_json, order_total in rows:
-        ts_dt = datetime.datetime.fromisoformat(ts).replace(tzinfo=datetime.timezone.utc)
-        time_str = ts_dt.astimezone(moscow_tz).strftime("%H:%M:%S")
-        items = json.loads(items_json)
-        items_repr = ", ".join(f"{i['flavor']} — {i['price']}₺" for i in items)
-        detail_lines.append(f"{time_str} — order #{order_id} — {currency.upper()}: {qty} pcs ({items_repr})")
-
-        summary_by_currency[currency] = summary_by_currency.get(currency, 0) + qty
-        if currency.lower() != 'free':
-            delivered_qty_exc_free += qty
-        if currency.lower() == 'cash':
-            cash_revenue += order_total
-
-    summary_lines = ["summary by currency:"]
-    for cur_name, cnt in summary_by_currency.items():
-        summary_lines.append(f"{cur_name.upper()}: {cnt} pcs")
-
-    courier_pay = delivered_qty_exc_free * 150
-    remaining = cash_revenue - courier_pay
-
-    # 4. собираем финальный текст
-    report = (
-        "📊 deliveries today:\n\n"
-        + "\n".join(detail_lines)
-        + "\n\n" + "\n".join(summary_lines)
-        + f"\n\ncash revenue: {cash_revenue}₺"
-        + f"\ncourier earnings: {courier_pay}₺"
-        + f"\nremaining revenue: {remaining}₺"
-    )
-    return report
-
-
-def send_daily_sold_report():
-    report = compose_sold_report()
-    bot.send_message(GROUP_CHAT_ID, report)
-
-    # 2) подключаем планировщик и запускаем его перед polling’ом
-    if __name__ == "__main__":
-        from apscheduler.schedulers.background import BackgroundScheduler
-        import pytz
-
-        scheduler = BackgroundScheduler(timezone=pytz.timezone("Europe/Istanbul"))
-        scheduler.add_job(send_daily_sold_report, 'cron', hour=00, minute=45)
-        scheduler.start()
-
-        bot.delete_webhook()
-        bot.infinity_polling(timeout=10, long_polling_timeout=5)
-
-
 
 def _normalize(text: str) -> str:
     """
@@ -1726,14 +1640,6 @@ def cmd_payment(message):
     bot.send_message(chat_id, "+7 996 996 12 99")
     # Дополнительно Тинькофф в рублях
     bot.send_message(chat_id, "Артур Маратович (RUB)")
-
-
-
-@ensure_user
-@bot.message_handler(commands=['sold'])
-def cmd_sold(message):
-    report = compose_sold_report()
-    bot.send_message(GROUP_CHAT_ID, report)
 
 
 # 1) Определяем отдельный хендлер прямо рядом с /convert, /points и т.д.
@@ -3479,11 +3385,103 @@ def handle_back_to_group(call: types.CallbackQuery):
         reply_markup=kb
     )
 
-# ------------------------------------------------------------------------
-#   36. Запуск бота
-# ------------------------------------------------------------------------
-if __name__ == "__main__":
-    bot.delete_webhook()
-    # timeout — время ожидания одного long-polling запроса (в секундах)
-    # long_polling_timeout — пауза между запросами, если нет новых апдейтов
-    bot.infinity_polling(timeout=10, long_polling_timeout=5)
+    def compose_sold_report() -> str:
+        """
+        собирает из БД данные по доставкам с начала текущего дня
+        и возвращает готовый текст отчёта
+        """
+        import datetime, pytz, json
+        from sqlite3 import connect
+
+        # 1. считаем начало дня в МСК и переводим в UTC
+        moscow_tz = pytz.timezone("Europe/Moscow")
+        now_msk = datetime.datetime.now(moscow_tz)
+        start_msk = now_msk.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_utc = start_msk.astimezone(pytz.utc).isoformat()
+
+        # 2. вытаскиваем записи
+        conn = connect(DB_PATH, check_same_thread=False)
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT dl.timestamp, dl.order_id, dl.currency, dl.qty, o.items_json, o.total
+            FROM delivered_log dl
+            JOIN orders o ON o.order_id = dl.order_id
+            WHERE dl.timestamp >= ?
+            ORDER BY dl.timestamp ASC
+        """, (start_utc,))
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        if not rows:
+            return "📊 deliveries report: no deliveries recorded today."
+
+        # 3. собираем детали и сводку
+        # (скопируйте сюда ту же логику, что в cmd_sold, по формированию detail_lines, summary и т.п.)
+        detail_lines = []
+        summary_by_currency = {}
+        cash_revenue = 0
+        delivered_qty_exc_free = 0
+        for ts, order_id, currency, qty, items_json, order_total in rows:
+            ts_dt = datetime.datetime.fromisoformat(ts).replace(tzinfo=datetime.timezone.utc)
+            time_str = ts_dt.astimezone(moscow_tz).strftime("%H:%M:%S")
+            items = json.loads(items_json)
+            items_repr = ", ".join(f"{i['flavor']} — {i['price']}₺" for i in items)
+            detail_lines.append(f"{time_str} — order #{order_id} — {currency.upper()}: {qty} pcs ({items_repr})")
+
+            summary_by_currency[currency] = summary_by_currency.get(currency, 0) + qty
+            if currency.lower() != 'free':
+                delivered_qty_exc_free += qty
+            if currency.lower() == 'cash':
+                cash_revenue += order_total
+
+        summary_lines = ["summary by currency:"]
+        for cur_name, cnt in summary_by_currency.items():
+            summary_lines.append(f"{cur_name.upper()}: {cnt} pcs")
+
+        courier_pay = delivered_qty_exc_free * 150
+        remaining = cash_revenue - courier_pay
+
+        # 4. собираем финальный текст
+        report = (
+                "📊 deliveries today:\n\n"
+                + "\n".join(detail_lines)
+                + "\n\n" + "\n".join(summary_lines)
+                + f"\n\ncash revenue: {cash_revenue}₺"
+                + f"\ncourier earnings: {courier_pay}₺"
+                + f"\nremaining revenue: {remaining}₺"
+        )
+        return report
+
+    def send_daily_sold_report():
+        report = compose_sold_report()
+        bot.send_message(GROUP_CHAT_ID, report)
+
+    @ensure_user
+    @bot.message_handler(commands=['sold'])
+    def cmd_sold(message):
+        report = compose_sold_report()
+        bot.send_message(GROUP_CHAT_ID, report)
+
+    # ———————————————————————————————————————————
+    #  точка входа: запускаем scheduler и polling
+    # ———————————————————————————————————————————
+    if __name__ == "__main__":
+        from apscheduler.schedulers.background import BackgroundScheduler
+        import pytz
+
+        scheduler = BackgroundScheduler(
+            timezone=pytz.timezone("Europe/Istanbul")
+        )
+        # запускаем каждый день в 00:45 по стамбульскому времени
+        scheduler.add_job(
+            send_daily_sold_report,
+            trigger='cron',
+            hour=1,  # обязательно без ведущих нулей
+            minute=13
+        )
+        scheduler.start()
+
+    #запуск бота перенесён  в scheduler
+        bot.delete_webhook()
+        bot.infinity_polling(timeout=10, long_polling_timeout=5)
