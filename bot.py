@@ -1643,69 +1643,54 @@ def cmd_payment(message):
 
 @ensure_user
 @bot.message_handler(commands=['sold'])
-def cmd_sold(message: types.Message):
+def cmd_sold(message):
     chat_id = message.chat.id
 
-    # 1) Определяем московскую зону
-    msk = pytz.timezone("Europe/Moscow")
+    # 1) compute start of today in moscow time and convert to utc
+    moscow_tz = pytz.timezone("Europe/Moscow")
+    now_moscow = datetime.datetime.now(moscow_tz)
+    start_of_day_moscow = now_moscow.replace(hour=0, minute=0, second=0, microsecond=0)
+    start_of_day_utc = start_of_day_moscow.astimezone(pytz.utc).isoformat()
 
-    # 2) Находим начало "сегодня" по Москве и переводим в UTC ISO
-    now_msk = datetime.datetime.now(msk)
-    today_msk_start = now_msk.replace(hour=0, minute=0, second=0, microsecond=0)
-    today_utc_start = today_msk_start.astimezone(pytz.utc).isoformat()
-
+    # 2) fetch all 'cash' deliveries since start of today
     conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT dl.order_id, dl.currency, dl.qty, dl.timestamp, o.items_json
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT dl.order_id,
+               o.total    AS order_total_try,
+               dl.qty     AS items_qty
         FROM delivered_log AS dl
-        JOIN orders AS o ON o.order_id = dl.order_id
+        JOIN orders        AS o  ON o.order_id = dl.order_id
         WHERE dl.timestamp >= ?
-        ORDER BY dl.timestamp ASC
-    """, (today_utc_start,))
-    rows = cur.fetchall()
-    cur.close()
+          AND dl.currency  = 'cash'
+    """, (start_of_day_utc,))
+    rows = cursor.fetchall()
+    cursor.close()
     conn.close()
 
+    # 3) if none, notify and exit
     if not rows:
-        return bot.send_message(chat_id, "No deliveries recorded today.")
+        bot.send_message(chat_id, "No cash deliveries recorded today.")
+        return
 
-    lines = []
-    totals = {}
-    for order_id, currency, qty, ts, items_json in rows:
-        # 3) Парсим UTC-строку и переводим в MSK
-        ts_dt = datetime.datetime.fromisoformat(ts)
-        ts_msk = ts_dt.replace(tzinfo=datetime.timezone.utc).astimezone(msk)
-        time_str = ts_msk.strftime("%H:%M:%S")
+    # 4) calculate total revenue (₺) and total items sold
+    total_revenue = sum(row[1] for row in rows)
+    total_items   = sum(row[2] for row in rows)
 
-        # 4) Считаем по категориям
-        items = json.loads(items_json)
-        cat_counts = {}
-        for it in items:
-            cat = it.get("category", "—")
-            cat_counts[cat] = cat_counts.get(cat, 0) + 1
-        cat_str = ", ".join(f"{cat}: {count}" for cat, count in cat_counts.items())
+    # 5) courier earns 150₺ per item
+    courier_earnings = total_items * 150
 
-        lines.append(
-            f"{time_str} — Order #{order_id} — {currency.upper()}: {qty} pcs ({cat_str})"
-        )
-        totals[currency] = totals.get(currency, 0) + qty
+    # 6) remaining revenue after courier payout
+    remaining_revenue = total_revenue - courier_earnings
 
-    # 5) Итог по валютам
-    summary = "\n".join(f"{cur.upper()}: {cnt} pcs" for cur, cnt in totals.items())
-    paid_items = sum(qty for cur, qty in totals.items() if cur != 'free')
-    total_items = sum(totals.values())
-    earnings = paid_items * 150
-
-    text = (
-            "📊 Deliveries today:\n\n"
-            + "\n".join(lines)
-            + "\n\n<b>Summary by currency:</b>\n"
-            + summary
-            + f"\n\ncourier earned: {earnings} tl for {total_items} pcs"
+    # 7) send summary
+    summary = (
+        f"📊 cash revenue today: {total_revenue}₺\n"
+        f"🏃‍♂️ courier earnings: {courier_earnings}₺\n"
+        f"💰 remaining revenue: {remaining_revenue}₺"
     )
+    bot.send_message(chat_id, summary)
 
-    bot.send_message(chat_id, text, parse_mode="HTML")
 
 
 # 1) Определяем отдельный хендлер прямо рядом с /convert, /points и т.д.
