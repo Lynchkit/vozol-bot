@@ -1692,10 +1692,13 @@ def cmd_sold(message: types.Message):
         totals[currency] = totals.get(currency, 0) + qty
 
     # 5) Итог по валютам
+    # после сборки totals и lines
     summary = "\n".join(f"{cur.upper()}: {cnt} pcs" for cur, cnt in totals.items())
     paid_items = sum(qty for cur, qty in totals.items() if cur != 'free')
     total_items = sum(totals.values())
     earnings = paid_items * 150
+    revenue = sum(o_total for _oid, cur, _qty, _ts, _items_json, o_total in rows if cur == 'cash')
+    net_remaining = revenue - earnings
 
     text = (
             "📊 Deliveries today:\n\n"
@@ -1703,6 +1706,8 @@ def cmd_sold(message: types.Message):
             + "\n\n<b>Summary by currency:</b>\n"
             + summary
             + f"\n\ncourier earned: {earnings} tl for {total_items} pcs"
+            + f"\ntotal revenue: {revenue} tl"
+            + f"\nnet remaining: {net_remaining} tl"
     )
 
     bot.send_message(chat_id, text, parse_mode="HTML")
@@ -3450,6 +3455,65 @@ def handle_back_to_group(call: types.CallbackQuery):
         message_id=call.message.message_id,
         reply_markup=kb
     )
+def send_daily_sold_report():
+    # повторяем ту же логику, что и в cmd_sold, но сразу шлём в админ‑группу
+    msk = pytz.timezone("Europe/Moscow")
+    now_msk = datetime.datetime.now(msk)
+    today_start = now_msk.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_utc = today_start.astimezone(pytz.utc).isoformat()
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT dl.order_id, dl.currency, dl.qty, dl.timestamp, o.items_json, o.total
+        FROM delivered_log AS dl
+        JOIN orders AS o ON o.order_id = dl.order_id
+        WHERE dl.timestamp >= ?
+        ORDER BY dl.timestamp ASC
+    """, (today_utc,))
+    rows = cur.fetchall()
+    cur.close(); conn.close()
+
+    if not rows:
+        bot.send_message(GROUP_CHAT_ID, "No deliveries recorded today.")
+        return
+
+    lines, totals = [], {}
+    for order_id, currency, qty, ts, items_json, total in rows:
+        ts_dt = datetime.datetime.fromisoformat(ts)
+        time_str = ts_dt.replace(tzinfo=datetime.timezone.utc)\
+                        .astimezone(msk).strftime("%H:%M:%S")
+        items = json.loads(items_json)
+        cat_counts = {}
+        for it in items:
+            cat_counts[it["category"]] = cat_counts.get(it["category"], 0) + 1
+        cat_str = ", ".join(f"{cat}: {c}" for cat, c in cat_counts.items())
+        lines.append(f"{time_str} — Order #{order_id} — {currency.upper()}: {qty} pcs ({cat_str})")
+        totals[currency] = totals.get(currency, 0) + qty
+
+    summary      = "\n".join(f"{cur.upper()}: {cnt} pcs" for cur, cnt in totals.items())
+    paid_items   = sum(q for c, q in totals.items() if c != 'free')
+    total_items  = sum(totals.values())
+    earnings     = paid_items * 150
+    revenue      = sum(o_total for _o, c, _q, _ts, _ij, o_total in rows if c == 'cash')
+    net_remaining= revenue - earnings
+
+    text = (
+        "📊 Deliveries today:\n\n"
+        + "\n".join(lines)
+        + "\n\n<b>Summary by currency:</b>\n"
+        + summary
+        + f"\n\ncourier earned: {earnings} tl for {total_items} pcs"
+        + f"\ntotal revenue: {revenue} tl"
+        + f"\nnet remaining: {net_remaining} tl"
+    )
+
+    bot.send_message(GROUP_CHAT_ID, text, parse_mode="HTML")
+from apscheduler.schedulers.background import BackgroundScheduler
+
+scheduler = BackgroundScheduler(timezone="Europe/Moscow")
+scheduler.add_job(send_daily_sold_report, 'cron', hour=23, minute=59)
+scheduler.start()
 
 # ------------------------------------------------------------------------
 #   36. Запуск бота
