@@ -1646,50 +1646,87 @@ def cmd_payment(message):
 def cmd_sold(message):
     chat_id = message.chat.id
 
-    # 1) compute start of today in moscow time and convert to utc
+    # 1) compute start of today in moscow time and convert to UTC
     moscow_tz = pytz.timezone("Europe/Moscow")
     now_moscow = datetime.datetime.now(moscow_tz)
     start_of_day_moscow = now_moscow.replace(hour=0, minute=0, second=0, microsecond=0)
     start_of_day_utc = start_of_day_moscow.astimezone(pytz.utc).isoformat()
 
-    # 2) fetch all 'cash' deliveries since start of today
+    # 2) fetch all deliveries since start of today
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT dl.order_id,
-               o.total    AS order_total_try,
-               dl.qty     AS items_qty
+        SELECT dl.timestamp,
+               dl.order_id,
+               dl.currency,
+               dl.qty,
+               o.items_json,
+               o.total       AS order_total_try
         FROM delivered_log AS dl
         JOIN orders        AS o  ON o.order_id = dl.order_id
         WHERE dl.timestamp >= ?
-          AND dl.currency  = 'cash'
+        ORDER BY dl.timestamp ASC
     """, (start_of_day_utc,))
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
 
-    # 3) if none, notify and exit
+    # 3) if no deliveries, notify and exit
     if not rows:
-        bot.send_message(chat_id, "No cash deliveries recorded today.")
+        bot.send_message(chat_id, "No deliveries recorded today.")
         return
 
-    # 4) calculate total revenue (₺) and total items sold
-    total_revenue = sum(row[1] for row in rows)
-    total_items   = sum(row[2] for row in rows)
+    # 4) build detailed lines and accumulate stats
+    detail_lines = []
+    summary_by_currency = {}
+    cash_revenue = 0
+    cash_qty = 0
 
-    # 5) courier earns 150₺ per item
-    courier_earnings = total_items * 150
+    for ts, order_id, currency, qty, items_json, order_total in rows:
+        # timestamp → moscow local time
+        ts_dt = datetime.datetime.fromisoformat(ts).replace(tzinfo=datetime.timezone.utc)
+        time_str = ts_dt.astimezone(moscow_tz).strftime("%H:%M:%S")
 
-    # 6) remaining revenue after courier payout
-    remaining_revenue = total_revenue - courier_earnings
+        # parse items for breakdown
+        items = json.loads(items_json)
+        item_strs = [f"{i['flavor']} — {i['price']}₺" for i in items]
+        items_repr = ", ".join(item_strs)
 
-    # 7) send summary
-    summary = (
-        f"📊 cash revenue today: {total_revenue}₺\n"
+        detail_lines.append(
+            f"{time_str} — Order #{order_id} — {currency.upper()}: {qty} pcs ({items_repr})"
+        )
+
+        # summary by currency
+        summary_by_currency[currency] = summary_by_currency.get(currency, 0) + qty
+
+        # accumulate cash metrics
+        if currency.lower() == 'cash':
+            cash_revenue += order_total
+            cash_qty     += qty
+
+    # 5) format summary by currency
+    summary_lines = ["Summary by currency:"]
+    for cur, cnt in summary_by_currency.items():
+        summary_lines.append(f"{cur.upper()}: {cnt} pcs")
+    summary_text = "\n".join(summary_lines)
+
+    # 6) compute courier payout and remaining
+    courier_earnings   = cash_qty * 150
+    remaining_revenue  = cash_revenue - courier_earnings
+
+    # 7) send the full report
+    report = (
+        "📊 Deliveries today:\n\n"
+        + "\n".join(detail_lines)
+        + "\n\n"
+        + summary_text
+        + "\n\n"
+        f"📊 cash revenue today: {cash_revenue}₺\n"
         f"🏃‍♂️ courier earnings: {courier_earnings}₺\n"
         f"💰 remaining revenue: {remaining_revenue}₺"
     )
-    bot.send_message(chat_id, summary)
+    bot.send_message(chat_id, report)
+
 
 
 
