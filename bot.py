@@ -11,6 +11,93 @@ import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
 from telebot import TeleBot, types
 
+def compose_sold_report() -> str:
+    """
+    собирает из БД данные по доставкам с начала текущего дня
+    и возвращает готовый текст отчёта
+    """
+    import datetime, pytz, json
+    from sqlite3 import connect
+
+    # 1. считаем начало дня в МСК и переводим в UTC
+    moscow_tz = pytz.timezone("Europe/Moscow")
+    now_msk = datetime.datetime.now(moscow_tz)
+    start_msk = now_msk.replace(hour=0, minute=0, second=0, microsecond=0)
+    start_utc = start_msk.astimezone(pytz.utc).isoformat()
+
+    # 2. вытаскиваем записи
+    conn = connect(DB_PATH, check_same_thread=False)
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT dl.timestamp, dl.order_id, dl.currency, dl.qty, o.items_json, o.total
+        FROM delivered_log dl
+        JOIN orders o ON o.order_id = dl.order_id
+        WHERE dl.timestamp >= ?
+        ORDER BY dl.timestamp ASC
+    """, (start_utc,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    if not rows:
+        return "📊 deliveries report: no deliveries recorded today."
+
+    # 3. собираем детали и сводку
+    # (скопируйте сюда ту же логику, что в cmd_sold, по формированию detail_lines, summary и т.п.)
+    detail_lines = []
+    summary_by_currency = {}
+    cash_revenue = 0
+    delivered_qty_exc_free = 0
+    for ts, order_id, currency, qty, items_json, order_total in rows:
+        ts_dt = datetime.datetime.fromisoformat(ts).replace(tzinfo=datetime.timezone.utc)
+        time_str = ts_dt.astimezone(moscow_tz).strftime("%H:%M:%S")
+        items = json.loads(items_json)
+        items_repr = ", ".join(f"{i['flavor']} — {i['price']}₺" for i in items)
+        detail_lines.append(f"{time_str} — order #{order_id} — {currency.upper()}: {qty} pcs ({items_repr})")
+
+        summary_by_currency[currency] = summary_by_currency.get(currency, 0) + qty
+        if currency.lower() != 'free':
+            delivered_qty_exc_free += qty
+        if currency.lower() == 'cash':
+            cash_revenue += order_total
+
+    summary_lines = ["summary by currency:"]
+    for cur_name, cnt in summary_by_currency.items():
+        summary_lines.append(f"{cur_name.upper()}: {cnt} pcs")
+
+    courier_pay = delivered_qty_exc_free * 150
+    remaining = cash_revenue - courier_pay
+
+    # 4. собираем финальный текст
+    report = (
+        "📊 deliveries today:\n\n"
+        + "\n".join(detail_lines)
+        + "\n\n" + "\n".join(summary_lines)
+        + f"\n\ncash revenue: {cash_revenue}₺"
+        + f"\ncourier earnings: {courier_pay}₺"
+        + f"\nremaining revenue: {remaining}₺"
+    )
+    return report
+
+
+def send_daily_sold_report():
+    report = compose_sold_report()
+    bot.send_message(GROUP_CHAT_ID, report)
+
+    # 2) подключаем планировщик и запускаем его перед polling’ом
+    if __name__ == "__main__":
+        from apscheduler.schedulers.background import BackgroundScheduler
+        import pytz
+
+        scheduler = BackgroundScheduler(timezone=pytz.timezone("Europe/Istanbul"))
+        scheduler.add_job(send_daily_sold_report, 'cron', hour=00, minute=45)
+        scheduler.start()
+
+        bot.delete_webhook()
+        bot.infinity_polling(timeout=10, long_polling_timeout=5)
+
+
+
 def _normalize(text: str) -> str:
     """
     Убирает эмодзи и любые спецсимволы, заменяя их на пробел,
@@ -1641,97 +1728,12 @@ def cmd_payment(message):
     bot.send_message(chat_id, "Артур Маратович (RUB)")
 
 
+
 @ensure_user
 @bot.message_handler(commands=['sold'])
 def cmd_sold(message):
-    chat_id = message.chat.id
-
-    # 1) compute start of today in moscow time and convert to UTC
-    moscow_tz = pytz.timezone("Europe/Moscow")
-    now_moscow = datetime.datetime.now(moscow_tz)
-    start_of_day_moscow = now_moscow.replace(hour=0, minute=0, second=0, microsecond=0)
-    start_of_day_utc = start_of_day_moscow.astimezone(pytz.utc).isoformat()
-
-    # 2) fetch all deliveries since start of today
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT dl.timestamp,
-               dl.order_id,
-               dl.currency,
-               dl.qty,
-               o.items_json,
-               o.total       AS order_total_try
-        FROM delivered_log AS dl
-        JOIN orders        AS o  ON o.order_id = dl.order_id
-        WHERE dl.timestamp >= ?
-        ORDER BY dl.timestamp ASC
-    """, (start_of_day_utc,))
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-
-    # 3) if no deliveries, notify and exit
-    if not rows:
-        bot.send_message(chat_id, "No deliveries recorded today.")
-        return
-
-    # 4) build detailed lines and accumulate stats
-    detail_lines = []
-    summary_by_currency = {}
-    cash_revenue = 0
-    delivered_qty_exc_free = 0
-
-    for ts, order_id, currency, qty, items_json, order_total in rows:
-        # timestamp → moscow local time
-        ts_dt = datetime.datetime.fromisoformat(ts).replace(tzinfo=datetime.timezone.utc)
-        time_str = ts_dt.astimezone(moscow_tz).strftime("%H:%M:%S")
-
-        # parse items for breakdown
-        items = json.loads(items_json)
-        item_strs = [f"{i['flavor']} — {i['price']}₺" for i in items]
-        items_repr = ", ".join(item_strs)
-
-        detail_lines.append(
-            f"{time_str} — Order #{order_id} — {currency.upper()}: {qty} pcs ({items_repr})"
-        )
-
-        # summary by currency
-        summary_by_currency[currency] = summary_by_currency.get(currency, 0) + qty
-
-        # count all delivered items except those marked FREE
-        if currency.lower() != 'free':
-            delivered_qty_exc_free += qty
-
-        # accumulate revenue only for cash payments
-        if currency.lower() == 'cash':
-            cash_revenue += order_total
-
-    # 5) format summary by currency
-    summary_lines = ["Summary by currency:"]
-    for cur, cnt in summary_by_currency.items():
-        summary_lines.append(f"{cur.upper()}: {cnt} pcs")
-    summary_text = "\n".join(summary_lines)
-
-    # 6) compute courier payout and remaining
-    courier_earnings  = delivered_qty_exc_free * 150
-    remaining_revenue = cash_revenue - courier_earnings
-
-    # 7) send the full report
-    report = (
-        "📊 Deliveries today:\n\n"
-        + "\n".join(detail_lines)
-        + "\n\n"
-        + summary_text
-        + "\n\n"
-        f"📊 cash revenue today: {cash_revenue}₺\n"
-        f"🏃‍♂️ courier earnings: {courier_earnings}₺\n"
-        f"💰 remaining revenue: {remaining_revenue}₺"
-    )
-    bot.send_message(chat_id, report)
-
-
-
+    report = compose_sold_report()
+    bot.send_message(GROUP_CHAT_ID, report)
 
 
 # 1) Определяем отдельный хендлер прямо рядом с /convert, /points и т.д.
