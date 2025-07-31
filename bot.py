@@ -3482,7 +3482,7 @@ if __name__ == "__main__":
     scheduler.add_job(
         send_daily_sold_report,
         trigger='cron',
-        hour=3,
+        hour=23,
         minute=55,
         timezone=moscow_tz    # <- убеждаемся, что триггер знает, что это МСК
     )
