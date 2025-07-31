@@ -3480,10 +3480,11 @@ if __name__ == "__main__":
 
     scheduler.add_job(
         send_daily_sold_report,
-        trigger='interval',
-        minutes=1
+        trigger='cron',
+        hour=3,
+        minute=43
     )
-
+    
     scheduler.start()
     print("Scheduled jobs:", scheduler.get_jobs())
 
