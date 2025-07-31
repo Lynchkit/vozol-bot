@@ -3472,23 +3472,28 @@ def handle_back_to_group(call: types.CallbackQuery):
 #   36. Запуск бота
 # ------------------------------------------------------------------------
 if __name__ == "__main__":
-    from apscheduler.schedulers.background import BackgroundScheduler
-    import pytz
+    # 1) Определяем московскую зону
+    moscow_tz = pytz.timezone("Europe/Moscow")
 
-    # собрали планировщик с Московским часом
-    scheduler = BackgroundScheduler(timezone=pytz.timezone("Europe/Moscow"))
+    # 2) Создаём BackgroundScheduler с московской TZ
+    scheduler = BackgroundScheduler(timezone=moscow_tz)
 
+    # 3) Добавляем задачу ежедневно в 23:55 МСК
     scheduler.add_job(
         send_daily_sold_report,
         trigger='cron',
         hour=3,
-        minute=43
+        minute=48,
+        timezone=moscow_tz    # <- убеждаемся, что триггер знает, что это МСК
     )
-    
-    scheduler.start()
-    print("Scheduled jobs:", scheduler.get_jobs())
 
-    # сразу после старта планировщика запускаем бота
+    scheduler.start()
+
+    # 4) Для отладки посмотрим, когда следующая отработка
+    for job in scheduler.get_jobs():
+        print("Next run (UTC):", job.next_run_time)
+
+    # 5) Запускаем бота
     bot.delete_webhook()
     bot.infinity_polling(timeout=10, long_polling_timeout=5)
 
