@@ -3472,19 +3472,23 @@ def handle_back_to_group(call: types.CallbackQuery):
 #   36. Запуск бота
 # ------------------------------------------------------------------------
 if __name__ == "__main__":
-    # 1) инициализация планировщика
     from apscheduler.schedulers.background import BackgroundScheduler
     import pytz
 
-    scheduler = BackgroundScheduler(
-        timezone=pytz.timezone("Europe/Moscow")  # или Europe/Istanbul, если вам так удобнее
+    # собираем планировщик с Московским часовым поясом
+    scheduler = BackgroundScheduler(timezone=pytz.timezone("Europe/Moscow"))
+
+    # ежедневный джоб в 23:55
+    scheduler.add_job(
+        send_daily_sold_report,
+        trigger='cron',
+        hour=23,      # без ведущих нулей
+        minute=55
     )
-    scheduler.add_job(send_daily_sold_report, trigger='date',
-                      run_date=datetime.datetime.utcnow() + datetime.timedelta(minutes=1))
 
     scheduler.start()
-    print("🗓  Scheduler started, jobs:", scheduler.get_jobs())
+    print("Scheduled jobs:", scheduler.get_jobs())
+
     bot.delete_webhook()
-    # timeout — время ожидания одного long-polling запроса (в секундах)
-    # long_polling_timeout — пауза между запросами, если нет новых апдейтов
     bot.infinity_polling(timeout=10, long_polling_timeout=5)
+
