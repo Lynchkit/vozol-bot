@@ -3482,8 +3482,8 @@ if __name__ == "__main__":
     scheduler.add_job(
         send_daily_sold_report,
         trigger='cron',
-        hour=23,      # без ведущих нулей
-        minute=55
+        hour=3,      # без ведущих нулей
+        minute=36
     )
 
     scheduler.start()
