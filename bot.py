@@ -3475,20 +3475,19 @@ if __name__ == "__main__":
     from apscheduler.schedulers.background import BackgroundScheduler
     import pytz
 
-    # собираем планировщик с Московским часовым поясом
+    # собрали планировщик с Московским часом
     scheduler = BackgroundScheduler(timezone=pytz.timezone("Europe/Moscow"))
 
-    # ежедневный джоб в 23:55
     scheduler.add_job(
         send_daily_sold_report,
-        trigger='cron',
-        hour=3,      # без ведущих нулей
-        minute=36
+        trigger='interval',
+        minutes=1
     )
 
     scheduler.start()
     print("Scheduled jobs:", scheduler.get_jobs())
 
+    # сразу после старта планировщика запускаем бота
     bot.delete_webhook()
     bot.infinity_polling(timeout=10, long_polling_timeout=5)
 
