@@ -1632,7 +1632,7 @@ def cmd_payment(message):
     # 4) Сеть
     bot.send_message(chat_id, "Tron (TRC-20)")
     # 5) Карта
-    bot.send_message(chat_id, "4441 1115 7718 424")
+    bot.send_message(chat_id, "4441111157718424")
     # 6) Валюта
     bot.send_message(chat_id, "Grivne Vlad")
     # 7) Контакт
