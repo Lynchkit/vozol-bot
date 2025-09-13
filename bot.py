@@ -1272,7 +1272,7 @@ def handle_comment_input(message):
         rub = round(total_after * rates.get("RUB", 0) + 500, 2)
         usd = round(total_after * rates.get("USD", 0) + 2, 2)
         eur = round(total_after * rates.get("EUR", 0) + 2, 2)  # евро
-        uah = round(total_after * rates.get("UAH", 0) + 200, 2)
+        uah = round(total_after * rates.get("UAH", 0) + 350, 2)
         conv = f"({rub}₽, ${usd}, €{eur}, ₴{uah})"
 
         # Русский
