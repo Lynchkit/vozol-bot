@@ -1314,7 +1314,18 @@ def handle_comment_input(message):
             t(chat_id, "order_accepted"),
             reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
                               .add(f"➕ {t(chat_id, 'add_more')}")
+
         )
+        # Отправляем пользователю полную историю заказа (как админам)
+        user_order_summary = (
+            f"📋 Ваш заказ:\n\n"
+            f"{summary}\n\n"
+            f"Итог: {total_after}₺ {conv}\n"
+            f"📍 Адрес: {data.get('address', '—')}\n"
+            f"📱 Контакт: {data.get('contact', '—')}\n"
+            f"💬 Комментарий: {data.get('comment', '—')}"
+        )
+        bot.send_message(chat_id, user_order_summary)
 
         # Сбрасываем состояние
         data.update({
