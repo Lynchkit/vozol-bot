@@ -1291,10 +1291,11 @@ def handle_comment_input(message):
             f"📥 New order from @{message.from_user.username or message.from_user.first_name}:\n\n"
             f"{summary}\n\n"
             f"Total: {total_after}₺ {conv}\n"
-            f"📍 Address: {data.get('address','—')}\n"
-            f"📱 Contact: {data.get('contact','—')}\n"
-            f"💬 Comment: {translate_to_en(data.get('comment',''))}"
+            f"📍 Address: {translate_to_en(data.get('address', '—'))}\n"
+            f"📱 Contact: {data.get('contact', '—')}\n"
+            f"💬 Comment: {translate_to_en(data.get('comment', ''))}"
         )
+
         kb = types.InlineKeyboardMarkup(row_width=2)
         kb.add(
             types.InlineKeyboardButton(
