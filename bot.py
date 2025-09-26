@@ -408,8 +408,10 @@ def edit_action_keyboard() -> types.ReplyKeyboardMarkup:
     kb.add("➕ Add Category", "➖ Remove Category", "✏️ Rename Category")
     kb.add("💲 Fix Price", "ALL IN", "🔄 Actual Flavor")
     kb.add("🖼️ Add Category Picture", "Set Category Flavor to 0")
+    kb.add("📦 New Supply")  # новая кнопка
     kb.add("⬅️ Back", "❌ Cancel")
     return kb
+
 # ------------------------------------------------------------------------
 #   13. Планировщик – еженедельный дайджест (необязательно)
 # ------------------------------------------------------------------------
@@ -1479,6 +1481,28 @@ def cmd_change(message):
     })
     bot.send_message(chat_id, "Menu editing: choose action", reply_markup=edit_action_keyboard())
     user_data[chat_id] = data
+@ensure_user
+@bot.message_handler(func=lambda m: m.text == "📦 New Supply")
+def handle_new_supply(message):
+    if message.chat.id not in ADMINS:
+        return bot.reply_to(message, "У вас нет доступа.")
+
+    # Берём всех пользователей из базы
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT chat_id FROM users")
+    users = [row[0] for row in cur.fetchall()]
+    cur.close()
+    conn.close()
+
+    # Шлём каждому сообщение
+    for uid in users:
+        try:
+            bot.send_message(uid, "🚚 Новая поставка прибыла. Проверь меню 🙂")
+        except Exception as e:
+            print(f"Не удалось отправить сообщение {uid}: {e}")
+
+    bot.reply_to(message, "✅ Сообщение о новой поставке разослано всем пользователям.")
 
 @bot.message_handler(commands=['stock'])
 def cmd_stock(message: types.Message):
