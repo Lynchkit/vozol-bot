@@ -1797,6 +1797,34 @@ def cmd_stats(message: types.Message):
     )
     bot.send_message(message.chat.id, report)
 
+
+@ensure_user
+@bot.message_handler(commands=['users'])
+def cmd_users(message):
+    if message.chat.id not in ADMINS:
+        return bot.reply_to(message, "У вас нет доступа.")
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    # Общее количество пользователей
+    cur.execute("SELECT COUNT(*) FROM users")
+    total_users = cur.fetchone()[0]
+
+    # Последние 10 зарегистрированных
+    cur.execute("SELECT chat_id, referral_code FROM users ORDER BY rowid DESC LIMIT 10")
+    recent = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    lines = [f"Всего пользователей: {total_users}", "", "Последние 10 зарегистрированных:"]
+    for uid, ref in recent:
+        lines.append(f"• {uid} (ref: {ref})")
+
+    bot.send_message(message.chat.id, "\n".join(lines))
+
+
 @ensure_user
 @bot.message_handler(commands=['review'])
 def cmd_review(message):
