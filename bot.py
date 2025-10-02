@@ -1318,22 +1318,27 @@ def handle_comment_input(message):
         f"📍 Адрес: {address_display}\n"
 
         # Русский
+        address_display = get_address_display(data)
+
         full_rus = (
             f"📥 Новый заказ от @{message.from_user.username or message.from_user.first_name}:\n\n"
             f"{summary}\n\n"
             f"Итог: {total_after}₺ {conv}\n"
-            f"📍 Адрес: {data.get('address','—')}\n"
-            f"📱 Контакт: {data.get('contact','—')}\n"
-            f"💬 Комментарий: {data.get('comment','—')}"
+            f"📍 Адрес: {address_display}\n"
+            f"📱 Контакт: {data.get('contact', '—')}\n"
+            f"💬 Комментарий: {data.get('comment', '—')}"
         )
+
         bot.send_message(PERSONAL_CHAT_ID, full_rus)
 
         # Английский с кнопкой отмены
+        address_display = get_address_display(data)
+
         full_en = (
             f"📥 New order from @{message.from_user.username or message.from_user.first_name}:\n\n"
             f"{summary}\n\n"
             f"Total: {total_after}₺ {conv}\n"
-            f"📍 Address: {translate_to_en(data.get('address', '—'))}\n"
+            f"📍 Address: {address_display}\n"
             f"📱 Contact: {data.get('contact', '—')}\n"
             f"💬 Comment: {translate_to_en(data.get('comment', ''))}"
         )
