@@ -1046,8 +1046,6 @@ def handle_points_input(message):
 # ------------------------------------------------------------------------
 #   26. Handler: ввод адреса
 # ------------------------------------------------------------------------
-from urllib.parse import quote_plus
-
 @ensure_user
 @bot.message_handler(
     func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_address"),
@@ -1058,20 +1056,21 @@ def handle_address_input(message):
     data = user_data.get(chat_id, {})
     text = message.text or ""
 
-    # 🔙 Кнопка "Назад"
+    # ИСПРАВЛЁННЫЙ ВАРИАНТ
+
     if text == t(chat_id, "back"):
         data['wait_for_address'] = False
         data['current_category'] = None
+        # 1) Убираем клавиатуру запроса локации
         bot.send_message(chat_id,
                          t(chat_id, "choose_category"),
                          reply_markup=types.ReplyKeyboardRemove())
+        # 2) Показываем основное inline-меню
         bot.send_message(chat_id,
                          t(chat_id, "choose_category"),
                          reply_markup=get_inline_main_menu(chat_id))
-        user_data[chat_id] = data
         return
 
-    # Подсказка для "Выбрать на карте"
     if text == t(None, "choose_on_map"):
         bot.send_message(
             chat_id,
@@ -1080,63 +1079,27 @@ def handle_address_input(message):
         )
         return
 
-    address_text = None
-    address_lat = None
-    address_lon = None
-
-    # venue (место) — есть и адрес и координаты
-    if message.content_type == 'venue' and getattr(message, "venue", None):
+    if message.content_type == 'venue' and message.venue:
         v = message.venue
-        address_text = ", ".join(filter(None, [v.title, v.address]))
-        if getattr(v, "location", None):
-            address_lat = v.location.latitude
-            address_lon = v.location.longitude
-
-    # location (координаты)
-    elif message.content_type == 'location' and getattr(message, "location", None):
-        address_lat = message.location.latitude
-        address_lon = message.location.longitude
-
-    # пользователь выбрал ввод текста
+        address = f"{v.title}, {v.address}\n🌍 https://maps.google.com/?q={v.location.latitude},{v.location.longitude}"
+    elif message.content_type == 'location' and message.location:
+        lat, lon = message.location.latitude, message.location.longitude
+        address = f"🌍 https://maps.google.com/?q={lat},{lon}"
     elif text == t(None, "enter_address_text"):
         bot.send_message(chat_id, t(chat_id, "enter_address"), reply_markup=types.ReplyKeyboardRemove())
         return
-
-    # простой текстовый адрес
     elif message.content_type == 'text' and message.text:
-        address_text = message.text.strip()
-
+        address = message.text.strip()
     else:
         bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=address_keyboard())
         return
 
-    # Формируем user-friendly URL: сначала по координатам, иначе — поисковая ссылка по тексту
-    address_url = None
-    if address_lat is not None and address_lon is not None:
-        address_url = f"https://maps.google.com/?q={address_lat},{address_lon}"
-    elif address_text:
-        address_url = f"https://www.google.com/search?q={quote_plus(address_text)}"
-
-    # Сохраняем структурировано (чтобы не терять данные и удобно проверять)
-    data['address_text'] = address_text or ""
-    data['address_lat'] = address_lat
-    data['address_lon'] = address_lon
-    data['address_url'] = address_url or ""
+    data['address'] = address
     data['wait_for_address'] = False
     data['wait_for_contact'] = True
-    user_data[chat_id] = data
-
     kb = contact_keyboard()
-    # Подтверждаем пользователю, что адрес сохранён и даём ссылку для проверки
-    confirmation = "✅ Адрес сохранён."
-    if address_url:
-        confirmation += "\n\n📍 Сохранённый адрес (откройте по ссылке):\n" + address_url
-    elif address_text:
-        confirmation += "\n\n📍 Сохранённый адрес:\n" + address_text
-
-    bot.send_message(chat_id, confirmation, reply_markup=kb)
-
-
+    bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=kb)
+    user_data[chat_id] = data
 
 
 # ------------------------------------------------------------------------
@@ -1313,32 +1276,24 @@ def handle_comment_input(message):
         eur = round(total_after * rates.get("EUR", 0) + 2, 2)  # евро
         uah = round(total_after * rates.get("UAH", 0) + 350, 2)
         conv = f"({rub}₽, ${usd}, €{eur}, ₴{uah})"
-        address_display = get_address_display(data)
-        # затем в тексте:
-        f"📍 Адрес: {address_display}\n"
 
         # Русский
-        address_display = get_address_display(data)
-
         full_rus = (
             f"📥 Новый заказ от @{message.from_user.username or message.from_user.first_name}:\n\n"
             f"{summary}\n\n"
             f"Итог: {total_after}₺ {conv}\n"
-            f"📍 Адрес: {address_display}\n"
-            f"📱 Контакт: {data.get('contact', '—')}\n"
-            f"💬 Комментарий: {data.get('comment', '—')}"
+            f"📍 Адрес: {data.get('address','—')}\n"
+            f"📱 Контакт: {data.get('contact','—')}\n"
+            f"💬 Комментарий: {data.get('comment','—')}"
         )
-
         bot.send_message(PERSONAL_CHAT_ID, full_rus)
 
         # Английский с кнопкой отмены
-        address_display = get_address_display(data)
-
         full_en = (
             f"📥 New order from @{message.from_user.username or message.from_user.first_name}:\n\n"
             f"{summary}\n\n"
             f"Total: {total_after}₺ {conv}\n"
-            f"📍 Address: {address_display}\n"
+            f"📍 Address: {translate_to_en(data.get('address', '—'))}\n"
             f"📱 Contact: {data.get('contact', '—')}\n"
             f"💬 Comment: {translate_to_en(data.get('comment', ''))}"
         )
@@ -1467,20 +1422,6 @@ def handle_comment_input(message):
         user_data[chat_id] = data
         return
 
-# ------------------------------------------------------------------------
-#   Вспомогательные функции
-# ------------------------------------------------------------------------
-
-def get_address_display(data):
-    # Возвращает наиболее подходящее представление адреса для показа в сообщении
-    if not data:
-        return "—"
-    if data.get('address_url'):
-        return data['address_url']
-    if data.get('address_text'):
-        return data['address_text']
-    # старое поле на всякий случай
-    return data.get('address', '—')
 
 # ------------------------------------------------------------------------
 #   29. /change: перевод в режим редактирования меню (только на английском)
