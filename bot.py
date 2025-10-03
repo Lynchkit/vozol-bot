@@ -1081,14 +1081,10 @@ def handle_address_input(message):
 
     if message.content_type == 'venue' and message.venue:
         v = message.venue
-        lat = v.location.latitude
-        lon = v.location.longitude
-        maps_url = f"https://www.google.com/maps/search/?api=1&query={lat:.6f},{lon:.6f}"
-        address = f"{v.title}, {v.address}\n🌍 {maps_url}"
+        address = f"{v.title}, {v.address}\n🌍 https://maps.google.com/?q={v.location.latitude},{v.location.longitude}"
     elif message.content_type == 'location' and message.location:
         lat, lon = message.location.latitude, message.location.longitude
-        maps_url = f"https://www.google.com/maps/search/?api=1&query={lat:.6f},{lon:.6f}"
-        address = f"🌍 {maps_url}"
+        address = f"🌍 https://maps.google.com/?q={lat},{lon}"
     elif text == t(None, "enter_address_text"):
         bot.send_message(chat_id, t(chat_id, "enter_address"), reply_markup=types.ReplyKeyboardRemove())
         return
@@ -1297,7 +1293,7 @@ def handle_comment_input(message):
             f"📥 New order from @{message.from_user.username or message.from_user.first_name}:\n\n"
             f"{summary}\n\n"
             f"Total: {total_after}₺ {conv}\n"
-            f"📍 Address: {translate_to_en(data.get('address', '—'))}\n"
+            f"📍 Address: {data.get('address', '—')}\n"  # <-- без перевода
             f"📱 Contact: {data.get('contact', '—')}\n"
             f"💬 Comment: {translate_to_en(data.get('comment', ''))}"
         )
