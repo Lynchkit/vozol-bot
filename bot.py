@@ -1081,10 +1081,10 @@ def handle_address_input(message):
 
     if message.content_type == 'venue' and message.venue:
         v = message.venue
-        address = f"{v.title}, {v.address}\n🌍 https://maps.google.com/?q={v.location.latitude},{v.location.longitude}"
+        address = f"{v.title}, {v.address}\n🌍 https://www.google.com/maps/search/?api=1&query={v.location.latitude:.6f},{v.location.longitude:.6f}"
     elif message.content_type == 'location' and message.location:
         lat, lon = message.location.latitude, message.location.longitude
-        address = f"🌍 https://maps.google.com/?q={lat},{lon}"
+        address = f"🌍 https://www.google.com/maps/search/?api=1&query={lat:.6f},{lon:.6f}"
     elif text == t(None, "enter_address_text"):
         bot.send_message(chat_id, t(chat_id, "enter_address"), reply_markup=types.ReplyKeyboardRemove())
         return
