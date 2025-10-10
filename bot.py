@@ -408,8 +408,10 @@ def edit_action_keyboard() -> types.ReplyKeyboardMarkup:
     kb.add("➕ Add Category", "➖ Remove Category", "✏️ Rename Category")
     kb.add("💲 Fix Price", "ALL IN", "🔄 Actual Flavor")
     kb.add("🖼️ Add Category Picture", "Set Category Flavor to 0")
+    kb.add("📦 New Supply")  # новая кнопка
     kb.add("⬅️ Back", "❌ Cancel")
     return kb
+
 # ------------------------------------------------------------------------
 #   13. Планировщик – еженедельный дайджест (необязательно)
 # ------------------------------------------------------------------------
@@ -1291,10 +1293,11 @@ def handle_comment_input(message):
             f"📥 New order from @{message.from_user.username or message.from_user.first_name}:\n\n"
             f"{summary}\n\n"
             f"Total: {total_after}₺ {conv}\n"
-            f"📍 Address: {data.get('address','—')}\n"
-            f"📱 Contact: {data.get('contact','—')}\n"
-            f"💬 Comment: {translate_to_en(data.get('comment',''))}"
+            f"📍 Address: {data.get('address', '—')}\n"  # <-- без перевода
+            f"📱 Contact: {data.get('contact', '—')}\n"
+            f"💬 Comment: {translate_to_en(data.get('comment', ''))}"
         )
+
         kb = types.InlineKeyboardMarkup(row_width=2)
         kb.add(
             types.InlineKeyboardButton(
@@ -1314,7 +1317,18 @@ def handle_comment_input(message):
             t(chat_id, "order_accepted"),
             reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
                               .add(f"➕ {t(chat_id, 'add_more')}")
+
         )
+        # Отправляем пользователю полную историю заказа (как админам)
+        user_order_summary = (
+            f"📋 Ваш заказ:\n\n"
+            f"{summary}\n\n"
+            f"Итог: {total_after}₺ {conv}\n"
+            f"📍 Адрес: {data.get('address', '—')}\n"
+            f"📱 Контакт: {data.get('contact', '—')}\n"
+            f"💬 Комментарий: {data.get('comment', '—')}"
+        )
+        bot.send_message(chat_id, user_order_summary)
 
         # Сбрасываем состояние
         data.update({
@@ -1467,6 +1481,28 @@ def cmd_change(message):
     })
     bot.send_message(chat_id, "Menu editing: choose action", reply_markup=edit_action_keyboard())
     user_data[chat_id] = data
+@ensure_user
+@bot.message_handler(func=lambda m: m.text == "📦 New Supply")
+def handle_new_supply(message):
+    if message.chat.id not in ADMINS:
+        return bot.reply_to(message, "У вас нет доступа.")
+
+    # Берём всех пользователей из базы
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT chat_id FROM users")
+    users = [row[0] for row in cur.fetchall()]
+    cur.close()
+    conn.close()
+
+    # Шлём каждому сообщение
+    for uid in users:
+        try:
+            bot.send_message(uid, "🚚 Новая поставка прибыла. Проверь меню")
+        except Exception as e:
+            print(f"Не удалось отправить сообщение {uid}: {e}")
+
+    bot.reply_to(message, "✅ Сообщение о новой поставке разослано всем пользователям.")
 
 @bot.message_handler(commands=['stock'])
 def cmd_stock(message: types.Message):
@@ -1760,6 +1796,34 @@ def cmd_stats(message: types.Message):
         "\n".join(lines)
     )
     bot.send_message(message.chat.id, report)
+
+
+@ensure_user
+@bot.message_handler(commands=['users'])
+def cmd_users(message):
+    if message.chat.id not in ADMINS:
+        return bot.reply_to(message, "У вас нет доступа.")
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    # Общее количество пользователей
+    cur.execute("SELECT COUNT(*) FROM users")
+    total_users = cur.fetchone()[0]
+
+    # Последние 10 зарегистрированных
+    cur.execute("SELECT chat_id, referral_code FROM users ORDER BY rowid DESC LIMIT 10")
+    recent = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    lines = [f"Всего пользователей: {total_users}", "", "Последние 10 зарегистрированных:"]
+    for uid, ref in recent:
+        lines.append(f"• {uid} (ref: {ref})")
+
+    bot.send_message(message.chat.id, "\n".join(lines))
+
 
 @ensure_user
 @bot.message_handler(commands=['review'])
