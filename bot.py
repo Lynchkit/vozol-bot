@@ -1672,9 +1672,9 @@ def cmd_payment(message):
     # 6) Валюта
     bot.send_message(chat_id, "Grivne Vlad")
     # 7) Контакт
-    bot.send_message(chat_id, "+7 996 996 12 99")
+    bot.send_message(chat_id, "+90 553 006 52 04")
     # Дополнительно Тинькофф в рублях
-    bot.send_message(chat_id, "Артур Маратович (RUB)")
+    bot.send_message(chat_id, "Артур Маратович (T BANK RUB)")
 
 # в самом верху вашего файла, сразу после импорта и констант:
 
