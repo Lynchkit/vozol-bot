@@ -1683,18 +1683,23 @@ def cmd_payment(message):
 
 def compose_sold_report() -> str:
     """
-    Собирает отчёт точно так же, как сейчас в теле cmd_sold, но возвращает строку.
+    Отчёт за сегодня:
+    - список доставок
+    - сводка по валютам
+    - общая выручка, выплаты курьеру, остаток
+    - остатки по категориям и общий остаток
+    - общее количество проданных штук
     """
     import datetime, pytz, json
     from sqlite3 import connect
 
-    # 1) начало дня в МСК → UTC
+    # 1️⃣ Начало текущего дня по Москве → UTC
     moscow_tz = pytz.timezone("Europe/Moscow")
     now_msk = datetime.datetime.now(moscow_tz)
     start_msk = now_msk.replace(hour=0, minute=0, second=0, microsecond=0)
     start_utc = start_msk.astimezone(pytz.utc).isoformat()
 
-    # 2) вытягиваем записи
+    # 2️⃣ Достаём сегодняшние доставки из БД
     conn = connect(DB_PATH, check_same_thread=False)
     cur = conn.cursor()
     cur.execute("""
@@ -1711,9 +1716,10 @@ def compose_sold_report() -> str:
     if not rows:
         return "📊 Deliveries report: no deliveries recorded today."
 
-    # 3) строим детали и сводку (копируете свою логику из cmd_sold)
+    # 3️⃣ Собираем данные по доставкам
     detail_lines = []
     summary_by_currency = {}
+    total_sold_today = 0
     cash_revenue = 0
     delivered_qty_exc_free = 0
 
@@ -1722,14 +1728,18 @@ def compose_sold_report() -> str:
         time_str = ts_dt.astimezone(moscow_tz).strftime("%H:%M:%S")
         items = json.loads(items_json)
         items_repr = ", ".join(f"{i['flavor']} — {i['price']}₺" for i in items)
+
         detail_lines.append(f"{time_str} — Order #{order_id} — {currency.upper()}: {qty} pcs ({items_repr})")
 
         summary_by_currency[currency] = summary_by_currency.get(currency, 0) + qty
+        total_sold_today += qty
+
         if currency.lower() != 'free':
             delivered_qty_exc_free += qty
         if currency.lower() == 'cash':
             cash_revenue += order_total
 
+    # 4️⃣ Сводка по валютам
     summary_lines = ["Summary by currency:"]
     for cur, cnt in summary_by_currency.items():
         summary_lines.append(f"{cur.upper()}: {cnt} pcs")
@@ -1737,15 +1747,30 @@ def compose_sold_report() -> str:
     courier_pay = delivered_qty_exc_free * 150
     remaining = cash_revenue - courier_pay
 
+    # 5️⃣ Остатки по категориям (без разбивки по вкусам)
+    total_stock_left = 0
+    stock_lines = ["\n📦 Current stock by category:"]
+    for cat, cat_data in menu.items():
+        cat_total = sum(int(itm.get("stock", 0)) for itm in cat_data.get("flavors", []))
+        total_stock_left += cat_total
+        stock_lines.append(f"• {cat}: {cat_total} pcs")
+
+    # 6️⃣ Итоги
+    stock_lines.append(f"\n🧾 Sold today: {total_sold_today} pcs")
+    stock_lines.append(f"📦 Remaining stock total: {total_stock_left} pcs")
+
+    # 7️⃣ Финальный текст
     report = (
         "📊 Deliveries today:\n\n"
         + "\n".join(detail_lines)
         + "\n\n" + "\n".join(summary_lines)
-        + f"\n\n📊 cash revenue: {cash_revenue}₺"
-        + f"\n🏃‍♂️ courier earnings: {courier_pay}₺"
-        + f"\n💰 remaining revenue: {remaining}₺"
+        + f"\n\n📊 Cash revenue: {cash_revenue}₺"
+        + f"\n🏃‍♂️ Courier earnings: {courier_pay}₺"
+        + f"\n💰 Remaining revenue: {remaining}₺"
+        + "\n\n" + "\n".join(stock_lines)
     )
     return report
+
 
 
 def send_daily_sold_report():
