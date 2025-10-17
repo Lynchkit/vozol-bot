@@ -1680,18 +1680,23 @@ def cmd_payment(message):
 
 def compose_sold_report() -> str:
     """
-    Собирает отчёт точно так же, как сейчас в теле cmd_sold, но возвращает строку.
+    Generates the daily delivery report (English version).
+    Includes:
+      • Total items sold today
+      • Sales breakdown by categories
+      • Stock by categories
+      • Total stock remaining
     """
     import datetime, pytz, json
     from sqlite3 import connect
 
-    # 1) начало дня в МСК → UTC
+    # 1) Start of the day in Moscow → UTC
     moscow_tz = pytz.timezone("Europe/Moscow")
     now_msk = datetime.datetime.now(moscow_tz)
     start_msk = now_msk.replace(hour=0, minute=0, second=0, microsecond=0)
     start_utc = start_msk.astimezone(pytz.utc).isoformat()
 
-    # 2) вытягиваем записи
+    # 2) Fetch today's delivered orders
     conn = connect(DB_PATH, check_same_thread=False)
     cur = conn.cursor()
     cur.execute("""
@@ -1708,16 +1713,26 @@ def compose_sold_report() -> str:
     if not rows:
         return "📊 Deliveries report: no deliveries recorded today."
 
-    # 3) строим детали и сводку (копируете свою логику из cmd_sold)
+    # 3) Build details and summary
     detail_lines = []
     summary_by_currency = {}
     cash_revenue = 0
     delivered_qty_exc_free = 0
+    total_items_sold = 0
+    sold_by_category = {}
 
     for ts, order_id, currency, qty, items_json, order_total in rows:
         ts_dt = datetime.datetime.fromisoformat(ts).replace(tzinfo=datetime.timezone.utc)
         time_str = ts_dt.astimezone(moscow_tz).strftime("%H:%M:%S")
+
         items = json.loads(items_json)
+        total_items_sold += len(items)
+
+        # Count items per category
+        for item in items:
+            cat = item.get("category", "Unknown")
+            sold_by_category[cat] = sold_by_category.get(cat, 0) + 1
+
         items_repr = ", ".join(f"{i['flavor']} — {i['price']}₺" for i in items)
         detail_lines.append(f"{time_str} — Order #{order_id} — {currency.upper()}: {qty} pcs ({items_repr})")
 
@@ -1727,22 +1742,53 @@ def compose_sold_report() -> str:
         if currency.lower() == 'cash':
             cash_revenue += order_total
 
+    # 4) Currency summary
     summary_lines = ["Summary by currency:"]
-    for cur, cnt in summary_by_currency.items():
-        summary_lines.append(f"{cur.upper()}: {cnt} pcs")
+    for cur_name, cnt in summary_by_currency.items():
+        summary_lines.append(f"{cur_name.upper()}: {cnt} pcs")
 
     courier_pay = delivered_qty_exc_free * 150
     remaining = cash_revenue - courier_pay
 
-    report = (
-        "📊 Deliveries today:\n\n"
-        + "\n".join(detail_lines)
-        + "\n\n" + "\n".join(summary_lines)
-        + f"\n\n📊 cash revenue: {cash_revenue}₺"
-        + f"\n🏃‍♂️ courier earnings: {courier_pay}₺"
-        + f"\n💰 remaining revenue: {remaining}₺"
-    )
-    return report
+    # 5) Read stock from menu.json
+    with open(MENU_PATH, "r", encoding="utf-8") as f:
+        menu = json.load(f)
+
+    stock_by_cat = {}
+    total_stock = 0
+    for cat, cat_data in menu.items():
+        stock_sum = sum(fl.get("stock", 0) for fl in cat_data.get("flavors", []))
+        stock_by_cat[cat] = stock_sum
+        total_stock += stock_sum
+
+    # 6) Build the final report text
+    report_lines = [
+        "📊 Deliveries today:\n",
+        f"🧾 Total items sold today: {total_items_sold} pcs\n",
+    ]
+
+    if sold_by_category:
+        report_lines.append("🪪 Sold by categories:")
+        for cat, cnt in sold_by_category.items():
+            report_lines.append(f"• {cat}: {cnt} pcs")
+        report_lines.append("")
+
+    report_lines += detail_lines
+    report_lines.append("")
+    report_lines += summary_lines
+    report_lines.append("")
+    report_lines.append(f"📊 Cash revenue: {cash_revenue}₺")
+    report_lines.append(f"🏃‍♂️ Courier earnings: {courier_pay}₺")
+    report_lines.append(f"💰 Remaining revenue: {remaining}₺")
+    report_lines.append("\n📦 Stock by categories:")
+
+    for cat, cnt in stock_by_cat.items():
+        report_lines.append(f"• {cat}: {cnt} pcs left")
+
+    report_lines.append(f"\n📈 Total in stock: {total_stock} pcs")
+
+    return "\n".join(report_lines)
+
 
 
 def send_daily_sold_report():
