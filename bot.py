@@ -1379,7 +1379,7 @@ def handle_comment_input(message):
 
         summary = "\n".join(f"{i['category']}: {i['flavor']} — {i['price']}₺" for i in cart)
         rates = fetch_rates()
-        rub = round(total_after * rates.get("RUB", 0) + 500, 2)
+        rub = round(total_after * rates.get("RUB", 0) + 500 * count, 2)
         usd = round(total_after * rates.get("USD", 0) + 2, 2)
         eur = round(total_after * rates.get("EUR", 0) + 2, 2)
         uah = round(total_after * rates.get("UAH", 0) + 200, 2)
