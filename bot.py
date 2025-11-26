@@ -996,15 +996,37 @@ def handle_finish_order(call):
 #   25. Handler: ввод количества баллов для списания
 # ------------------------------------------------------------------------
 # Функция для получения языка пользователя
+import json
+import requests  # Если файл доступен по URL
+
+# Функция для загрузки языков из облачного источника
+def load_languages_from_cloud():
+    url = "https://example.com/path/to/languages.json"  # Путь к файлу в облаке
+    response = requests.get(url)
+    if response.status_code == 200:
+        return response.json()  # Возвращаем JSON данные
+    else:
+        raise Exception("Не удалось загрузить языковые данные.")
+
+# Загружаем переводы из облака
+def load_languages():
+    try:
+        languages = load_languages_from_cloud()
+        return languages
+    except Exception as e:
+        print(f"Ошибка при загрузке языков: {e}")
+        return {}
+
+# Функция для получения языка пользователя
 def get_user_language(chat_id):
     data = user_data.get(chat_id, {})
     return data.get("language", "ru")  # По умолчанию язык русский, если не задано
 
-# Функция для загрузки переводов
+# Функция для получения перевода
 def t(chat_id, key):
     language = get_user_language(chat_id)  # Получаем язык пользователя
     languages = load_languages()  # Загружаем переводы
-    return languages[language].get(key, key)  # Возвращаем перевод по ключу, если нет - возвращаем сам ключ
+    return languages.get(language, {}).get(key, key)  # Возвращаем перевод по ключу, если нет - возвращаем сам ключ
 
 @ensure_user
 @bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_points"), content_types=['text'])
@@ -1070,6 +1092,7 @@ def handle_points_input(message):
     data["wait_for_address"] = True
 
     user_data[chat_id] = data
+
 
 
 
