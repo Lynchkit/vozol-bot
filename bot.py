@@ -7,6 +7,23 @@ import re
 import string
 import sqlite3
 import pytz
+# TEMP: copy DB from /data to /app/data
+try:
+    src = "/data/database.db"
+    dst_dir = os.path.join(BASE_DIR, "data")
+    dst = os.path.join(dst_dir, "database.db")
+
+    if os.path.exists(src):
+        if not os.path.exists(dst_dir):
+            os.makedirs(dst_dir)
+        import shutil
+        shutil.copyfile(src, dst)
+        print("DATABASE COPIED FROM /data TO PROJECT")
+    else:
+        print("NO DB FOUND IN /data")
+except Exception as e:
+    print("DB COPY ERROR:", e)
+
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from telebot import TeleBot, types
