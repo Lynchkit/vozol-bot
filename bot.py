@@ -377,29 +377,32 @@ def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
 # ------------------------------------------------------------------------
 #   11. Reply-клавиатуры (альтернатива inline)
 # ------------------------------------------------------------------------
-def address_keyboard() -> types.ReplyKeyboardMarkup:
+def address_keyboard(chat_id: int) -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.add(types.KeyboardButton(t(None, "share_location"), request_location=True))
-    kb.add(t(None, "choose_on_map"))
-    kb.add(t(None, "enter_address_text"))
-    kb.add(t(None, "back"))
+    kb.add(types.KeyboardButton(t(chat_id, "share_location"), request_location=True))
+    kb.add(t(chat_id, "choose_on_map"))
+    kb.add(t(chat_id, "enter_address_text"))
+    kb.add(t(chat_id, "back"))
     return kb
 
 
-def contact_keyboard() -> types.ReplyKeyboardMarkup:
+
+def contact_keyboard(chat_id: int) -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.add(types.KeyboardButton(t(None, "share_contact"), request_contact=True))
-    kb.add(t(None, "enter_nickname"))
-    kb.add(t(None, "back"))
+    kb.add(types.KeyboardButton(t(chat_id, "share_contact"), request_contact=True))
+    kb.add(t(chat_id, "enter_nickname"))
+    kb.add(t(chat_id, "back"))
     return kb
 
 
-def comment_keyboard() -> types.ReplyKeyboardMarkup:
+
+def comment_keyboard(chat_id: int) -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.add(t(None, "enter_comment"))
-    kb.add(t(None, "send_order"))
-    kb.add(t(None, "back"))
+    kb.add(t(chat_id, "enter_comment"))
+    kb.add(t(chat_id, "send_order"))
+    kb.add(t(chat_id, "back"))
     return kb
+
 # ------------------------------------------------------------------------
 #   12. Клавиатура редактирования меню (/change) — ВСЁ НА АНГЛИЙСКОМ
 # ------------------------------------------------------------------------
@@ -974,7 +977,7 @@ def handle_finish_order(call):
         data["temp_total_try"] = total_try
         data["temp_user_points"] = user_points
     else:
-        kb = address_keyboard()
+        kb = address_keyboard(chat_id)
         bot.send_message(
             chat_id,
             f"🛒 {t(chat_id, 'view_cart')}:\n\n" +
@@ -1025,7 +1028,8 @@ def handle_points_input(message):
 
     cart = data.get("cart", [])
     total_after = total_try - discount_try
-    kb = address_keyboard()
+    kb = address_keyboard(chat_id)
+
 
     summary_lines = [f"{item['category']}: {item['flavor']} — {item['price']}₺" for item in cart]
     summary = "\n".join(summary_lines)
@@ -1071,7 +1075,7 @@ def handle_address_input(message):
                          reply_markup=get_inline_main_menu(chat_id))
         return
 
-    if text == t(None, "choose_on_map"):
+    if text == t(chat_id, "choose_on_map"):
         bot.send_message(
             chat_id,
             "Чтобы выбрать точку:\n📎 → Местоположение → «Выбрать на карте» → метка → Отправить",
@@ -1085,19 +1089,20 @@ def handle_address_input(message):
     elif message.content_type == 'location' and message.location:
         lat, lon = message.location.latitude, message.location.longitude
         address = f"🌍 https://maps.google.com/?q={lat},{lon}"
-    elif text == t(None, "enter_address_text"):
+    elif text == t(chat_id, "enter_address_text"):
         bot.send_message(chat_id, t(chat_id, "enter_address"), reply_markup=types.ReplyKeyboardRemove())
         return
     elif message.content_type == 'text' and message.text:
         address = message.text.strip()
     else:
-        bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=address_keyboard())
+        bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=address_keyboard(chat_id))
+
         return
 
     data['address'] = address
     data['wait_for_address'] = False
     data['wait_for_contact'] = True
-    kb = contact_keyboard()
+    kb = contact_keyboard(chat_id)
     bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=kb)
     user_data[chat_id] = data
 
@@ -1127,7 +1132,7 @@ def handle_contact_input(message):
                          reply_markup=get_inline_main_menu(chat_id))
         return
 
-    if text == t(None, "enter_nickname"):
+    if text == t(chat_id, "enter_nickname"):
         bot.send_message(chat_id, "Введите ваш Telegram-ник (без @):", reply_markup=types.ReplyKeyboardRemove())
         return
 
@@ -1136,13 +1141,13 @@ def handle_contact_input(message):
     elif message.content_type == 'text' and message.text:
         contact = "@" + message.text.strip().lstrip("@")
     else:
-        bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=contact_keyboard())
+        bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=contact_keyboard(chat_id))
         return
 
     data['contact'] = contact
     data['wait_for_contact'] = False
     data['wait_for_comment'] = True
-    kb = comment_keyboard()
+    kb = comment_keyboard(chat_id)
     bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=kb)
     user_data[chat_id] = data
 
@@ -1174,18 +1179,18 @@ def handle_comment_input(message):
         return
 
     # Пользователь вводит текст комментария
-    if text == t(None, "enter_comment"):
+    if text == t(chat_id, "enter_comment"):
         bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=types.ReplyKeyboardRemove())
         return
 
-    if message.content_type == 'text' and text != t(None, "send_order"):
+    if message.content_type == 'text' and text != t(chat_id, "send_order"):
         data['comment'] = text.strip()
-        bot.send_message(chat_id, t(chat_id, "comment_saved"), reply_markup=comment_keyboard())
+        bot.send_message(chat_id, t(chat_id, "comment_saved"), reply_markup=comment_keyboard(chat_id))
         user_data[chat_id] = data
         return
 
     # Пользователь подтвердил отправку заказа
-    if text == t(None, "send_order"):
+    if text == t(chat_id, "send_order"):
         cart = data.get('cart', [])
         if not cart:
             bot.send_message(chat_id, t(chat_id, "cart_empty"))
@@ -1270,11 +1275,14 @@ def handle_comment_input(message):
 
         # Отправляем уведомления в личный чат и группу
         summary = "\n".join(f"{i['category']}: {i['flavor']} — {i['price']}₺" for i in cart)
+        # Количество единиц товара в заказе
+        qty_total = len(cart)
+
         rates = fetch_rates()
-        rub = round(total_after * rates.get("RUB", 0) + 500, 2)
-        usd = round(total_after * rates.get("USD", 0) + 2, 2)
-        eur = round(total_after * rates.get("EUR", 0) + 2, 2)  # евро
-        uah = round(total_after * rates.get("UAH", 0) + 350, 2)
+        rub = round(total_after * rates.get("RUB", 0) + 500 * qty_total, 2)
+        usd = round(total_after * rates.get("USD", 0) + 2 * qty_total, 2)
+        eur = round(total_after * rates.get("EUR", 0) + 2 * qty_total, 2)
+        uah = round(total_after * rates.get("UAH", 0) + 350 * qty_total, 2)
         conv = f"({rub}₽, ${usd}, €{eur}, ₴{uah})"
 
         # Русский
@@ -1674,24 +1682,31 @@ def cmd_payment(message):
     # 7) Контакт
     bot.send_message(chat_id, "+90 553 006 52 04")
     # Дополнительно Тинькофф в рублях
-    bot.send_message(chat_id, "Артур Маратович (T BANK RUB)")
+    bot.send_message(chat_id, "Артур М. (T BANK RUB)")
+    bot.send_message(chat_id, "Or by RUB Card number")
+    bot.send_message(chat_id, "2200701785613040")
 
 # в самом верху вашего файла, сразу после импорта и констант:
 
 def compose_sold_report() -> str:
     """
-    Собирает отчёт точно так же, как сейчас в теле cmd_sold, но возвращает строку.
+    Отчёт за сегодня:
+    - список доставок
+    - сводка по валютам
+    - общая выручка, выплаты курьеру, остаток
+    - остатки по категориям и общий остаток
+    - общее количество проданных штук
     """
     import datetime, pytz, json
     from sqlite3 import connect
 
-    # 1) начало дня в МСК → UTC
+    # 1️⃣ Начало текущего дня по Москве → UTC
     moscow_tz = pytz.timezone("Europe/Moscow")
     now_msk = datetime.datetime.now(moscow_tz)
     start_msk = now_msk.replace(hour=0, minute=0, second=0, microsecond=0)
     start_utc = start_msk.astimezone(pytz.utc).isoformat()
 
-    # 2) вытягиваем записи
+    # 2️⃣ Достаём сегодняшние доставки из БД
     conn = connect(DB_PATH, check_same_thread=False)
     cur = conn.cursor()
     cur.execute("""
@@ -1708,9 +1723,10 @@ def compose_sold_report() -> str:
     if not rows:
         return "📊 Deliveries report: no deliveries recorded today."
 
-    # 3) строим детали и сводку (копируете свою логику из cmd_sold)
+    # 3️⃣ Собираем данные по доставкам
     detail_lines = []
     summary_by_currency = {}
+    total_sold_today = 0
     cash_revenue = 0
     delivered_qty_exc_free = 0
 
@@ -1719,14 +1735,18 @@ def compose_sold_report() -> str:
         time_str = ts_dt.astimezone(moscow_tz).strftime("%H:%M:%S")
         items = json.loads(items_json)
         items_repr = ", ".join(f"{i['flavor']} — {i['price']}₺" for i in items)
+
         detail_lines.append(f"{time_str} — Order #{order_id} — {currency.upper()}: {qty} pcs ({items_repr})")
 
         summary_by_currency[currency] = summary_by_currency.get(currency, 0) + qty
+        total_sold_today += qty
+
         if currency.lower() != 'free':
             delivered_qty_exc_free += qty
         if currency.lower() == 'cash':
             cash_revenue += order_total
 
+    # 4️⃣ Сводка по валютам
     summary_lines = ["Summary by currency:"]
     for cur, cnt in summary_by_currency.items():
         summary_lines.append(f"{cur.upper()}: {cnt} pcs")
@@ -1734,15 +1754,30 @@ def compose_sold_report() -> str:
     courier_pay = delivered_qty_exc_free * 150
     remaining = cash_revenue - courier_pay
 
+    # 5️⃣ Остатки по категориям (без разбивки по вкусам)
+    total_stock_left = 0
+    stock_lines = ["\n📦 Current stock by category:"]
+    for cat, cat_data in menu.items():
+        cat_total = sum(int(itm.get("stock", 0)) for itm in cat_data.get("flavors", []))
+        total_stock_left += cat_total
+        stock_lines.append(f"• {cat}: {cat_total} pcs")
+
+    # 6️⃣ Итоги
+    stock_lines.append(f"\n🧾 Sold today: {total_sold_today} pcs")
+    stock_lines.append(f"📦 Remaining stock total: {total_stock_left} pcs")
+
+    # 7️⃣ Финальный текст
     report = (
         "📊 Deliveries today:\n\n"
         + "\n".join(detail_lines)
         + "\n\n" + "\n".join(summary_lines)
-        + f"\n\n📊 cash revenue: {cash_revenue}₺"
-        + f"\n🏃‍♂️ courier earnings: {courier_pay}₺"
-        + f"\n💰 remaining revenue: {remaining}₺"
+        + f"\n\n📊 Cash revenue: {cash_revenue}₺"
+        + f"\n🏃‍♂️ Courier earnings: {courier_pay}₺"
+        + f"\n💰 Remaining revenue: {remaining}₺"
+        + "\n\n" + "\n".join(stock_lines)
     )
     return report
+
 
 
 def send_daily_sold_report():
@@ -2955,7 +2990,7 @@ def universal_handler(message):
             user_data[chat_id] = data
             return
 
-        if text == t(None, "choose_on_map"):
+        if text == t(chat_id, "choose_on_map"):
             bot.send_message(
                 chat_id,
                 "Чтобы выбрать точку:\n📎 → Местоположение → «Выбрать на карте» → метка → Отправить",
@@ -2969,19 +3004,19 @@ def universal_handler(message):
         elif message.content_type == 'location' and message.location:
             lat, lon = message.location.latitude, message.location.longitude
             address = f"🌍 https://maps.google.com/?q={lat},{lon}"
-        elif text == t(None, "enter_address_text"):
+        elif text == t(chat_id, "enter_address_text"):
             bot.send_message(chat_id, t(chat_id, "enter_address"), reply_markup=types.ReplyKeyboardRemove())
             return
         elif message.content_type == 'text' and message.text:
             address = message.text.strip()
         else:
-            bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=address_keyboard())
+            bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=address_keyboard(chat_id))
             return
 
         data['address'] = address
         data['wait_for_address'] = False
         data['wait_for_contact'] = True
-        kb = contact_keyboard()
+        kb = contact_keyboard(chat_id)
         bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=kb)
         user_data[chat_id] = data
         return
@@ -2995,7 +3030,7 @@ def universal_handler(message):
             user_data[chat_id] = data
             return
 
-        if text == t(None, "enter_nickname"):
+        if text == t(chat_id, "enter_nickname"):
             bot.send_message(chat_id, "Введите ваш Telegram-ник (без @):", reply_markup=types.ReplyKeyboardRemove())
             return
 
@@ -3010,7 +3045,7 @@ def universal_handler(message):
         data['contact'] = contact
         data['wait_for_contact'] = False
         data['wait_for_comment'] = True
-        kb = comment_keyboard()
+        kb = comment_keyboard(chat_id)
         bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=kb)
         user_data[chat_id] = data
         return
@@ -3024,17 +3059,18 @@ def universal_handler(message):
             user_data[chat_id] = data
             return
 
-        if text == t(None, "enter_comment"):
+        if text == t(chat_id, "enter_comment"):
             bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=types.ReplyKeyboardRemove())
             return
 
-        if message.content_type == 'text' and text != t(None, "send_order"):
+        if message.content_type == 'text' and text != t(chat_id, "send_order"):
             data['comment'] = text.strip()
-            bot.send_message(chat_id, t(chat_id, "comment_saved"), reply_markup=comment_keyboard())
+            bot.send_message(chat_id, t(chat_id, "comment_saved"), reply_markup=comment_keyboard(chat_id))
+
             user_data[chat_id] = data
             return
 
-        if text == t(None, "send_order"):
+        if text == t(chat_id, "send_order"):
             cart = data.get('cart', [])
             if not cart:
                 bot.send_message(chat_id, t(chat_id, "cart_empty"))
@@ -3203,7 +3239,8 @@ def universal_handler(message):
             data["temp_user_points"] = user_points
             user_data[chat_id] = data
         else:
-            kb = address_keyboard()
+            kb = address_keyboard(chat_id)
+
             bot.send_message(
                 chat_id,
                 f"🛒 {t(chat_id, 'view_cart')}:\n\n" +
