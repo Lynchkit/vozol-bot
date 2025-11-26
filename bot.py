@@ -1677,7 +1677,9 @@ def cmd_payment(message):
     # 7) Контакт
     bot.send_message(chat_id, "+90 553 006 52 04")
     # Дополнительно Тинькофф в рублях
-    bot.send_message(chat_id, "Артур Маратович (T BANK RUB)")
+    bot.send_message(chat_id, "Артур М. (T BANK RUB)")
+    bot.send_message(chat_id, "Or by RUB Card number")
+    bot.send_message(chat_id, "2200701785613040")
 
 # в самом верху вашего файла, сразу после импорта и констант:
 
