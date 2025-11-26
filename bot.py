@@ -1036,9 +1036,10 @@ def handle_points_input(message):
     msg = (
         f"🛒 {t(chat_id, 'view_cart')}:\n\n"
         f"{summary}\n\n"
-        f"Итог до скидки: {total_try}₺\n"
-        f"Списано баллов: {points_to_spend} (−{discount_try}₺)\n"
-        f"К оплате: {total_after}₺\n\n"
+        f"{t(chat_id, 'cart_total_before_discount')}: {total_try}₺\n"
+        f"{t(chat_id, 'cart_points_spent')}: {points_to_spend} (−{discount_try}₺)\n"
+        f"{t(chat_id, 'cart_to_pay')}: {total_after}₺\n\n"
+
         f"{t(chat_id, 'enter_address')}"
     )
     bot.send_message(chat_id, msg, reply_markup=kb)

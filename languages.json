@@ -19,6 +19,9 @@
     "edit_item": "Изменить",
     "enter_new_qty": "Введите новое количество (0, чтобы удалить):",
     "qty_changed": "Количество «{flavor}» изменено на {qty}.",
+    "cart_total_before_discount": "Итог до скидки",
+    "cart_points_spent": "Списано баллов",
+    "cart_to_pay": "К оплате"
     "item_removed": "«{flavor}» полностью удалён(а) из корзины.",
     "enter_address": "Чтобы завершить заказ, укажите адрес:",
     "share_location": "📍 Поделиться геопозицией",
@@ -67,6 +70,9 @@
     "share_contact": "📞 Share contact",
     "enter_nickname": "✏️ Enter nickname",
     "enter_comment": "✏️ Comment for order",
+    "cart_total_before_discount": "Total before discount",
+    "cart_points_spent": "Points spent",
+    "cart_to_pay": "Amount to pay"
     "send_order": "📤 Send order",
     "order_accepted": "Your order is accepted! Thank you.",
     "error_invalid": "Invalid input. Please try again.",
