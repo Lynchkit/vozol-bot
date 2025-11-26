@@ -1560,10 +1560,10 @@ def cmd_points(message):
     conn_local.close()
 
     if row is None or row[0] == 0:
-        bot.send_message(chat_id, "У вас пока нет бонусных баллов.")
+        bot.send_message(chat_id, t(chat_id, "points_info").format(points=0, points_try=0))
     else:
         points = row[0]
-        bot.send_message(chat_id, f"У вас сейчас {points} бонусных баллов.")
+        bot.send_message(chat_id, t(chat_id, "points_info").format(points=points, points_try=points))
 
 
 # ------------------------------------------------------------------------
