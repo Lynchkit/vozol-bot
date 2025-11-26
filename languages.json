@@ -1,4 +1,4 @@
-{
+ {
   "ru": {
     "choose_language": "Выберите язык / Choose your language:",
     "lang_set": "Язык установлен.",
@@ -19,9 +19,6 @@
     "edit_item": "Изменить",
     "enter_new_qty": "Введите новое количество (0, чтобы удалить):",
     "qty_changed": "Количество «{flavor}» изменено на {qty}.",
-    "cart_total_before_discount": "Итог до скидки",
-    "cart_points_spent": "Списано баллов",
-    "cart_to_pay": "К оплате",
     "item_removed": "«{flavor}» полностью удалён(а) из корзины.",
     "enter_address": "Чтобы завершить заказ, укажите адрес:",
     "share_location": "📍 Поделиться геопозицией",
@@ -60,9 +57,6 @@
     "edit_item": "Edit",
     "enter_new_qty": "Enter new quantity (0 to remove):",
     "qty_changed": "Quantity of «{flavor}» changed to {qty}.",
-    "cart_total_before_discount": "Total before discount",
-    "cart_points_spent": "Points spent",
-    "cart_to_pay": "Amount to pay",
     "item_removed": "«{flavor}» removed from cart.",
     "enter_address": "To finish your order, provide the address:",
     "share_location": "📍 Share location",
