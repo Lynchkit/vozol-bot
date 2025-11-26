@@ -47,7 +47,9 @@ bot = TeleBot(TOKEN, parse_mode="HTML")
 #   2. Пути к JSON-файлам и БД (персистентный том /data)
 # ------------------------------------------------------------------------
 MENU_PATH = "/data/menu.json"
-LANG_PATH = "/data/languages.json"
+# Путь к JSON-файлу с языковыми данными
+LANG_PATH = r"C:\Users\Arthur\Desktop\vozol_bot_windows_with_requirements\languages.json"
+
 DB_PATH = "/data/database.db"
 # ------------------------------------------------------------------------
 #   3. Функция для получения локального подключения к БД
