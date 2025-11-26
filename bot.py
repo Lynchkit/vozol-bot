@@ -377,29 +377,32 @@ def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
 # ------------------------------------------------------------------------
 #   11. Reply-клавиатуры (альтернатива inline)
 # ------------------------------------------------------------------------
-def address_keyboard() -> types.ReplyKeyboardMarkup:
+def address_keyboard(chat_id: int) -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.add(types.KeyboardButton(t(None, "share_location"), request_location=True))
-    kb.add(t(None, "choose_on_map"))
-    kb.add(t(None, "enter_address_text"))
-    kb.add(t(None, "back"))
+    kb.add(types.KeyboardButton(t(chat_id, "share_location"), request_location=True))
+    kb.add(t(chat_id, "choose_on_map"))
+    kb.add(t(chat_id, "enter_address_text"))
+    kb.add(t(chat_id, "back"))
     return kb
 
 
-def contact_keyboard() -> types.ReplyKeyboardMarkup:
+
+def contact_keyboard(chat_id: int) -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.add(types.KeyboardButton(t(None, "share_contact"), request_contact=True))
-    kb.add(t(None, "enter_nickname"))
-    kb.add(t(None, "back"))
+    kb.add(types.KeyboardButton(t(chat_id, "share_contact"), request_contact=True))
+    kb.add(t(chat_id, "enter_nickname"))
+    kb.add(t(chat_id, "back"))
     return kb
 
 
-def comment_keyboard() -> types.ReplyKeyboardMarkup:
+
+def comment_keyboard(chat_id: int) -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.add(t(None, "enter_comment"))
-    kb.add(t(None, "send_order"))
-    kb.add(t(None, "back"))
+    kb.add(t(chat_id, "enter_comment"))
+    kb.add(t(chat_id, "send_order"))
+    kb.add(t(chat_id, "back"))
     return kb
+
 # ------------------------------------------------------------------------
 #   12. Клавиатура редактирования меню (/change) — ВСЁ НА АНГЛИЙСКОМ
 # ------------------------------------------------------------------------
@@ -974,7 +977,7 @@ def handle_finish_order(call):
         data["temp_total_try"] = total_try
         data["temp_user_points"] = user_points
     else:
-        kb = address_keyboard()
+        kb = address_keyboard(chat_id)
         bot.send_message(
             chat_id,
             f"🛒 {t(chat_id, 'view_cart')}:\n\n" +
@@ -1025,7 +1028,8 @@ def handle_points_input(message):
 
     cart = data.get("cart", [])
     total_after = total_try - discount_try
-    kb = address_keyboard()
+    kb = address_keyboard(chat_id)
+
 
     summary_lines = [f"{item['category']}: {item['flavor']} — {item['price']}₺" for item in cart]
     summary = "\n".join(summary_lines)
@@ -1071,7 +1075,7 @@ def handle_address_input(message):
                          reply_markup=get_inline_main_menu(chat_id))
         return
 
-    if text == t(None, "choose_on_map"):
+    if text == t(chat_id, "choose_on_map"):
         bot.send_message(
             chat_id,
             "Чтобы выбрать точку:\n📎 → Местоположение → «Выбрать на карте» → метка → Отправить",
@@ -1085,19 +1089,20 @@ def handle_address_input(message):
     elif message.content_type == 'location' and message.location:
         lat, lon = message.location.latitude, message.location.longitude
         address = f"🌍 https://maps.google.com/?q={lat},{lon}"
-    elif text == t(None, "enter_address_text"):
+    elif text == t(chat_id, "enter_address_text"):
         bot.send_message(chat_id, t(chat_id, "enter_address"), reply_markup=types.ReplyKeyboardRemove())
         return
     elif message.content_type == 'text' and message.text:
         address = message.text.strip()
     else:
-        bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=address_keyboard())
+        bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=address_keyboard(chat_id))
+
         return
 
     data['address'] = address
     data['wait_for_address'] = False
     data['wait_for_contact'] = True
-    kb = contact_keyboard()
+    kb = contact_keyboard(chat_id)
     bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=kb)
     user_data[chat_id] = data
 
@@ -1127,7 +1132,7 @@ def handle_contact_input(message):
                          reply_markup=get_inline_main_menu(chat_id))
         return
 
-    if text == t(None, "enter_nickname"):
+    if text == t(chat_id, "enter_nickname"):
         bot.send_message(chat_id, "Введите ваш Telegram-ник (без @):", reply_markup=types.ReplyKeyboardRemove())
         return
 
@@ -1136,13 +1141,13 @@ def handle_contact_input(message):
     elif message.content_type == 'text' and message.text:
         contact = "@" + message.text.strip().lstrip("@")
     else:
-        bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=contact_keyboard())
+        bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=contact_keyboard(chat_id))
         return
 
     data['contact'] = contact
     data['wait_for_contact'] = False
     data['wait_for_comment'] = True
-    kb = comment_keyboard()
+    kb = comment_keyboard(chat_id)
     bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=kb)
     user_data[chat_id] = data
 
@@ -1174,18 +1179,18 @@ def handle_comment_input(message):
         return
 
     # Пользователь вводит текст комментария
-    if text == t(None, "enter_comment"):
+    if text == t(chat_id, "enter_comment"):
         bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=types.ReplyKeyboardRemove())
         return
 
-    if message.content_type == 'text' and text != t(None, "send_order"):
+    if message.content_type == 'text' and text != t(chat_id, "send_order"):
         data['comment'] = text.strip()
-        bot.send_message(chat_id, t(chat_id, "comment_saved"), reply_markup=comment_keyboard())
+        bot.send_message(chat_id, t(chat_id, "comment_saved"), reply_markup=comment_keyboard(chat_id))
         user_data[chat_id] = data
         return
 
     # Пользователь подтвердил отправку заказа
-    if text == t(None, "send_order"):
+    if text == t(chat_id, "send_order"):
         cart = data.get('cart', [])
         if not cart:
             bot.send_message(chat_id, t(chat_id, "cart_empty"))
@@ -2985,7 +2990,7 @@ def universal_handler(message):
             user_data[chat_id] = data
             return
 
-        if text == t(None, "choose_on_map"):
+        if text == t(chat_id, "choose_on_map"):
             bot.send_message(
                 chat_id,
                 "Чтобы выбрать точку:\n📎 → Местоположение → «Выбрать на карте» → метка → Отправить",
@@ -2999,19 +3004,19 @@ def universal_handler(message):
         elif message.content_type == 'location' and message.location:
             lat, lon = message.location.latitude, message.location.longitude
             address = f"🌍 https://maps.google.com/?q={lat},{lon}"
-        elif text == t(None, "enter_address_text"):
+        elif text == t(chat_id, "enter_address_text"):
             bot.send_message(chat_id, t(chat_id, "enter_address"), reply_markup=types.ReplyKeyboardRemove())
             return
         elif message.content_type == 'text' and message.text:
             address = message.text.strip()
         else:
-            bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=address_keyboard())
+            bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=address_keyboard(chat_id))
             return
 
         data['address'] = address
         data['wait_for_address'] = False
         data['wait_for_contact'] = True
-        kb = contact_keyboard()
+        kb = contact_keyboard(chat_id)
         bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=kb)
         user_data[chat_id] = data
         return
@@ -3025,7 +3030,7 @@ def universal_handler(message):
             user_data[chat_id] = data
             return
 
-        if text == t(None, "enter_nickname"):
+        if text == t(chat_id, "enter_nickname"):
             bot.send_message(chat_id, "Введите ваш Telegram-ник (без @):", reply_markup=types.ReplyKeyboardRemove())
             return
 
@@ -3040,7 +3045,7 @@ def universal_handler(message):
         data['contact'] = contact
         data['wait_for_contact'] = False
         data['wait_for_comment'] = True
-        kb = comment_keyboard()
+        kb = comment_keyboard(chat_id)
         bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=kb)
         user_data[chat_id] = data
         return
@@ -3054,17 +3059,18 @@ def universal_handler(message):
             user_data[chat_id] = data
             return
 
-        if text == t(None, "enter_comment"):
+        if text == t(chat_id, "enter_comment"):
             bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=types.ReplyKeyboardRemove())
             return
 
-        if message.content_type == 'text' and text != t(None, "send_order"):
+        if message.content_type == 'text' and text != t(chat_id, "send_order"):
             data['comment'] = text.strip()
-            bot.send_message(chat_id, t(chat_id, "comment_saved"), reply_markup=comment_keyboard())
+            bot.send_message(chat_id, t(chat_id, "comment_saved"), reply_markup=comment_keyboard(chat_id))
+
             user_data[chat_id] = data
             return
 
-        if text == t(None, "send_order"):
+        if text == t(chat_id, "send_order"):
             cart = data.get('cart', [])
             if not cart:
                 bot.send_message(chat_id, t(chat_id, "cart_empty"))
@@ -3233,7 +3239,8 @@ def universal_handler(message):
             data["temp_user_points"] = user_points
             user_data[chat_id] = data
         else:
-            kb = address_keyboard()
+            kb = address_keyboard(chat_id)
+
             bot.send_message(
                 chat_id,
                 f"🛒 {t(chat_id, 'view_cart')}:\n\n" +
