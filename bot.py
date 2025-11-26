@@ -47,9 +47,7 @@ bot = TeleBot(TOKEN, parse_mode="HTML")
 #   2. Пути к JSON-файлам и БД (персистентный том /data)
 # ------------------------------------------------------------------------
 MENU_PATH = "/data/menu.json"
-# Путь к JSON-файлу с языковыми данными
-LANG_PATH = r"C:\Users\Arthur\Desktop\vozol_bot_windows_with_requirements\languages.json"
-
+LANG_PATH = "/data/languages.json"
 DB_PATH = "/data/database.db"
 # ------------------------------------------------------------------------
 #   3. Функция для получения локального подключения к БД
@@ -995,39 +993,6 @@ def handle_finish_order(call):
 # ------------------------------------------------------------------------
 #   25. Handler: ввод количества баллов для списания
 # ------------------------------------------------------------------------
-# Функция для получения языка пользователя
-import json
-import requests  # Если файл доступен по URL
-
-# Функция для загрузки языков из облачного источника
-def load_languages_from_cloud():
-    url = "https://example.com/path/to/languages.json"  # Путь к файлу в облаке
-    response = requests.get(url)
-    if response.status_code == 200:
-        return response.json()  # Возвращаем JSON данные
-    else:
-        raise Exception("Не удалось загрузить языковые данные.")
-
-# Загружаем переводы из облака
-def load_languages():
-    try:
-        languages = load_languages_from_cloud()
-        return languages
-    except Exception as e:
-        print(f"Ошибка при загрузке языков: {e}")
-        return {}
-
-# Функция для получения языка пользователя
-def get_user_language(chat_id):
-    data = user_data.get(chat_id, {})
-    return data.get("language", "ru")  # По умолчанию язык русский, если не задано
-
-# Функция для получения перевода
-def t(chat_id, key):
-    language = get_user_language(chat_id)  # Получаем язык пользователя
-    languages = load_languages()  # Загружаем переводы
-    return languages.get(language, {}).get(key, key)  # Возвращаем перевод по ключу, если нет - возвращаем сам ключ
-
 @ensure_user
 @bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_points"), content_types=['text'])
 def handle_points_input(message):
@@ -1068,32 +1033,19 @@ def handle_points_input(message):
     summary_lines = [f"{item['category']}: {item['flavor']} — {item['price']}₺" for item in cart]
     summary = "\n".join(summary_lines)
 
-    # Формируем итоговое сообщение на основе языка
-    if get_user_language(chat_id) == "ru":
-        msg = (
-            "🛒 Посмотреть корзину:\n\n"
-            f"{summary}\n\n"
-            f"Итог до скидки: {total_try}₺\n"
-            f"Списано баллов: {points_to_spend} (−{discount_try}₺)\n"
-            f"К оплате: {total_after}₺\n\n"
-            "Чтобы завершить заказ, укажите адрес:"
-        )
-    else:  # Если язык английский
-        msg = (
-            "🛒 View cart:\n\n"
-            f"{summary}\n\n"
-            f"Total before discount: {total_try}₺\n"
-            f"Points spent: {points_to_spend} (−{discount_try}₺)\n"
-            f"Amount to pay: {total_after}₺\n\n"
-            "To finish your order, please provide the address:"
-        )
+    msg = (
+        "🛒 Посмотреть корзину:\n\n"
+        f"{summary}\n\n"
+        f"Итог до скидки: {total_try}₺\n"
+        f"Списано баллов: {points_to_spend} (−{discount_try}₺)\n"
+        f"К оплате: {total_after}₺\n\n"
+        "Чтобы завершить заказ, укажите адрес:"
+    )
 
     bot.send_message(chat_id, msg, reply_markup=kb)
     data["wait_for_address"] = True
 
     user_data[chat_id] = data
-
-
 
 
 # ------------------------------------------------------------------------
