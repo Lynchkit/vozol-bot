@@ -8,7 +8,6 @@ import string
 import sqlite3
 import pytz
 
-
 from apscheduler.schedulers.background import BackgroundScheduler
 from telebot import TeleBot, types
 
@@ -47,11 +46,9 @@ bot = TeleBot(TOKEN, parse_mode="HTML")
 # ------------------------------------------------------------------------
 #   2. Пути к JSON-файлам и БД (персистентный том /data)
 # ------------------------------------------------------------------------
-BASE_DIR = os.path.dirname(__file__)
-MENU_PATH = os.path.join(BASE_DIR, "menu.json")
-LANG_PATH = os.path.join(BASE_DIR, "languages.json")
-DB_PATH = os.path.join(BASE_DIR, "data", "database.db")
-
+MENU_PATH = "/data/menu.json"
+LANG_PATH = "/data/languages.json"
+DB_PATH = "/data/database.db"
 # ------------------------------------------------------------------------
 #   3. Функция для получения локального подключения к БД
 # ------------------------------------------------------------------------
@@ -1033,18 +1030,18 @@ def handle_points_input(message):
     total_after = total_try - discount_try
     kb = address_keyboard(chat_id)
 
-
     summary_lines = [f"{item['category']}: {item['flavor']} — {item['price']}₺" for item in cart]
     summary = "\n".join(summary_lines)
-    msg = (
-        f"🛒 {t(chat_id, 'view_cart')}:\n\n"
-        f"{summary}\n\n"
-        f"{t(chat_id, 'cart_total_before_discount')}: {total_try}₺\n"
-        f"{t(chat_id, 'cart_points_spent')}: {points_to_spend} (−{discount_try}₺)\n"
-        f"{t(chat_id, 'cart_to_pay')}: {total_after}₺\n\n"
 
-        f"{t(chat_id, 'enter_address')}"
+    msg = (
+        "🛒 Посмотреть корзину:\n\n"
+        f"{summary}\n\n"
+        f"Итог до скидки: {total_try}₺\n"
+        f"Списано баллов: {points_to_spend} (−{discount_try}₺)\n"
+        f"К оплате: {total_after}₺\n\n"
+        "Чтобы завершить заказ, укажите адрес:"
     )
+
     bot.send_message(chat_id, msg, reply_markup=kb)
     data["wait_for_address"] = True
 
