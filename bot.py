@@ -1000,52 +1000,62 @@ def handle_points_input(message):
     data = user_data.get(chat_id, {})
     text = message.text.strip()
 
-    if not text.isdigit():
+    # Проверка, что введенное значение — это положительное число
+    if not text.isdigit() or int(text) < 0:
         bot.send_message(chat_id, t(chat_id, "invalid_points").format(max_points=data.get("temp_total_try", 0)))
         return
 
     points_to_spend = int(text)
     user_points = data.get("temp_user_points", 0)
     total_try = data.get("temp_total_try", 0)
-    max_points = min(user_points, total_try)
+    max_points = min(user_points, total_try)  # Максимальное количество баллов для потери
 
+    # Проверка на корректность введенного числа баллов
     if points_to_spend < 0 or points_to_spend > max_points:
         bot.send_message(chat_id, t(chat_id, "invalid_points").format(max_points=max_points))
         return
 
+    # Обновление баллов пользователя в базе данных, если количество баллов больше 0
     if points_to_spend > 0:
-        conn_local = get_db_connection()
-        cursor_local = conn_local.cursor()
-        cursor_local.execute("UPDATE users SET points = points - ? WHERE chat_id = ?", (points_to_spend, chat_id))
-        conn_local.commit()
-        cursor_local.close()
-        conn_local.close()
+        with get_db_connection() as conn_local:  # Используем with для автоматического закрытия соединения
+            cursor_local = conn_local.cursor()
+            cursor_local.execute("UPDATE users SET points = points - ? WHERE chat_id = ?", (points_to_spend, chat_id))
+            conn_local.commit()
 
-    discount_try = points_to_spend * 1
+    # Расчет скидки и обновление данных
+    discount_try = points_to_spend * 1  # Можно заменить на другую логику для расчета скидки
     data["pending_discount"] = discount_try
     data["pending_points_spent"] = points_to_spend
     data["wait_for_points"] = False
 
+    # Формирование итогового сообщения
     cart = data.get("cart", [])
     total_after = total_try - discount_try
     kb = address_keyboard(chat_id)
 
+    # Сводка по корзине
     summary_lines = [f"{item['category']}: {item['flavor']} — {item['price']}₺" for item in cart]
     summary = "\n".join(summary_lines)
 
+    # Сообщение с итогами
     msg = (
-        "🛒 Посмотреть корзину:\n\n"
+        f"🛒 {t(chat_id, 'view_cart')}:\n\n"
         f"{summary}\n\n"
-        f"Итог до скидки: {total_try}₺\n"
-        f"Списано баллов: {points_to_spend} (−{discount_try}₺)\n"
-        f"К оплате: {total_after}₺\n\n"
-        "Чтобы завершить заказ, укажите адрес:"
+        f"{t(chat_id, 'total_before_discount')}: {total_try}₺\n"
+        f"{t(chat_id, 'points_spent')}: {points_to_spend} (−{discount_try}₺)\n"
+        f"{t(chat_id, 'to_pay')}: {total_after}₺\n\n"
+        f"{t(chat_id, 'enter_address')}:"
     )
 
+    # Отправка сообщения пользователю с кнопками для ввода адреса
     bot.send_message(chat_id, msg, reply_markup=kb)
+
+    # Ожидаем ввода адреса
     data["wait_for_address"] = True
 
+    # Сохранение обновленных данных
     user_data[chat_id] = data
+
 
 
 # ------------------------------------------------------------------------
