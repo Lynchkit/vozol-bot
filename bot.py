@@ -20,20 +20,7 @@ def _normalize(text: str) -> str:
     cleaned = re.sub(r'[^0-9A-Za-zА-Яа-я]+', ' ', text)
     # убрать «лишние» пробелы и привести к lower
     return re.sub(r'\s+', ' ', cleaned).strip().lower()
-# Глобальная переменная для хранения переводов
-translations = {}
 
-def load_languages():
-    """Загружаем переводы из languages.json"""
-    global translations
-    try:
-        with open("path/to/languages.json", "r", encoding="utf-8") as file:
-            translations = json.load(file)
-    except Exception as e:
-        print(f"Ошибка при загрузке языков: {e}")
-
-# Загружаем языковые данные при старте
-load_languages()
 # ------------------------------------------------------------------------
 #   1. Загрузка переменных окружения и инициализация бота
 # ------------------------------------------------------------------------
@@ -237,7 +224,6 @@ def t(chat_id: int, key: str) -> str:
     """
     lang = user_data.get(chat_id, {}).get("lang") or "ru"
     return translations.get(lang, {}).get(key, key)
-
 
 
 def generate_ref_code(length: int = 6) -> str:
@@ -1014,8 +1000,7 @@ def handle_points_input(message):
     data = user_data.get(chat_id, {})
     text = message.text.strip()
 
-    # Проверка на корректность ввода
-    if not text.isdigit() or int(text) < 0:
+    if not text.isdigit():
         bot.send_message(chat_id, t(chat_id, "invalid_points").format(max_points=data.get("temp_total_try", 0)))
         return
 
@@ -1024,52 +1009,43 @@ def handle_points_input(message):
     total_try = data.get("temp_total_try", 0)
     max_points = min(user_points, total_try)
 
-    # Проверка на валидность введенной суммы баллов
     if points_to_spend < 0 or points_to_spend > max_points:
         bot.send_message(chat_id, t(chat_id, "invalid_points").format(max_points=max_points))
         return
 
-    # Обновляем баллы пользователя в базе данных
     if points_to_spend > 0:
-        with get_db_connection() as conn_local:
-            cursor_local = conn_local.cursor()
-            cursor_local.execute("UPDATE users SET points = points - ? WHERE chat_id = ?", (points_to_spend, chat_id))
-            conn_local.commit()
+        conn_local = get_db_connection()
+        cursor_local = conn_local.cursor()
+        cursor_local.execute("UPDATE users SET points = points - ? WHERE chat_id = ?", (points_to_spend, chat_id))
+        conn_local.commit()
+        cursor_local.close()
+        conn_local.close()
 
     discount_try = points_to_spend * 1
     data["pending_discount"] = discount_try
     data["pending_points_spent"] = points_to_spend
     data["wait_for_points"] = False
 
-    # Сбор информации о корзине
     cart = data.get("cart", [])
     total_after = total_try - discount_try
     kb = address_keyboard(chat_id)
 
-    # Формируем строку с деталями корзины
     summary_lines = [f"{item['category']}: {item['flavor']} — {item['price']}₺" for item in cart]
     summary = "\n".join(summary_lines)
 
-    # Отправляем пользователю сообщение с итогами заказа
     msg = (
-        f"🛒 {t(chat_id, 'view_cart')}:\n\n"
+        "🛒 Посмотреть корзину:\n\n"
         f"{summary}\n\n"
-        f"{t(chat_id, 'total_before_discount')}: {total_try}₺\n"
-        f"{t(chat_id, 'points_spent')}: {points_to_spend} (−{discount_try}₺)\n"
-        f"{t(chat_id, 'to_pay')}: {total_after}₺\n\n"
-        f"{t(chat_id, 'enter_address')}:"
+        f"Итог до скидки: {total_try}₺\n"
+        f"Списано баллов: {points_to_spend} (−{discount_try}₺)\n"
+        f"К оплате: {total_after}₺\n\n"
+        "Чтобы завершить заказ, укажите адрес:"
     )
 
-    # Отправляем сообщение с кнопками для ввода адреса
     bot.send_message(chat_id, msg, reply_markup=kb)
-
-    # Ожидаем ввод адреса
     data["wait_for_address"] = True
 
-    # Сохраняем обновленные данные
     user_data[chat_id] = data
-
-
 
 
 # ------------------------------------------------------------------------
