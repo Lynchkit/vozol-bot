@@ -20,7 +20,20 @@ def _normalize(text: str) -> str:
     cleaned = re.sub(r'[^0-9A-Za-zА-Яа-я]+', ' ', text)
     # убрать «лишние» пробелы и привести к lower
     return re.sub(r'\s+', ' ', cleaned).strip().lower()
+# Глобальная переменная для хранения переводов
+translations = {}
 
+def load_languages():
+    """Загружаем переводы из languages.json"""
+    global translations
+    try:
+        with open("path/to/languages.json", "r", encoding="utf-8") as file:
+            translations = json.load(file)
+    except Exception as e:
+        print(f"Ошибка при загрузке языков: {e}")
+
+# Загружаем языковые данные при старте
+load_languages()
 # ------------------------------------------------------------------------
 #   1. Загрузка переменных окружения и инициализация бота
 # ------------------------------------------------------------------------
@@ -224,6 +237,7 @@ def t(chat_id: int, key: str) -> str:
     """
     lang = user_data.get(chat_id, {}).get("lang") or "ru"
     return translations.get(lang, {}).get(key, key)
+
 
 
 def generate_ref_code(length: int = 6) -> str:

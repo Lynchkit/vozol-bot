@@ -1,4 +1,4 @@
- {
+{
   "ru": {
     "choose_language": "Выберите язык / Choose your language:",
     "lang_set": "Язык установлен.",
@@ -30,15 +30,18 @@
     "enter_nickname": "✏️ Ввести ник",
     "enter_comment": "✏️ Комментарий к заказу",
     "send_order": "📤 Отправить заказ",
-    "total_before_discount": "Итог до скидки",
-    "points_spent": "Списано баллов",
-    "to_pay": "К оплате",
     "order_accepted": "Ваш заказ принят! Спасибо.",
     "error_invalid": "Неверный ввод. Попробуйте снова.",
     "comment_saved": "Комментарий сохранён.",
     "points_info": "У вас {points} баллов (что эквивалентно {points_try}₺).",
     "enter_points": "Сколько баллов вы хотите потратить на этот заказ? (макс: {max_points})\nВведите число от 0 до {max_points}.\n0 — не списывать баллы.",
-    "invalid_points": "Пожалуйста, введите корректное число баллов от 0 до {max_points}."
+    "invalid_points": "Пожалуйста, введите корректное число баллов от 0 до {max_points}.",
+    "view_cart": "Посмотреть корзину",
+    "total_before_discount": "Итог до скидки",
+    "points_spent": "Списано баллов",
+    "to_pay": "К оплате",
+    "points_to_spend": "Баллы для списания",
+    "discount_try": "Скидка"
   },
   "en": {
     "choose_language": "Choose your language / Выберите язык:",
@@ -51,9 +54,6 @@
     "add_to_cart": "Add to cart",
     "add_more": "Add more",
     "view_cart": "View cart",
-    "total_before_discount": "Total before discount",
-    "points_spent": "Points spent",
-    "to_pay": "Amount to pay",
     "clear_cart": "Clear cart",
     "finish_order": "Finish order",
     "cart_empty": "Your cart is empty.",
@@ -79,6 +79,12 @@
     "comment_saved": "Comment saved.",
     "points_info": "You have {points} points (equivalent to {points_try}₺).",
     "enter_points": "How many points would you like to spend on this order? (max: {max_points})\nEnter a number from 0 to {max_points}.\n0 — do not spend any points.",
-    "invalid_points": "Please enter a valid number of points between 0 and {max_points}."
+    "invalid_points": "Please enter a valid number of points between 0 and {max_points}.",
+    "view_cart": "View cart",
+    "total_before_discount": "Total before discount",
+    "points_spent": "Points spent",
+    "to_pay": "Amount to pay",
+    "points_to_spend": "Points to spend",
+    "discount_try": "Discount"
   }
 }
