@@ -1752,7 +1752,7 @@ def compose_sold_report() -> str:
     for cur, cnt in summary_by_currency.items():
         summary_lines.append(f"{cur.upper()}: {cnt} pcs")
 
-    courier_pay = delivered_qty_exc_free * 150
+    courier_pay = delivered_qty_exc_free * 200
     remaining = cash_revenue - courier_pay
 
     # 5️⃣ Остатки по категориям (без разбивки по вкусам)
