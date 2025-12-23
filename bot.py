@@ -464,10 +464,17 @@ def send_weekly_digest():
     cursor.close()
     conn.close()
 def process_finish_order(chat_id, data):
+    # ЕСЛИ адрес уже введён — сразу отправляем заказ
+    if data.get("address"):
+        send_order_to_group(chat_id, data)
+        return
+
     cart = data.get("cart", [])
     if not cart:
         bot.send_message(chat_id, t(chat_id, "cart_empty"))
         return
+
+
 
     total_try = sum(i['price'] for i in cart)
 
@@ -525,6 +532,8 @@ def process_finish_order(chat_id, data):
 
         data["wait_for_address"] = True
         user_data[chat_id] = data
+# ЕСЛИ адрес уже введён — сразу отправляем заказ
+
 
 
 # ------------------------------------------------------------------------
