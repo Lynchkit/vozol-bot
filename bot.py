@@ -342,6 +342,15 @@ def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
         ))
 
     return kb
+def get_inline_send_order():
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        types.InlineKeyboardButton(
+            text="✅ Отправить заказ",
+            callback_data="confirm_send_order"
+        )
+    )
+    return kb
 # ------------------------------------------------------------------------
 #   10. Inline-кнопки для выбора вкусов
 # ------------------------------------------------------------------------
@@ -1148,8 +1157,14 @@ def handle_contact_input(message):
     data['contact'] = contact
     data['wait_for_contact'] = False
     data['wait_for_comment'] = True
-    kb = comment_keyboard(chat_id)
-    bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=kb)
+
+    bot.send_message(
+        chat_id,
+        "💬 Комментарий к заказу (необязательно).\n\n"
+        "Вы можете написать комментарий или сразу отправить заказ.",
+        reply_markup=get_inline_send_order()
+    )
+
     user_data[chat_id] = data
 
 
@@ -1961,6 +1976,24 @@ def handle_review_comment(message):
         f"Спасибо за отзыв! Средний рейтинг «{flavor}» теперь {avg}⭐️",
         reply_markup=get_inline_main_menu(chat_id)
     )
+@ensure_user
+@bot.callback_query_handler(func=lambda c: c.data == "confirm_send_order")
+def confirm_send_order(call):
+    chat_id = call.from_user.id
+    data = user_data.get(chat_id, {})
+
+    fake_message = types.Message(
+        message_id=0,
+        from_user=call.from_user,
+        chat=call.message.chat,
+        date=0,
+        content_type='text',
+        options={}
+    )
+
+    bot.answer_callback_query(call.id)
+    handle_comment_input(fake_message)
+
 
 @ensure_user
 @bot.message_handler(commands=['reviewtop'])
