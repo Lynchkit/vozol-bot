@@ -1166,6 +1166,9 @@ def handle_contact_input(message):
 # ------------------------------------------------------------------------
 #   28. Handler: ввод комментария и сохранение заказа (с учётом списания stock)
 # ------------------------------------------------------------------------
+# ------------------------------------------------------------------------
+#   Handler: finalize order (ONLY called from inline callback)
+# ------------------------------------------------------------------------
 def finalize_order(message, chat_id):
     data = user_data.get(chat_id, {})
     cart = data.get('cart', [])
@@ -1184,9 +1187,15 @@ def finalize_order(message, chat_id):
         needed[key] = needed.get(key, 0) + 1
 
     for (cat0, flavor0), qty_needed in needed.items():
-        item = next((i for i in menu[cat0]["flavors"] if i["flavor"] == flavor0), None)
+        item = next(
+            (i for i in menu[cat0]["flavors"] if i["flavor"] == flavor0),
+            None
+        )
         if not item or item.get("stock", 0) < qty_needed:
-            bot.send_message(chat_id, f"😕 К сожалению, «{flavor0}» больше не доступен.")
+            bot.send_message(
+                chat_id,
+                f"😕 К сожалению, «{flavor0}» больше не доступен."
+            )
             return
 
     for (cat0, flavor0), qty_needed in needed.items():
@@ -1214,22 +1223,41 @@ def finalize_order(message, chat_id):
     conn.commit()
 
     if pts_earned > 0:
-        cur.execute("UPDATE users SET points = points + ? WHERE chat_id = ?", (pts_earned, chat_id))
-        bot.send_message(chat_id, f"👍 Вы получили {pts_earned} бонусных баллов.")
+        cur.execute(
+            "UPDATE users SET points = points + ? WHERE chat_id = ?",
+            (pts_earned, chat_id)
+        )
+        bot.send_message(
+            chat_id,
+            f"👍 Вы получили {pts_earned} бонусных баллов."
+        )
 
     cur.execute("SELECT referred_by FROM users WHERE chat_id = ?", (chat_id,))
     row = cur.fetchone()
     if row and row[0]:
         inviter = row[0]
-        cur.execute("UPDATE users SET points = points + 200 WHERE chat_id = ?", (inviter,))
-        bot.send_message(inviter, "🎉 Вам начислено 200 бонусных баллов!")
-        cur.execute("UPDATE users SET referred_by = NULL WHERE chat_id = ?", (chat_id,))
+        cur.execute(
+            "UPDATE users SET points = points + 200 WHERE chat_id = ?",
+            (inviter,)
+        )
+        bot.send_message(
+            inviter,
+            "🎉 Вам начислено 200 бонусных баллов!"
+        )
+        cur.execute(
+            "UPDATE users SET referred_by = NULL WHERE chat_id = ?",
+            (chat_id,)
+        )
 
     conn.commit()
     cur.close()
     conn.close()
 
-    summary = "\n".join(f"{i['category']}: {i['flavor']} — {i['price']}₺" for i in cart)
+    summary = "\n".join(
+        f"{i['category']}: {i['flavor']} — {i['price']}₺"
+        for i in cart
+    )
+
     qty = len(cart)
     rates = fetch_rates()
     conv = (
@@ -1250,8 +1278,14 @@ def finalize_order(message, chat_id):
 
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
-        types.InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_order|{order_id}"),
-        types.InlineKeyboardButton("✅ Delivered", callback_data=f"order_delivered|{order_id}")
+        types.InlineKeyboardButton(
+            "❌ Cancel",
+            callback_data=f"cancel_order|{order_id}"
+        ),
+        types.InlineKeyboardButton(
+            "✅ Delivered",
+            callback_data=f"order_delivered|{order_id}"
+        )
     )
 
     bot.send_message(GROUP_CHAT_ID, full_en, reply_markup=kb)
@@ -1266,6 +1300,7 @@ def finalize_order(message, chat_id):
         "pending_discount": 0,
         "pending_points_spent": 0
     }
+
 
 
 
