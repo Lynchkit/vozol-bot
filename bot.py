@@ -1151,61 +1151,13 @@ def handle_points_input(message):
 # ------------------------------------------------------------------------
 #   26. Handler: ввод адреса
 # ------------------------------------------------------------------------
-@ensure_user
-@bot.message_handler(
-    func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_address"),
-    content_types=['text', 'location', 'venue']
-)
-def handle_address_input(message):
-    chat_id = message.chat.id
-    data = user_data.get(chat_id, {})
-    text = message.text or ""
+def process_finish_order(chat_id, data):
+    user = user_data.get(chat_id, {})
 
-    # ИСПРАВЛЁННЫЙ ВАРИАНТ
-
-    if text == t(chat_id, "back"):
-        data['wait_for_address'] = False
-        data['current_category'] = None
-        # 1) Убираем клавиатуру запроса локации
-        bot.send_message(chat_id,
-                         t(chat_id, "choose_category"),
-                         reply_markup=types.ReplyKeyboardRemove())
-        # 2) Показываем основное inline-меню
-        bot.send_message(chat_id,
-                         t(chat_id, "choose_category"),
-                         reply_markup=get_inline_main_menu(chat_id))
+    cart = user.get("cart", [])
+    if not cart:
+        bot.send_message(chat_id, t(chat_id, "cart_empty"))
         return
-
-    if text == t(chat_id, "choose_on_map"):
-        bot.send_message(
-            chat_id,
-            "Чтобы выбрать точку:\n📎 → Местоположение → «Выбрать на карте» → метка → Отправить",
-            reply_markup=types.ReplyKeyboardRemove()
-        )
-        return
-
-    if message.content_type == 'venue' and message.venue:
-        v = message.venue
-        address = f"{v.title}, {v.address}\n🌍 https://maps.google.com/?q={v.location.latitude},{v.location.longitude}"
-    elif message.content_type == 'location' and message.location:
-        lat, lon = message.location.latitude, message.location.longitude
-        address = f"🌍 https://maps.google.com/?q={lat},{lon}"
-    elif text == t(chat_id, "enter_address_text"):
-        bot.send_message(chat_id, t(chat_id, "enter_address"), reply_markup=types.ReplyKeyboardRemove())
-        return
-    elif message.content_type == 'text' and message.text:
-        address = message.text.strip()
-    else:
-        bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=address_keyboard(chat_id))
-
-        return
-
-    data['address'] = address
-    data['wait_for_address'] = False
-    data['wait_for_contact'] = True
-    kb = contact_keyboard(chat_id)
-    bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=kb)
-    user_data[chat_id] = data
 
 
 # ------------------------------------------------------------------------
