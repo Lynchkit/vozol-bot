@@ -483,7 +483,7 @@ def process_finish_order(chat_id, data):
 
     user_points = row[0] if row else 0
 
-    if user_points > 0:
+    if user_points > 0 and not data.get("points_processed"):
         max_points = min(user_points, total_try)
         points_try = user_points * 1
 
@@ -1073,7 +1073,12 @@ def handle_points_input(message):
     text = message.text.strip()
 
     if not text.isdigit():
-        bot.send_message(chat_id, t(chat_id, "invalid_points").format(max_points=data.get("temp_total_try", 0)))
+        bot.send_message(
+            chat_id,
+            t(chat_id, "invalid_points").format(
+                max_points=data.get("temp_total_try", 0)
+            )
+        )
         return
 
     points_to_spend = int(text)
@@ -1082,27 +1087,40 @@ def handle_points_input(message):
     max_points = min(user_points, total_try)
 
     if points_to_spend < 0 or points_to_spend > max_points:
-        bot.send_message(chat_id, t(chat_id, "invalid_points").format(max_points=max_points))
+        bot.send_message(
+            chat_id,
+            t(chat_id, "invalid_points").format(max_points=max_points)
+        )
         return
 
     if points_to_spend > 0:
         conn_local = get_db_connection()
         cursor_local = conn_local.cursor()
-        cursor_local.execute("UPDATE users SET points = points - ? WHERE chat_id = ?", (points_to_spend, chat_id))
+        cursor_local.execute(
+            "UPDATE users SET points = points - ? WHERE chat_id = ?",
+            (points_to_spend, chat_id)
+        )
         conn_local.commit()
         cursor_local.close()
         conn_local.close()
 
     discount_try = points_to_spend * 1
+
     data["pending_discount"] = discount_try
     data["pending_points_spent"] = points_to_spend
+
+    # 🔴 ВАЖНОЕ ИСПРАВЛЕНИЕ
+    data["points_processed"] = True   # ← ВОТ ЭТОГО НЕ ХВАТАЛО
     data["wait_for_points"] = False
 
     cart = data.get("cart", [])
     total_after = total_try - discount_try
     kb = address_keyboard(chat_id)
 
-    summary_lines = [f"{item['category']}: {item['flavor']} — {item['price']}₺" for item in cart]
+    summary_lines = [
+        f"{item['category']}: {item['flavor']} — {item['price']}₺"
+        for item in cart
+    ]
     summary = "\n".join(summary_lines)
 
     msg = (
@@ -1118,6 +1136,7 @@ def handle_points_input(message):
     data["wait_for_address"] = True
 
     user_data[chat_id] = data
+
 
 
 # ------------------------------------------------------------------------
