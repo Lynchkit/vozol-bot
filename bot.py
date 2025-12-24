@@ -411,6 +411,10 @@ def comment_inline_keyboard(chat_id: int) -> types.InlineKeyboardMarkup:
         )
     )
     return kb
+def back_only_keyboard(chat_id: int) -> types.ReplyKeyboardMarkup:
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add(t(chat_id, "back"))
+    return kb
 
 # ------------------------------------------------------------------------
 #   12. Клавиатура редактирования меню (/change) — ВСЁ НА АНГЛИЙСКОМ
@@ -1179,14 +1183,20 @@ def handle_contact_input(message):
 
     bot.send_message(
         chat_id,
-        "✏️ Комментарий к заказу (необязательно)",
-        reply_markup=comment_inline_keyboard(chat_id)
+        "✏️ Напишите комментарий (необязательно)",
+        reply_markup=types.ReplyKeyboardRemove()
     )
 
     bot.send_message(
         chat_id,
         " ",
         reply_markup=comment_inline_keyboard(chat_id)
+    )
+
+    bot.send_message(
+        chat_id,
+        t(chat_id, "back"),
+        reply_markup=back_only_keyboard(chat_id)
     )
 
     user_data[chat_id] = data
@@ -1228,8 +1238,21 @@ def handle_comment_input(message):
         bot.send_message(
             chat_id,
             t(chat_id, "comment_saved"),
-            reply_markup=comment_keyboard(chat_id)
+            reply_markup=types.ReplyKeyboardRemove()
         )
+
+        bot.send_message(
+            chat_id,
+            " ",
+            reply_markup=comment_inline_keyboard(chat_id)
+        )
+
+        bot.send_message(
+            chat_id,
+            t(chat_id, "back"),
+            reply_markup=back_only_keyboard(chat_id)
+        )
+
         user_data[chat_id] = data
         return
 
@@ -3109,11 +3132,22 @@ def universal_handler(message):
 
         if message.content_type == 'text' and text != t(chat_id, "send_order"):
             data['comment'] = text.strip()
-            bot.send_message(chat_id, t(chat_id, "comment_saved"), reply_markup=comment_keyboard(chat_id))
             bot.send_message(
                 chat_id,
-                t(chat_id, "or_press_button"),
+                t(chat_id, "comment_saved"),
+                reply_markup=types.ReplyKeyboardRemove()
+            )
+
+            bot.send_message(
+                chat_id,
+                " ",
                 reply_markup=comment_inline_keyboard(chat_id)
+            )
+
+            bot.send_message(
+                chat_id,
+                t(chat_id, "back"),
+                reply_markup=back_only_keyboard(chat_id)
             )
 
             user_data[chat_id] = data
