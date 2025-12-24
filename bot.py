@@ -1161,7 +1161,7 @@ def handle_contact_input(message):
             callback_data="back_to_contact"
         )
     )
-
+    bot.send_message(chat_id, "\u200d", reply_markup=types.ReplyKeyboardRemove())
 
     # показываем inline-кнопки
     bot.send_message(
