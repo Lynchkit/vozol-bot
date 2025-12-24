@@ -342,6 +342,12 @@ def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
         ))
 
     return kb
+def get_inline_send_order(chat_id: int) -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton(
+           text=f"✅ {t(chat_id, 'finish_order')}",
+           callback_data="finish_order_inline"))
+    return kb
 # ------------------------------------------------------------------------
 #   10. Inline-кнопки для выбора вкусов
 # ------------------------------------------------------------------------
@@ -1103,9 +1109,11 @@ def handle_address_input(message):
     data['address'] = address
     data['wait_for_address'] = False
     data['wait_for_contact'] = True
+    # убираем клавиатуру
+    bot.send_message(chat_id, t(chat_id, "enter_contact"),
+                     reply_markup=types.ReplyKeyboardRemove())
     kb = contact_keyboard(chat_id)
     bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=kb)
-    user_data[chat_id] = data
 
 
 # ------------------------------------------------------------------------
@@ -1164,31 +1172,32 @@ def handle_contact_input(message):
 def handle_comment_input(message):
     chat_id = message.chat.id
     data = user_data.get(chat_id, {})
-    text = message.text or ""
+    text = (message.text or "").strip()
 
-    # Обработка кнопки «Назад»
-    # ИСПРАВЛЁННЫЙ ВАРИАНТ
-
+    # если нажали старую Reply-кнопку «Назад» – игнорируем, у нас inline
     if text == t(chat_id, "back"):
         data['wait_for_comment'] = False
-        bot.send_message(chat_id,
-                         t(chat_id, "choose_category"),
-                         reply_markup=types.ReplyKeyboardRemove())
-        bot.send_message(chat_id,
-                         t(chat_id, "choose_category"),
-                         reply_markup=get_inline_main_menu(chat_id))
-        return
-
-    # Пользователь вводит текст комментария
-    if text == t(chat_id, "enter_comment"):
-        bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=types.ReplyKeyboardRemove())
-        return
-
-    if message.content_type == 'text' and text != t(chat_id, "send_order"):
-        data['comment'] = text.strip()
-        bot.send_message(chat_id, t(chat_id, "comment_saved"), reply_markup=comment_keyboard(chat_id))
+        data['wait_for_contact'] = True
+        bot.send_message(chat_id, t(chat_id, "enter_contact"),
+                         reply_markup=contact_keyboard(chat_id))
         user_data[chat_id] = data
         return
+
+    # если ввели текст – сохраняем и снова показываем inline-кнопку
+    if text and text != t(chat_id, "send_order"):
+        data['comment'] = text
+        bot.send_message(chat_id,
+                         t(chat_id, "comment_saved"),
+                         reply_markup=types.ReplyKeyboardRemove())
+        bot.send_message(chat_id,
+                         f"💬 Ваш комментарий: {text}\n\n"
+                         f"Нажмите «✅ Оформить заказ» для завершения.",
+                         reply_markup=get_inline_send_order(chat_id))
+        user_data[chat_id] = data
+        return
+
+    # если юзер сразу нажал «✅ Оформить заказ» (callback) – ничего не делаем,
+    # обработчик callback'а сам вызовет finish_order_logic
 
     # Пользователь подтвердил отправку заказа
     if text == t(chat_id, "send_order"):
@@ -3321,7 +3330,14 @@ def universal_handler(message):
         return
 
 
+@bot.callback_query_handler(func=lambda c: c.data == "finish_order_inline")
+def handle_finish_order_inline(call):
+    chat_id = call.from_user.id
+    bot.answer_callback_query(call.id)
+    # переиспользуем уже существующую логику
+    handle_finish_order(call)
 
+    
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("cancel_order|"))
 def handle_cancel_order(call):
     user_id = call.from_user.id
