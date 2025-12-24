@@ -342,6 +342,19 @@ def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
         ))
 
     return kb
+def comment_inline_keyboard(chat_id):
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton(
+            text="📤Оформить заказ",
+            callback_data="confirm_order"
+        ),
+        types.InlineKeyboardButton(
+            text="◀️Назад",
+            callback_data="back_to_contact"
+        )
+    )
+    return kb
 # ------------------------------------------------------------------------
 #   10. Inline-кнопки для выбора вкусов
 # ------------------------------------------------------------------------
@@ -469,19 +482,7 @@ def send_weekly_digest():
 
     cursor.close()
     conn.close()
-def comment_inline_keyboard(chat_id):
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        types.InlineKeyboardButton(
-            text="Оформить заказ",
-            callback_data="confirm_order"
-        ),
-        types.InlineKeyboardButton(
-            text="Назад",
-            callback_data="back_to_contact"
-        )
-    )
-    return kb
+
 
 
 
@@ -1184,12 +1185,6 @@ def handle_contact_input(message):
         chat_id,
         t(chat_id, "enter_comment"),
         reply_markup=types.ReplyKeyboardRemove()
-    )
-
-    bot.send_message(
-        chat_id,
-        "👇",
-        reply_markup=comment_inline_keyboard(chat_id)
     )
 
     user_data[chat_id] = data
