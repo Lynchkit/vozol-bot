@@ -1153,11 +1153,11 @@ def handle_contact_input(message):
     data['wait_for_contact'] = False
     data['wait_for_comment'] = True
 
-    # Показываем сообщение о вводе комментария с пустой reply-клавиатурой
+    # Убираем reply-клавиатуру при переходе к комментарию
     bot.send_message(
         chat_id,
         t(chat_id, "enter_comment"),
-        reply_markup=comment_keyboard(chat_id)
+        reply_markup=types.ReplyKeyboardRemove()  # Убираем все reply-кнопки
     )
 
     user_data[chat_id] = data
