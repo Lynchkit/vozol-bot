@@ -1113,9 +1113,7 @@ def handle_address_input(message):
     user_data[chat_id] = data
 
 
-# ------------------------------------------------------------------------
-#   27. Handler: ввод контакта
-# ------------------------------------------------------------------------
+# Альтернативный вариант с принудительным удалением reply-клавиатуры
 @ensure_user
 @bot.message_handler(
     func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_contact"),
@@ -1155,30 +1153,34 @@ def handle_contact_input(message):
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         types.InlineKeyboardButton(
-            text=f"✅ {t(chat_id, 'send_order')}",
+            text=f" {t(chat_id, 'send_order')}",
             callback_data="send_order_final"
         ),
         types.InlineKeyboardButton(
-            text=f"⬅️ {t(chat_id, 'back')}",
+            text=f"️ {t(chat_id, 'back')}",
             callback_data="back_to_contact"
         )
     )
 
-    # Удаляем reply-клавиатуру и сразу показываем inline-кнопки
-    # В одном сообщении
-    msg = bot.send_message(
+    # 1. Сначала отправляем пустое сообщение для удаления reply-клавиатуры
+    remove_msg = bot.send_message(
         chat_id,
-        "💬 Введите комментарий или отправьте заказ",
-        reply_markup=types.ReplyKeyboardRemove()  # Сначала удаляем reply-клавиатуру
+        "Переходим к комментарию...",
+        reply_markup=types.ReplyKeyboardRemove()
     )
 
-    # Немедленно редактируем то же сообщение, добавляя inline-клавиатуру
-    bot.edit_message_text(
+    # 2. Затем показываем inline-кнопки
+    bot.send_message(
+        chat_id,
         "💬 Введите комментарий или отправьте заказ",
-        chat_id=chat_id,
-        message_id=msg.message_id,
         reply_markup=kb
     )
+
+    # 3. Удаляем промежуточное сообщение (опционально)
+    try:
+        bot.delete_message(chat_id, remove_msg.message_id)
+    except:
+        pass  # Если не удалось удалить - не страшно
 
     user_data[chat_id] = data
 
