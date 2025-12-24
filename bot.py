@@ -402,6 +402,15 @@ def comment_keyboard(chat_id: int) -> types.ReplyKeyboardMarkup:
     kb.add(t(chat_id, "send_order"))
     kb.add(t(chat_id, "back"))
     return kb
+def comment_inline_keyboard(chat_id: int) -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        types.InlineKeyboardButton(
+            text=f"✅ {t(chat_id, 'send_order')}",
+            callback_data="send_order_inline"
+        )
+    )
+    return kb
 
 # ------------------------------------------------------------------------
 #   12. Клавиатура редактирования меню (/change) — ВСЁ НА АНГЛИЙСКОМ
@@ -1047,6 +1056,25 @@ def handle_points_input(message):
 
     user_data[chat_id] = data
 
+@ensure_user
+@bot.callback_query_handler(func=lambda c: c.data == "send_order_inline")
+def handle_send_order_inline(call):
+    chat_id = call.from_user.id
+    bot.answer_callback_query(call.id)
+
+    # Эмулируем нажатие reply-кнопки
+    fake_message = types.Message(
+        message_id=0,
+        from_user=call.from_user,
+        date=int(time.time()),
+        chat=call.message.chat,
+        content_type='text',
+        options={},
+        json_string={}
+    )
+    fake_message.text = t(chat_id, "send_order")
+
+    handle_comment_input(fake_message)
 
 # ------------------------------------------------------------------------
 #   26. Handler: ввод адреса
@@ -1149,7 +1177,17 @@ def handle_contact_input(message):
     data['wait_for_contact'] = False
     data['wait_for_comment'] = True
     kb = comment_keyboard(chat_id)
-    bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=kb)
+    bot.send_message(
+        chat_id,
+        t(chat_id, "enter_comment"),
+        reply_markup=comment_keyboard(chat_id)
+    )
+    bot.send_message(
+        chat_id,
+        t(chat_id, "or_press_button"),
+        reply_markup=comment_inline_keyboard(chat_id)
+    )
+
     user_data[chat_id] = data
 
 
@@ -1187,6 +1225,12 @@ def handle_comment_input(message):
     if message.content_type == 'text' and text != t(chat_id, "send_order"):
         data['comment'] = text.strip()
         bot.send_message(chat_id, t(chat_id, "comment_saved"), reply_markup=comment_keyboard(chat_id))
+        bot.send_message(
+            chat_id,
+            t(chat_id, "or_press_button"),
+            reply_markup=comment_inline_keyboard(chat_id)
+        )
+
         user_data[chat_id] = data
         return
 
@@ -3067,6 +3111,11 @@ def universal_handler(message):
         if message.content_type == 'text' and text != t(chat_id, "send_order"):
             data['comment'] = text.strip()
             bot.send_message(chat_id, t(chat_id, "comment_saved"), reply_markup=comment_keyboard(chat_id))
+            bot.send_message(
+                chat_id,
+                t(chat_id, "or_press_button"),
+                reply_markup=comment_inline_keyboard(chat_id)
+            )
 
             user_data[chat_id] = data
             return
