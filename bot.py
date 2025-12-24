@@ -1242,14 +1242,12 @@ def handle_comment_input(message):
             reply_markup=types.ReplyKeyboardRemove()
         )
 
-        # 2. Сообщение + INLINE
         bot.send_message(
             chat_id,
             t(chat_id, "comment_saved"),
             reply_markup=comment_inline_keyboard(chat_id)
         )
 
-        # 3. Reply Назад
         bot.send_message(
             chat_id,
             t(chat_id, "back"),
@@ -3136,20 +3134,21 @@ def universal_handler(message):
         if message.content_type == 'text' and text != t(chat_id, "send_order"):
             data['comment'] = text.strip()
             # 1. Убираем старые reply-кнопки
+            # 1. Один раз убираем старые reply-кнопки
             bot.send_message(
                 chat_id,
                 " ",
                 reply_markup=types.ReplyKeyboardRemove()
             )
 
-            # 2. Основное сообщение + INLINE
+            # 2. Главное сообщение + INLINE-КНОПКА
             bot.send_message(
                 chat_id,
                 "✏️ Комментарий к заказу (необязательно)",
                 reply_markup=comment_inline_keyboard(chat_id)
             )
 
-            # 3. Reply-кнопка Назад
+            # 3. Отдельно reply-кнопка «Назад»
             bot.send_message(
                 chat_id,
                 t(chat_id, "back"),
