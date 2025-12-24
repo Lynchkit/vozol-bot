@@ -1153,11 +1153,25 @@ def handle_contact_input(message):
     data['wait_for_contact'] = False
     data['wait_for_comment'] = True
 
-    # Убираем reply-клавиатуру при переходе к комментарию
+    # Создаем inline-клавиатуру с двумя кнопками СРАЗУ
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton(
+            text=f"✅ {t(chat_id, 'send_order')}",
+            callback_data="send_order_final"
+        ),
+        types.InlineKeyboardButton(
+            text=f"⬅️ {t(chat_id, 'back')}",
+            callback_data="back_to_contact"
+        )
+    )
+
+    # Убираем reply-клавиатуру и показываем inline-кнопки
     bot.send_message(
         chat_id,
-        t(chat_id, "enter_comment"),
-        reply_markup=types.ReplyKeyboardRemove()  # Убираем все reply-кнопки
+        f"📱 Контакт: {contact}\n\n"
+        f"💬 Теперь введите комментарий к заказу (или нажмите '✅ {t(chat_id, 'send_order')}' для продолжения):",
+        reply_markup=kb
     )
 
     user_data[chat_id] = data
@@ -1176,34 +1190,43 @@ def handle_comment_input(message):
     data = user_data.get(chat_id, {})
     text = message.text or ""
 
-    # Обработка кнопки «Назад» из inline-клавиатуры
-    # Эта логика будет в callback-хендлере ниже
+    # Сохраняем комментарий
+    data['comment'] = text.strip()
 
-    if message.content_type == 'text':
-        # Если пользователь вводит текст комментария
-        data['comment'] = text.strip()
-
-        # Создаем inline-клавиатуру с двумя кнопками
-        kb = types.InlineKeyboardMarkup(row_width=2)
-        kb.add(
-            types.InlineKeyboardButton(
-                text=f"✅ {t(chat_id, 'send_order')}",
-                callback_data="send_order_final"
-            ),
-            types.InlineKeyboardButton(
-                text=f"⬅️ {t(chat_id, 'back')}",
-                callback_data="back_to_contact"
-            )
+    # Создаем inline-клавиатуру с двумя кнопками
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton(
+            text=f"✅ {t(chat_id, 'send_order')}",
+            callback_data="send_order_final"
+        ),
+        types.InlineKeyboardButton(
+            text=f"⬅️ {t(chat_id, 'back')}",
+            callback_data="back_to_contact"
         )
+    )
 
-        # Отправляем подтверждение с inline-кнопками
-        bot.send_message(
-            chat_id,
-            t(chat_id, "comment_saved"),
-            reply_markup=kb
-        )
-        user_data[chat_id] = data
-        return
+    # Показываем подтверждение и кнопки СРАЗУ
+    bot.send_message(
+        chat_id,
+        f"💬 Комментарий: {text}\n\nНажмите '✅ {t(chat_id, 'send_order')}' для оформления заказа "
+        f"или '⬅️ {t(chat_id, 'back')}' для изменения контакта",
+        reply_markup=kb
+    )
+
+    user_data[chat_id] = data
+    return
+
+    # Отправляем сообщение с inline-кнопками СРАЗУ
+    bot.send_message(
+        chat_id,
+        f"💬 Комментарий: {text}\n\nВыберите действие:",
+        reply_markup=kb
+    )
+
+    # Оставляем wait_for_comment = True, чтобы пользователь мог изменить комментарий
+    user_data[chat_id] = data
+    return
 
     # Пользователь подтвердил отправку заказа
     if text == t(chat_id, "send_order"):
