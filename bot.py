@@ -479,6 +479,37 @@ def send_weekly_digest():
 
     cursor.close()
     conn.close()
+def send_order_to_group(chat_id: int, user):
+    data = user_data.get(chat_id, {})
+    cart = data.get("cart", [])
+
+    total_try = sum(i["price"] for i in cart)
+    discount = data.get("pending_discount", 0)
+    total_after = max(total_try - discount, 0)
+
+    summary = "\n".join(
+        f"{i['category']}: {i['flavor']} — {i['price']}₺"
+        for i in cart
+    )
+
+    text = (
+        f"📥 Новый заказ от @{user.username or user.first_name}\n\n"
+        f"{summary}\n\n"
+        f"💰 Итого: {total_after}₺\n"
+        f"📍 Адрес: {data.get('address','—')}\n"
+        f"📱 Контакт: {data.get('contact','—')}\n"
+        f"💬 Комментарий: {data.get('comment','—')}"
+    )
+
+    bot.send_message(GROUP_CHAT_ID, text)
+
+    # очистка состояния
+    data["cart"] = []
+    data["comment"] = ""
+    data["pending_discount"] = 0
+    user_data[chat_id] = data
+
+    bot.send_message(chat_id, "✅ Заказ отправлен. Спасибо!")
 
 # ------------------------------------------------------------------------
 #   14. Хендлер /start – регистрация, реферальная система, выбор языка
@@ -1607,6 +1638,21 @@ def cmd_points(message):
         points = row[0]
         bot.send_message(chat_id, t(chat_id, "points_info").format(points=points, points_try=points))
 
+@ensure_user
+@bot.callback_query_handler(func=lambda c: c.data == "finish_order_inline")
+def handle_finish_order_inline(call):
+    chat_id = call.from_user.id
+    bot.answer_callback_query(call.id)
+
+    data = user_data.get(chat_id, {})
+    cart = data.get("cart", [])
+
+    if not cart:
+        bot.send_message(chat_id, "Корзина пуста")
+        return
+
+    # 👉 вызываем общую логику отправки заказа
+    send_order_to_group(chat_id, call.from_user)
 
 # ------------------------------------------------------------------------
 #   31. Хендлер /convert — курсы и конвертация суммы TRY
