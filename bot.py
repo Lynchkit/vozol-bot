@@ -1002,7 +1002,7 @@ def handle_points_input(message):
     summary = "\n".join(summary_lines)
 
     msg = (
-        "🛒 Посмотреть корзину:\n\n"
+        "🛒 Корзина:\n\n"
         f"{summary}\n\n"
         f"Итог до скидки: {total_try}₺\n"
         f"Списано баллов: {points_to_spend} (−{discount_try}₺)\n"
