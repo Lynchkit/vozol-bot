@@ -395,6 +395,13 @@ def contact_keyboard(chat_id: int) -> types.ReplyKeyboardMarkup:
     return kb
 
 
+
+def comment_keyboard(chat_id: int) -> types.ReplyKeyboardMarkup:
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    kb.add(t(chat_id, "enter_comment"))
+    kb.add(t(chat_id, "send_order"))
+    kb.add(t(chat_id, "back"))
+    return kb
 def comment_keyboard(chat_id: int) -> types.ReplyKeyboardMarkup:
     """Клавиатура для ввода комментария - теперь без кнопок"""
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
