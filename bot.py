@@ -406,7 +406,7 @@ def comment_inline_keyboard(chat_id: int) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(
         types.InlineKeyboardButton(
-            text=f"✅ {t(chat_id, 'send_order')}",
+            text=t(chat_id, "send_order"),
             callback_data="send_order_inline"
         )
     )
@@ -1179,12 +1179,12 @@ def handle_contact_input(message):
     kb = comment_keyboard(chat_id)
     bot.send_message(
         chat_id,
-        t(chat_id, "enter_comment"),
+        "✏️ Комментарий к заказу (необязательно)",
         reply_markup=comment_keyboard(chat_id)
     )
     bot.send_message(
         chat_id,
-        t(chat_id, "or_press_button"),
+        " ",
         reply_markup=comment_inline_keyboard(chat_id)
     )
 
@@ -1224,7 +1224,11 @@ def handle_comment_input(message):
 
     if message.content_type == 'text' and text != t(chat_id, "send_order"):
         data['comment'] = text.strip()
-        bot.send_message(chat_id, t(chat_id, "comment_saved"), reply_markup=comment_keyboard(chat_id))
+        bot.send_message(
+            chat_id,
+            t(chat_id, "comment_saved"),
+            reply_markup=comment_keyboard(chat_id)
+        )
         bot.send_message(
             chat_id,
             t(chat_id, "or_press_button"),
