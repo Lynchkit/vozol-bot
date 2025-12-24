@@ -1162,12 +1162,6 @@ def handle_contact_input(message):
         )
     )
 
-    # убираем reply-клавиатуру
-    bot.send_message(
-        chat_id,
-        "Переходим к комментарию...",
-        reply_markup=types.ReplyKeyboardRemove()
-    )
 
     # показываем inline-кнопки
     bot.send_message(
