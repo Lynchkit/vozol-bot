@@ -1203,11 +1203,11 @@ def handle_comment_input(message):
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         types.InlineKeyboardButton(
-            text=f"✅ {t(chat_id, 'send_order')}",
+            text=f" {t(chat_id, 'send_order')}",
             callback_data="send_order_final"
         ),
         types.InlineKeyboardButton(
-            text=f"⬅️ {t(chat_id, 'back')}",
+            text=f" {t(chat_id, 'back')}",
             callback_data="back_to_contact"
         )
     )
@@ -1215,8 +1215,8 @@ def handle_comment_input(message):
     # Показываем, что комментарий сохранен и кнопки
     bot.send_message(
         chat_id,
-        f"💬 Комментарий сохранен\n\nНажмите '{t(chat_id, 'send_order')}' для оформления заказа "
-        f"или '{t(chat_id, 'back')}' для изменения контакта",
+        f"💬 Комментарий сохранен\n\nНажмите '{t(chat_id, 'send_order')}' для оформления заказа ",
+
         reply_markup=kb
     )
 
