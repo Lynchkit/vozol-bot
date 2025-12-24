@@ -380,6 +380,25 @@ def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
     ))
     return kb
 
+def finalize_order(chat_id: int, data: dict):
+    cart = data.get('cart', [])
+    if not cart:
+        bot.send_message(chat_id, t(chat_id, "cart_empty"))
+        return
+
+    total_try = sum(i['price'] for i in cart)
+    discount = data.pop("pending_discount", 0)
+    total_after = max(total_try - discount, 0)
+
+
+    # после успешного сохранения сбрасываем состояние
+    data.update({
+        "cart": [], "current_category": None,
+        "wait_for_address": False, "wait_for_contact": False, "wait_for_comment": False,
+        "pending_discount": 0, "pending_points_spent": 0,
+        "temp_total_try": None, "temp_user_points": None
+    })
+    user_data[chat_id] = data
 # ------------------------------------------------------------------------
 #   11. Reply-клавиатуры (альтернатива inline)
 # ------------------------------------------------------------------------
@@ -1057,6 +1076,9 @@ def handle_points_input(message):
 # ------------------------------------------------------------------------
 #   26. Handler: ввод адреса
 # ------------------------------------------------------------------------
+# ------------------------------------------------------------------------
+#   26. Handler: ввод адреса
+# ------------------------------------------------------------------------
 @ensure_user
 @bot.message_handler(
     func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_address"),
@@ -1067,21 +1089,20 @@ def handle_address_input(message):
     data = user_data.get(chat_id, {})
     text = message.text or ""
 
-    # ИСПРАВЛЁННЫЙ ВАРИАНТ
-
+    # если нажали «Назад» – возвращаем в категории
     if text == t(chat_id, "back"):
         data['wait_for_address'] = False
         data['current_category'] = None
-        # 1) Убираем клавиатуру запроса локации
         bot.send_message(chat_id,
                          t(chat_id, "choose_category"),
                          reply_markup=types.ReplyKeyboardRemove())
-        # 2) Показываем основное inline-меню
         bot.send_message(chat_id,
                          t(chat_id, "choose_category"),
                          reply_markup=get_inline_main_menu(chat_id))
+        user_data[chat_id] = data
         return
 
+    # обработка location/venue/текста – у вас уже есть, не трогаем
     if text == t(chat_id, "choose_on_map"):
         bot.send_message(
             chat_id,
@@ -1103,15 +1124,20 @@ def handle_address_input(message):
         address = message.text.strip()
     else:
         bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=address_keyboard(chat_id))
-
         return
 
+    # СОХРАНЯЕМ АДРЕС
     data['address'] = address
     data['wait_for_address'] = False
     data['wait_for_contact'] = True
-    # убираем клавиатуру
-    bot.send_message(chat_id, t(chat_id, "enter_contact"),
+    user_data[chat_id] = data
+
+    # УБИРАЕМ старую Reply-клавиатуру
+    bot.send_message(chat_id,
+                     t(chat_id, "enter_contact"),
                      reply_markup=types.ReplyKeyboardRemove())
+
+    # ПОКАЗЫВАЕМ новую Reply-клаву для контакта
     kb = contact_keyboard(chat_id)
     bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=kb)
 
@@ -1156,9 +1182,15 @@ def handle_contact_input(message):
     data['contact'] = contact
     data['wait_for_contact'] = False
     data['wait_for_comment'] = True
-    kb = comment_keyboard(chat_id)
-    bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=kb)
     user_data[chat_id] = data
+
+    # убираем reply-клавиатуру и сразу выводим inline-кнопку
+    bot.send_message(chat_id,
+                     t(chat_id, "enter_comment"),
+                     reply_markup=types.ReplyKeyboardRemove())
+    bot.send_message(chat_id,
+                     "💬 Можете оставить комментарий текстом, либо сразу нажмите:",
+                     reply_markup=get_inline_send_order(chat_id))
 
 
 # ------------------------------------------------------------------------
@@ -3055,10 +3087,15 @@ def universal_handler(message):
         data['contact'] = contact
         data['wait_for_contact'] = False
         data['wait_for_comment'] = True
-        kb = comment_keyboard(chat_id)
-        bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=kb)
         user_data[chat_id] = data
-        return
+
+        # Убираем reply-клавиатуру и сразу показываем inline-кнопку
+        bot.send_message(chat_id,
+                         t(chat_id, "enter_comment"),
+                         reply_markup=types.ReplyKeyboardRemove())
+        bot.send_message(chat_id,
+                         "💬 Можете оставить комментарий текстом, либо сразу нажмите:",
+                         reply_markup=get_inline_send_order(chat_id))
 
     # ——— Если ожидаем ввод комментария ———
     if data.get('wait_for_comment'):
@@ -3334,10 +3371,48 @@ def universal_handler(message):
 def handle_finish_order_inline(call):
     chat_id = call.from_user.id
     bot.answer_callback_query(call.id)
-    # переиспользуем уже существующую логику
-    handle_finish_order(call)
+    data = user_data.get(chat_id, {})
 
-    
+    # если баллы ещё не обработаны – запускаем обычную логику
+    if data.get("temp_total_try") is None:
+        # имитируем сообщение, чтобы не править старый код
+        class FakeMessage:
+            def __init__(self, chat_id): self.chat = self; self.id = chat_id
+        handle_finish_order(FakeMessage(chat_id))
+        return
+
+    # баллы уже обработаны – сразу просим адрес
+    if not data.get('address'):
+        kb = address_keyboard(chat_id)
+        bot.send_message(chat_id,
+                         f"🛒 Итог: {data['temp_total_try'] - data.get('pending_discount', 0)}₺\n\n"
+                         f"{t(chat_id, 'enter_address')}",
+                         reply_markup=kb)
+        data['wait_for_address'] = True
+        user_data[chat_id] = data
+        return
+
+    # адрес уже есть – просим контакт
+    if not data.get('contact'):
+        kb = contact_keyboard(chat_id)
+        bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=kb)
+        data['wait_for_contact'] = True
+        user_data[chat_id] = data
+        return
+
+    # контакт есть – просим коммент (inline-кнопка уже на месте)
+    if not data.get('comment'):
+        bot.send_message(chat_id,
+                         "💬 Можете оставить комментарий текстом, либо сразу нажмите:",
+                         reply_markup=get_inline_send_order(chat_id))
+        data['wait_for_comment'] = True
+        user_data[chat_id] = data
+        return
+
+    # всё заполнено – финализируем заказ
+    finalize_order(chat_id, data)
+
+
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("cancel_order|"))
 def handle_cancel_order(call):
     user_id = call.from_user.id
