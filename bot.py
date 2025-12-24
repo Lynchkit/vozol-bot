@@ -1235,18 +1235,21 @@ def handle_comment_input(message):
 
     if message.content_type == 'text' and text != t(chat_id, "send_order"):
         data['comment'] = text.strip()
-        bot.send_message(
-            chat_id,
-            t(chat_id, "comment_saved"),
-            reply_markup=types.ReplyKeyboardRemove()
-        )
-
+        # 1. Убираем всё лишнее
         bot.send_message(
             chat_id,
             " ",
+            reply_markup=types.ReplyKeyboardRemove()
+        )
+
+        # 2. Сообщение + INLINE
+        bot.send_message(
+            chat_id,
+            t(chat_id, "comment_saved"),
             reply_markup=comment_inline_keyboard(chat_id)
         )
 
+        # 3. Reply Назад
         bot.send_message(
             chat_id,
             t(chat_id, "back"),
@@ -3132,18 +3135,21 @@ def universal_handler(message):
 
         if message.content_type == 'text' and text != t(chat_id, "send_order"):
             data['comment'] = text.strip()
-            bot.send_message(
-                chat_id,
-                t(chat_id, "comment_saved"),
-                reply_markup=types.ReplyKeyboardRemove()
-            )
-
+            # 1. Убираем старые reply-кнопки
             bot.send_message(
                 chat_id,
                 " ",
+                reply_markup=types.ReplyKeyboardRemove()
+            )
+
+            # 2. Основное сообщение + INLINE
+            bot.send_message(
+                chat_id,
+                "✏️ Комментарий к заказу (необязательно)",
                 reply_markup=comment_inline_keyboard(chat_id)
             )
 
+            # 3. Reply-кнопка Назад
             bot.send_message(
                 chat_id,
                 t(chat_id, "back"),
