@@ -1165,14 +1165,14 @@ def handle_contact_input(message):
     # убираем reply-клавиатуру
     bot.send_message(
         chat_id,
-        "\u200d",
+        "✏️:",
         reply_markup=types.ReplyKeyboardRemove()
     )
 
     # показываем inline-кнопки
     bot.send_message(
         chat_id,
-        "💬 Введите комментарий или отправьте заказ",
+        "💬 Напишите комментарий или просто отправьте заказ",
         reply_markup=kb
     )
 
