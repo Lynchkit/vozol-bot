@@ -464,59 +464,63 @@ def send_weekly_digest():
     cursor.close()
     conn.close()
 def process_finish_order(chat_id, data):
-    # ЕСЛИ адрес уже введён — сразу отправляем заказ
-    if data.get("address"):
-        send_order_to_group(chat_id, data)
-        return
+    # ВСЕГДА берём состояние из user_data
+    user = user_data.get(chat_id, {})
 
-    cart = data.get("cart", [])
+    cart = user.get("cart", [])
     if not cart:
         bot.send_message(chat_id, t(chat_id, "cart_empty"))
         return
 
-
-
     total_try = sum(i['price'] for i in cart)
 
-    conn_local = get_db_connection()
-    cursor_local = conn_local.cursor()
-    cursor_local.execute(
-        "SELECT points FROM users WHERE chat_id = ?",
-        (chat_id,)
-    )
-    row = cursor_local.fetchone()
-    cursor_local.close()
-    conn_local.close()
-
-    user_points = row[0] if row else 0
-
-    if user_points > 0 and not data.get("points_processed"):
-        max_points = min(user_points, total_try)
-        points_try = user_points * 1
-
-        msg = (
-            t(chat_id, "points_info").format(
-                points=user_points,
-                points_try=points_try
-            )
-            + "\n"
-            + t(chat_id, "enter_points").format(
-                max_points=max_points
-            )
+    # --- ЭТАП БАЛЛОВ ---
+    if not user.get("points_processed"):
+        conn_local = get_db_connection()
+        cursor_local = conn_local.cursor()
+        cursor_local.execute(
+            "SELECT points FROM users WHERE chat_id = ?",
+            (chat_id,)
         )
+        row = cursor_local.fetchone()
+        cursor_local.close()
+        conn_local.close()
 
-        bot.send_message(
-            chat_id,
-            msg,
-            reply_markup=types.ReplyKeyboardRemove()
-        )
+        user_points = row[0] if row else 0
 
-        data["wait_for_points"] = True
-        data["temp_total_try"] = total_try
-        data["temp_user_points"] = user_points
-        user_data[chat_id] = data
+        if user_points > 0:
+            max_points = min(user_points, total_try)
+            points_try = user_points * 1
 
-    else:
+            msg = (
+                t(chat_id, "points_info").format(
+                    points=user_points,
+                    points_try=points_try
+                )
+                + "\n"
+                + t(chat_id, "enter_points").format(
+                    max_points=max_points
+                )
+            )
+
+            bot.send_message(
+                chat_id,
+                msg,
+                reply_markup=types.ReplyKeyboardRemove()
+            )
+
+            user["wait_for_points"] = True
+            user["temp_total_try"] = total_try
+            user["temp_user_points"] = user_points
+            user_data[chat_id] = user
+            return   # ← КРИТИЧЕСКИ ВАЖНО
+
+        # баллов нет — считаем этап пройденным
+        user["points_processed"] = True
+        user_data[chat_id] = user
+
+    # --- ЭТАП АДРЕСА ---
+    if not user.get("address"):
         kb = address_keyboard(chat_id)
 
         bot.send_message(
@@ -530,9 +534,13 @@ def process_finish_order(chat_id, data):
             reply_markup=kb
         )
 
-        data["wait_for_address"] = True
-        user_data[chat_id] = data
-# ЕСЛИ адрес уже введён — сразу отправляем заказ
+        user["wait_for_address"] = True
+        user_data[chat_id] = user
+        return
+
+    # --- ДАЛЬШЕ ФЛОУ ИДЁТ К КОНТАКТУ / КОММЕНТАРИЮ ---
+    # здесь НИЧЕГО не отправляем в группу
+
 
 
 
