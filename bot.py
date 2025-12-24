@@ -342,15 +342,6 @@ def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
         ))
 
     return kb
-def get_inline_send_order():
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.add(
-        types.InlineKeyboardButton(
-            text="✅ Отправить заказ",
-            callback_data="confirm_send_order"
-        )
-    )
-    return kb
 # ------------------------------------------------------------------------
 #   10. Inline-кнопки для выбора вкусов
 # ------------------------------------------------------------------------
@@ -463,86 +454,6 @@ def send_weekly_digest():
 
     cursor.close()
     conn.close()
-def process_finish_order(chat_id, data):
-    # ВСЕГДА берём состояние из user_data
-    user = user_data.get(chat_id, {})
-
-    cart = user.get("cart", [])
-    if not cart:
-        bot.send_message(chat_id, t(chat_id, "cart_empty"))
-        return
-
-    total_try = sum(i['price'] for i in cart)
-
-    # --- ЭТАП БАЛЛОВ ---
-    if not user.get("points_processed"):
-        conn_local = get_db_connection()
-        cursor_local = conn_local.cursor()
-        cursor_local.execute(
-            "SELECT points FROM users WHERE chat_id = ?",
-            (chat_id,)
-        )
-        row = cursor_local.fetchone()
-        cursor_local.close()
-        conn_local.close()
-
-        user_points = row[0] if row else 0
-
-        if user_points > 0:
-            max_points = min(user_points, total_try)
-            points_try = user_points * 1
-
-            msg = (
-                t(chat_id, "points_info").format(
-                    points=user_points,
-                    points_try=points_try
-                )
-                + "\n"
-                + t(chat_id, "enter_points").format(
-                    max_points=max_points
-                )
-            )
-
-            bot.send_message(
-                chat_id,
-                msg,
-                reply_markup=types.ReplyKeyboardRemove()
-            )
-
-            user["wait_for_points"] = True
-            user["temp_total_try"] = total_try
-            user["temp_user_points"] = user_points
-            user_data[chat_id] = user
-            return   # ← КРИТИЧЕСКИ ВАЖНО
-
-        # баллов нет — считаем этап пройденным
-        user["points_processed"] = True
-        user_data[chat_id] = user
-
-    # --- ЭТАП АДРЕСА ---
-    if not user.get("address"):
-        kb = address_keyboard(chat_id)
-
-        bot.send_message(
-            chat_id,
-            f"🛒 {t(chat_id, 'view_cart')}:\n\n"
-            + "\n".join(
-                f"{i['category']}: {i['flavor']} — {i['price']}₺"
-                for i in cart
-            )
-            + f"\n\n{t(chat_id, 'enter_address')}",
-            reply_markup=kb
-        )
-
-        user["wait_for_address"] = True
-        user_data[chat_id] = user
-        return
-
-    # --- ДАЛЬШЕ ФЛОУ ИДЁТ К КОНТАКТУ / КОММЕНТАРИЮ ---
-    # здесь НИЧЕГО не отправляем в группу
-
-
-
 
 # ------------------------------------------------------------------------
 #   14. Хендлер /start – регистрация, реферальная система, выбор языка
@@ -1090,12 +1001,7 @@ def handle_points_input(message):
     text = message.text.strip()
 
     if not text.isdigit():
-        bot.send_message(
-            chat_id,
-            t(chat_id, "invalid_points").format(
-                max_points=data.get("temp_total_try", 0)
-            )
-        )
+        bot.send_message(chat_id, t(chat_id, "invalid_points").format(max_points=data.get("temp_total_try", 0)))
         return
 
     points_to_spend = int(text)
@@ -1104,40 +1010,27 @@ def handle_points_input(message):
     max_points = min(user_points, total_try)
 
     if points_to_spend < 0 or points_to_spend > max_points:
-        bot.send_message(
-            chat_id,
-            t(chat_id, "invalid_points").format(max_points=max_points)
-        )
+        bot.send_message(chat_id, t(chat_id, "invalid_points").format(max_points=max_points))
         return
 
     if points_to_spend > 0:
         conn_local = get_db_connection()
         cursor_local = conn_local.cursor()
-        cursor_local.execute(
-            "UPDATE users SET points = points - ? WHERE chat_id = ?",
-            (points_to_spend, chat_id)
-        )
+        cursor_local.execute("UPDATE users SET points = points - ? WHERE chat_id = ?", (points_to_spend, chat_id))
         conn_local.commit()
         cursor_local.close()
         conn_local.close()
 
     discount_try = points_to_spend * 1
-
     data["pending_discount"] = discount_try
     data["pending_points_spent"] = points_to_spend
-
-    # 🔴 ВАЖНОЕ ИСПРАВЛЕНИЕ
-    data["points_processed"] = True   # ← ВОТ ЭТОГО НЕ ХВАТАЛО
     data["wait_for_points"] = False
 
     cart = data.get("cart", [])
     total_after = total_try - discount_try
     kb = address_keyboard(chat_id)
 
-    summary_lines = [
-        f"{item['category']}: {item['flavor']} — {item['price']}₺"
-        for item in cart
-    ]
+    summary_lines = [f"{item['category']}: {item['flavor']} — {item['price']}₺" for item in cart]
     summary = "\n".join(summary_lines)
 
     msg = (
@@ -1155,17 +1048,64 @@ def handle_points_input(message):
     user_data[chat_id] = data
 
 
-
 # ------------------------------------------------------------------------
 #   26. Handler: ввод адреса
 # ------------------------------------------------------------------------
-def process_finish_order(chat_id, data):
-    user = user_data.get(chat_id, {})
+@ensure_user
+@bot.message_handler(
+    func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_address"),
+    content_types=['text', 'location', 'venue']
+)
+def handle_address_input(message):
+    chat_id = message.chat.id
+    data = user_data.get(chat_id, {})
+    text = message.text or ""
 
-    cart = user.get("cart", [])
-    if not cart:
-        bot.send_message(chat_id, t(chat_id, "cart_empty"))
+    # ИСПРАВЛЁННЫЙ ВАРИАНТ
+
+    if text == t(chat_id, "back"):
+        data['wait_for_address'] = False
+        data['current_category'] = None
+        # 1) Убираем клавиатуру запроса локации
+        bot.send_message(chat_id,
+                         t(chat_id, "choose_category"),
+                         reply_markup=types.ReplyKeyboardRemove())
+        # 2) Показываем основное inline-меню
+        bot.send_message(chat_id,
+                         t(chat_id, "choose_category"),
+                         reply_markup=get_inline_main_menu(chat_id))
         return
+
+    if text == t(chat_id, "choose_on_map"):
+        bot.send_message(
+            chat_id,
+            "Чтобы выбрать точку:\n📎 → Местоположение → «Выбрать на карте» → метка → Отправить",
+            reply_markup=types.ReplyKeyboardRemove()
+        )
+        return
+
+    if message.content_type == 'venue' and message.venue:
+        v = message.venue
+        address = f"{v.title}, {v.address}\n🌍 https://maps.google.com/?q={v.location.latitude},{v.location.longitude}"
+    elif message.content_type == 'location' and message.location:
+        lat, lon = message.location.latitude, message.location.longitude
+        address = f"🌍 https://maps.google.com/?q={lat},{lon}"
+    elif text == t(chat_id, "enter_address_text"):
+        bot.send_message(chat_id, t(chat_id, "enter_address"), reply_markup=types.ReplyKeyboardRemove())
+        return
+    elif message.content_type == 'text' and message.text:
+        address = message.text.strip()
+    else:
+        bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=address_keyboard(chat_id))
+
+        return
+
+    data['address'] = address
+    data['wait_for_address'] = False
+    data['wait_for_contact'] = True
+    kb = contact_keyboard(chat_id)
+    bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=kb)
+    user_data[chat_id] = data
 
 
 # ------------------------------------------------------------------------
@@ -1208,14 +1148,8 @@ def handle_contact_input(message):
     data['contact'] = contact
     data['wait_for_contact'] = False
     data['wait_for_comment'] = True
-
-    bot.send_message(
-        chat_id,
-        "💬 Комментарий к заказу (необязательно).\n\n"
-        "Вы можете написать комментарий или сразу отправить заказ.",
-        reply_markup=get_inline_send_order()
-    )
-
+    kb = comment_keyboard(chat_id)
+    bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=kb)
     user_data[chat_id] = data
 
 
@@ -2027,30 +1961,6 @@ def handle_review_comment(message):
         f"Спасибо за отзыв! Средний рейтинг «{flavor}» теперь {avg}⭐️",
         reply_markup=get_inline_main_menu(chat_id)
     )
-@ensure_user
-@bot.callback_query_handler(func=lambda c: c.data == "confirm_send_order")
-def confirm_send_order(call):
-    chat_id = call.from_user.id
-    data = user_data.get(chat_id, {})
-
-    bot.answer_callback_query(call.id)
-
-    process_finish_order(chat_id, data)
-
-
-    # Просто вызываем уже существующую логику оформления
-    # (она у тебя находится в handler'е комментария)
-    fake_message = types.Message(
-        message_id=0,
-        from_user=call.from_user,
-        chat=call.message.chat,
-        date=0,
-        content_type='text',
-        options={}
-    )
-
-    bot.answer_callback_query(call.id)
-    handle_comment_input(fake_message)
 
 @ensure_user
 @bot.message_handler(commands=['reviewtop'])
@@ -3301,7 +3211,113 @@ def universal_handler(message):
 
     # ——— Завершить заказ по Reply-кнопке ———
     if text == f"✅ {t(chat_id, 'finish_order')}":
-        process_finish_order(chat_id, data)
+        cart = data.get("cart", [])
+        if not cart:
+            bot.send_message(chat_id, t(chat_id, "cart_empty"))
+            return
+        total_try = sum(i['price'] for i in cart)
+
+        conn_local = get_db_connection()
+        cursor_local = conn_local.cursor()
+        cursor_local.execute("SELECT points FROM users WHERE chat_id = ?", (chat_id,))
+        row = cursor_local.fetchone()
+        cursor_local.close()
+        conn_local.close()
+
+        user_points = row[0] if row else 0
+
+        if user_points > 0:
+            max_points = min(user_points, total_try)
+            points_try = user_points * 1
+            msg = (
+                    t(chat_id, "points_info").format(points=user_points, points_try=points_try)
+                    + "\n"
+                    + t(chat_id, "enter_points").format(max_points=max_points)
+            )
+            bot.send_message(chat_id, msg, reply_markup=types.ReplyKeyboardRemove())
+            data["wait_for_points"] = True
+            data["temp_total_try"] = total_try
+            data["temp_user_points"] = user_points
+            user_data[chat_id] = data
+        else:
+            kb = address_keyboard(chat_id)
+
+            bot.send_message(
+                chat_id,
+                f"🛒 {t(chat_id, 'view_cart')}:\n\n" +
+                "\n".join(f"{i['category']}: {i['flavor']} — {i['price']}₺" for i in data['cart']) +
+                f"\n\n{t(chat_id, 'enter_address')}",
+                reply_markup=kb
+            )
+            data["wait_for_address"] = True
+            user_data[chat_id] = data
+        return
+
+    # ——— Выбор категории (Reply-клавиатура fallback) ———
+    if text in menu:
+        data['current_category'] = text
+        bot.send_message(chat_id, f"{t(chat_id, 'choose_flavor')} «{text}»",
+                         reply_markup=get_inline_flavors(chat_id, text))
+        user_data[chat_id] = data
+        return
+
+    # ——— Выбор вкуса (Reply-клавиатура fallback) ———
+    cat0 = data.get('current_category')
+    if cat0:
+        price = menu[cat0]["price"]
+        for it in menu[cat0]["flavors"]:
+            if it.get("stock", 0) > 0:
+                emoji = it.get("emoji", "")
+                flavor0 = it["flavor"]
+                label = f"{emoji} {flavor0} — {price}₺ [{it['stock']} шт]"
+                if text == label:
+                    data['cart'].append({'category': cat0, 'flavor': flavor0, 'price': price})
+                    template = t(chat_id, "added_to_cart")
+                    suffix = template.split("»", 1)[1].strip()
+                    count = len(data['cart'])
+                    bot.send_message(
+                        chat_id,
+                        f"«{cat0} — {flavor0}» {suffix.format(flavor=flavor0, count=count)}",
+                        reply_markup=get_inline_main_menu(chat_id)
+                    )
+                    user_data[chat_id] = data
+                    return
+
+        # если ввод не соответствует ни одному вкусу, показать только кнопку «Назад к категориям»
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton(
+            text=f"⬅️ {t(chat_id, 'back_to_categories')}",
+            callback_data="go_back_to_categories"
+        ))
+        bot.send_message(
+            chat_id,
+            t(chat_id, "error_invalid"),
+            reply_markup=kb
+        )
+        return
+
+    # ——— /history ———
+    if text == "/history":
+        conn_local = get_db_connection()
+        cursor_local = conn_local.cursor()
+        cursor_local.execute(
+            "SELECT order_id, items_json, total, timestamp FROM orders WHERE chat_id = ? ORDER BY timestamp DESC",
+            (chat_id,)
+        )
+        rows = cursor_local.fetchall()
+        cursor_local.close()
+        conn_local.close()
+
+        if not rows:
+            bot.send_message(chat_id, "У вас пока нет сохранённых заказов.")
+            return
+        texts = []
+        for order_id, items_json, total, timestamp in rows[:10]:
+            items = json.loads(items_json)
+            summary = "\n".join(f"{i['flavor']} — {i['price']}₺" for i in items)
+            date = timestamp.split("T")[0]
+            texts.append(f"Заказ #{order_id} ({date}):\n{summary}\nИтого: {total}₺")
+        bot.send_message(chat_id, "\n\n".join(texts))
         return
 
 
