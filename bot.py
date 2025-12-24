@@ -421,46 +421,6 @@ def edit_action_keyboard() -> types.ReplyKeyboardMarkup:
     return kb
 
 # ------------------------------------------------------------------------
-#   13. Планировщик – еженедельный дайджест (необязательно)
-# ------------------------------------------------------------------------
-def send_weekly_digest():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-
-    # Собираем заказы за последние 7 дней
-    one_week_ago = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).isoformat()
-    cursor.execute("SELECT items_json FROM orders WHERE timestamp >= ?", (one_week_ago,))
-    recent = cursor.fetchall()
-
-    # Считаем количество продаж по вкусам
-    counts = {}
-    for (items_json,) in recent:
-        items = json.loads(items_json)
-        for i in items:
-            counts[i["flavor"]] = counts.get(i["flavor"], 0) + 1
-
-    # Берём топ-3
-    top3 = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:3]
-
-    # Формируем текст на русском
-    if not top3:
-        text = "📢 За прошлую неделю не было продаж."
-    else:
-        lines = [f"{flavor}: {qty} шт." for flavor, qty in top3]
-        text = "📢 Топ-3 вкуса за неделю:\n" + "\n".join(lines)
-
-    # Рассылаем всем зарегистрированным пользователям
-    cursor.execute("SELECT chat_id FROM users")
-    for (uid,) in cursor.fetchall():
-        try:
-            bot.send_message(uid, text)
-        except Exception as e:
-            print(f"Не удалось отправить дайджест пользователю {uid}: {e}")
-
-    cursor.close()
-    conn.close()
-
-# ------------------------------------------------------------------------
 #   14. Хендлер /start – регистрация, реферальная система, выбор языка
 # ------------------------------------------------------------------------
 @ensure_user
@@ -618,7 +578,7 @@ def handle_set_lang(call):
         else:
             bot.send_message(
                 chat_id,
-                f"Зарабатывайте баллы! Ваш реферальный код: {code}\nПоделитесь этой ссылкой с друзьями:\n{ref_link}"
+                f"Заработай 200 баллов! Твой реферальный код: {code}\nПоделитесь этой ссылкой с другом:\n{ref_link}"
             )
 
 
