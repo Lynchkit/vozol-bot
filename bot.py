@@ -1153,24 +1153,30 @@ def handle_contact_input(message):
     data['wait_for_contact'] = False
     data['wait_for_comment'] = True
 
-    # Создаем inline-клавиатуру с двумя кнопками СРАЗУ
+    # Создаем inline-клавиатуру
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         types.InlineKeyboardButton(
-            text=f"✅ {t(chat_id, 'send_order')}",
+            text=f" {t(chat_id, 'send_order')}",
             callback_data="send_order_final"
         ),
         types.InlineKeyboardButton(
-            text=f"⬅️ {t(chat_id, 'back')}",
+            text=f" {t(chat_id, 'back')}",
             callback_data="back_to_contact"
         )
     )
 
-    # Убираем reply-клавиатуру и показываем inline-кнопки
+    # Убираем reply-клавиатуру И показываем сообщение
     bot.send_message(
         chat_id,
-        f"📱 Контакт: {contact}\n\n"
-        f"💬 Теперь введите комментарий к заказу (или нажмите '✅ {t(chat_id, 'send_order')}' для продолжения):",
+        f"📱 Контакт: {contact}\n\n💬 Введите комментарий к заказу (необязательно)",
+        reply_markup=types.ReplyKeyboardRemove()  # ПЕРВОЕ: убираем reply-клавиатуру
+    )
+
+    # Отдельным сообщением показываем inline-кнопки
+    bot.send_message(
+        chat_id,
+        "Или нажмите одну из кнопок ниже:",
         reply_markup=kb
     )
 
@@ -1193,7 +1199,7 @@ def handle_comment_input(message):
     # Сохраняем комментарий
     data['comment'] = text.strip()
 
-    # Создаем inline-клавиатуру с двумя кнопками
+    # Создаем inline-клавиатуру
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         types.InlineKeyboardButton(
@@ -1206,10 +1212,10 @@ def handle_comment_input(message):
         )
     )
 
-    # Показываем подтверждение и кнопки СРАЗУ
+    # Показываем, что комментарий сохранен и кнопки
     bot.send_message(
         chat_id,
-        f"💬 Комментарий: {text}\n\nНажмите '✅ {t(chat_id, 'send_order')}' для оформления заказа "
+        f"💬 Комментарий сохранен\n\nНажмите '✅ {t(chat_id, 'send_order')}' для оформления заказа "
         f"или '⬅️ {t(chat_id, 'back')}' для изменения контакта",
         reply_markup=kb
     )
