@@ -402,19 +402,6 @@ def comment_keyboard(chat_id: int) -> types.ReplyKeyboardMarkup:
     kb.add(t(chat_id, "send_order"))
     kb.add(t(chat_id, "back"))
     return kb
-def comment_inline_keyboard(chat_id: int) -> types.InlineKeyboardMarkup:
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.add(
-        types.InlineKeyboardButton(
-            text=f"✅ {t(chat_id, 'send_order')}",
-            callback_data="send_order_inline"
-        ),
-        types.InlineKeyboardButton(
-            text=f"⬅️ {t(chat_id, 'back')}",
-            callback_data="comment_back"
-        )
-    )
-    return kb
 
 # ------------------------------------------------------------------------
 #   12. Клавиатура редактирования меню (/change) — ВСЁ НА АНГЛИЙСКОМ
@@ -1161,20 +1148,8 @@ def handle_contact_input(message):
     data['contact'] = contact
     data['wait_for_contact'] = False
     data['wait_for_comment'] = True
-    data['wait_for_comment'] = True
-
-    bot.send_message(
-        chat_id,
-        t(chat_id, "enter_comment"),  # "Комментарий к заказу (необязательно)"
-        reply_markup=types.ReplyKeyboardRemove()
-    )
-
-    bot.send_message(
-        chat_id,
-        t(chat_id, "you_can_skip_comment"),  # можно добавить текст
-        reply_markup=comment_inline_keyboard(chat_id)
-    )
-
+    kb = comment_keyboard(chat_id)
+    bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=kb)
     user_data[chat_id] = data
 
 
@@ -1182,65 +1157,14 @@ def handle_contact_input(message):
 #   28. Handler: ввод комментария и сохранение заказа (с учётом списания stock)
 # ------------------------------------------------------------------------
 @ensure_user
-@bot.callback_query_handler(func=lambda c: c.data == "send_order_inline")
-def handle_send_order_inline(call):
-    chat_id = call.from_user.id
-    bot.answer_callback_query(call.id)
-
-    # имитируем нажатие send_order
-    fake_message = types.Message(
-        message_id=0,
-        from_user=call.from_user,
-        date=0,
-        chat=call.message.chat,
-        content_type='text',
-        options={}
-    )
-    fake_message.text = t(chat_id, "send_order")
-
-    handle_comment_input(fake_message)
-    
-@ensure_user
-@bot.callback_query_handler(func=lambda c: c.data == "comment_back")
-def handle_comment_back(call):
-    chat_id = call.from_user.id
-    bot.answer_callback_query(call.id)
-
-    data = user_data[chat_id]
-    data["wait_for_comment"] = False
-    data["wait_for_contact"] = True
-
-    bot.send_message(
-        chat_id,
-        t(chat_id, "enter_contact"),
-        reply_markup=contact_keyboard(chat_id)
-    )
-
-    user_data[chat_id] = data
-
-@ensure_user
 @bot.message_handler(
     func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_comment"),
     content_types=['text']
 )
 def handle_comment_input(message):
     chat_id = message.chat.id
-    data = user_data[chat_id]
-
-    text = message.text.strip()
-    if not text:
-        return
-
-    data["comment"] = text
-
-    bot.send_message(
-        chat_id,
-        t(chat_id, "comment_saved"),
-        reply_markup=comment_inline_keyboard(chat_id)
-    )
-
-    user_data[chat_id] = data
-
+    data = user_data.get(chat_id, {})
+    text = message.text or ""
 
     # Обработка кнопки «Назад»
     # ИСПРАВЛЁННЫЙ ВАРИАНТ
