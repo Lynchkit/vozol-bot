@@ -395,13 +395,6 @@ def contact_keyboard(chat_id: int) -> types.ReplyKeyboardMarkup:
     return kb
 
 
-
-def comment_keyboard(chat_id: int) -> types.ReplyKeyboardMarkup:
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.add(t(chat_id, "enter_comment"))
-    kb.add(t(chat_id, "send_order"))
-    kb.add(t(chat_id, "back"))
-    return kb
 def comment_keyboard(chat_id: int) -> types.ReplyKeyboardMarkup:
     """Клавиатура для ввода комментария - теперь без кнопок"""
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -1215,8 +1208,8 @@ def handle_comment_input(message):
     # Показываем, что комментарий сохранен и кнопки
     bot.send_message(
         chat_id,
-        f"💬 Комментарий сохранен\n\nНажмите '✅ {t(chat_id, 'send_order')}' для оформления заказа "
-        f"или '⬅️ {t(chat_id, 'back')}' для изменения контакта",
+        f"💬 Комментарий сохранен\n\nНажмите '{t(chat_id, 'send_order')}' для оформления заказа "
+        f"или '{t(chat_id, 'back')}' для изменения контакта",
         reply_markup=kb
     )
 
