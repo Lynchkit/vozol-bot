@@ -1176,12 +1176,13 @@ def handle_contact_input(message):
     data['contact'] = contact
     data['wait_for_contact'] = False
     data['wait_for_comment'] = True
-    kb = comment_keyboard(chat_id)
+
     bot.send_message(
         chat_id,
         "✏️ Комментарий к заказу (необязательно)",
-        reply_markup=comment_keyboard(chat_id)
+        reply_markup=comment_inline_keyboard(chat_id)
     )
+
     bot.send_message(
         chat_id,
         " ",
@@ -1229,12 +1230,6 @@ def handle_comment_input(message):
             t(chat_id, "comment_saved"),
             reply_markup=comment_keyboard(chat_id)
         )
-        bot.send_message(
-            chat_id,
-            t(chat_id, "or_press_button"),
-            reply_markup=comment_inline_keyboard(chat_id)
-        )
-
         user_data[chat_id] = data
         return
 
