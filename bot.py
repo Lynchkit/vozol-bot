@@ -8,6 +8,7 @@ import string
 import sqlite3
 import pytz
 
+
 from apscheduler.schedulers.background import BackgroundScheduler
 from telebot import TeleBot, types
 
@@ -1115,7 +1116,6 @@ def handle_address_input(message):
 # ------------------------------------------------------------------------
 #   27. Handler: ввод контакта
 # ------------------------------------------------------------------------
-# Альтернативный вариант с принудительным удалением reply-клавиатуры
 @ensure_user
 @bot.message_handler(
     func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_contact"),
@@ -1155,34 +1155,22 @@ def handle_contact_input(message):
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         types.InlineKeyboardButton(
-            text=f" {t(chat_id, 'send_order')}",
+            text=f"✅ {t(chat_id, 'send_order')}",
             callback_data="send_order_final"
         ),
         types.InlineKeyboardButton(
-            text=f" {t(chat_id, 'back')}",
+            text=f"⬅️ {t(chat_id, 'back')}",
             callback_data="back_to_contact"
         )
     )
 
-    # 1. Сначала отправляем пустое сообщение для удаления reply-клавиатуры
-    remove_msg = bot.send_message(
-        chat_id,
-        "Переходим к комментарию...",
-        reply_markup=types.ReplyKeyboardRemove()
-    )
-
-    # 2. Затем показываем inline-кнопки
+    # Отправляем одно сообщение с inline-клавиатурой
+    # В Telegram inline-клавиатура автоматически заменяет reply-клавиатуру
     bot.send_message(
         chat_id,
         "💬 Введите комментарий или отправьте заказ",
         reply_markup=kb
     )
-
-    # 3. Удаляем промежуточное сообщение (опционально)
-    try:
-        bot.delete_message(chat_id, remove_msg.message_id)
-    except:
-        pass  # Если не удалось удалить - не страшно
 
     user_data[chat_id] = data
 
