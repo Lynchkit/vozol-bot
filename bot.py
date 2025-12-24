@@ -454,6 +454,19 @@ def send_weekly_digest():
 
     cursor.close()
     conn.close()
+def comment_inline_keyboard(chat_id: int) -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton(
+            text=f"✅ {t(chat_id, 'send_order')}",
+            callback_data="confirm_order"
+        ),
+        types.InlineKeyboardButton(
+            text=f"⬅️ {t(chat_id, 'back')}",
+            callback_data="back_to_contact"
+        )
+    )
+    return kb
 
 # ------------------------------------------------------------------------
 #   14. Хендлер /start – регистрация, реферальная система, выбор языка
@@ -1148,8 +1161,20 @@ def handle_contact_input(message):
     data['contact'] = contact
     data['wait_for_contact'] = False
     data['wait_for_comment'] = True
-    kb = comment_keyboard(chat_id)
-    bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=kb)
+    data['wait_for_comment'] = True
+
+    bot.send_message(
+        chat_id,
+        t(chat_id, "enter_comment"),
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+
+    bot.send_message(
+        chat_id,
+        "👇",
+        reply_markup=comment_inline_keyboard(chat_id)
+    )
+
     user_data[chat_id] = data
 
 
@@ -1164,20 +1189,20 @@ def handle_contact_input(message):
 def handle_comment_input(message):
     chat_id = message.chat.id
     data = user_data.get(chat_id, {})
-    text = message.text or ""
 
-    # Обработка кнопки «Назад»
-    # ИСПРАВЛЁННЫЙ ВАРИАНТ
-
-    if text == t(chat_id, "back"):
-        data['wait_for_comment'] = False
-        bot.send_message(chat_id,
-                         t(chat_id, "choose_category"),
-                         reply_markup=types.ReplyKeyboardRemove())
-        bot.send_message(chat_id,
-                         t(chat_id, "choose_category"),
-                         reply_markup=get_inline_main_menu(chat_id))
+    text = message.text.strip()
+    if not text:
         return
+
+    data["comment"] = text
+    user_data[chat_id] = data
+
+    bot.send_message(
+        chat_id,
+        "💬 Ваш комментарий сохранён!",
+        reply_markup=comment_inline_keyboard(chat_id)
+    )
+
 
     # Пользователь вводит текст комментария
     if text == t(chat_id, "enter_comment"):
@@ -1431,6 +1456,22 @@ def handle_comment_input(message):
         user_data[chat_id] = data
         return
 
+@ensure_user
+@bot.callback_query_handler(func=lambda c: c.data == "back_to_contact")
+def back_to_contact(call):
+    chat_id = call.from_user.id
+    data = user_data.get(chat_id, {})
+
+    data["wait_for_comment"] = False
+    data["wait_for_contact"] = True
+
+    bot.answer_callback_query(call.id)
+
+    bot.send_message(
+        chat_id,
+        t(chat_id, "enter_contact"),
+        reply_markup=contact_keyboard(chat_id)
+    )
 
 # ------------------------------------------------------------------------
 #   29. /change: перевод в режим редактирования меню (только на английском)
@@ -1961,6 +2002,25 @@ def handle_review_comment(message):
         f"Спасибо за отзыв! Средний рейтинг «{flavor}» теперь {avg}⭐️",
         reply_markup=get_inline_main_menu(chat_id)
     )
+@ensure_user
+@bot.callback_query_handler(func=lambda c: c.data == "confirm_order")
+def confirm_order(call):
+    chat_id = call.from_user.id
+    bot.answer_callback_query(call.id)
+
+    # Имитируем отправку "send_order"
+    fake_message = types.Message(
+        message_id=call.message.message_id,
+        from_user=call.from_user,
+        chat=call.message.chat,
+        date=call.message.date,
+        content_type='text',
+        options={},
+        json_string={}
+    )
+    fake_message.text = t(chat_id, "send_order")
+
+    handle_comment_input(fake_message)
 
 @ensure_user
 @bot.message_handler(commands=['reviewtop'])
