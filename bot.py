@@ -1115,6 +1115,9 @@ def handle_address_input(message):
 # ------------------------------------------------------------------------
 #   27. Handler: ввод контакта
 # ------------------------------------------------------------------------
+# ------------------------------------------------------------------------
+#   27. Handler: ввод контакта
+# ------------------------------------------------------------------------
 @ensure_user
 @bot.message_handler(
     func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_contact"),
@@ -1163,21 +1166,61 @@ def handle_contact_input(message):
         )
     )
 
-    # 1. Сначала явно убираем reply-клавиатуру
-    bot.send_message(
-        chat_id,
-        " ",  # Пустое сообщение
-        reply_markup=types.ReplyKeyboardRemove()
-    )
-
-    # 2. Затем показываем сообщение с inline-кнопками
+    # Убираем reply-клавиатуру и переходим к комментарию
     bot.send_message(
         chat_id,
         "💬 Введите комментарий или отправьте заказ",
+        reply_markup=types.ReplyKeyboardRemove()  # Скрываем reply-клавиатуру
+    )
+
+    # Отправляем inline-клавиатуру отдельным сообщением
+    bot.send_message(
+        chat_id,
+        "Выберите действие:",
         reply_markup=kb
     )
 
     user_data[chat_id] = data
+
+
+# ------------------------------------------------------------------------
+#   28. Handler: ввод комментария и сохранение заказа (с учётом списания stock)
+# ------------------------------------------------------------------------
+@ensure_user
+@bot.message_handler(
+    func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_comment"),
+    content_types=['text']
+)
+def handle_comment_input(message):
+    chat_id = message.chat.id
+    data = user_data.get(chat_id, {})
+    text = message.text or ""
+
+    # Сохраняем комментарий
+    data['comment'] = text.strip()
+
+    # Создаем inline-клавиатуру
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton(
+            text=f" {t(chat_id, 'send_order')}",
+            callback_data="send_order_final"
+        ),
+        types.InlineKeyboardButton(
+            text=f" {t(chat_id, 'back')}",
+            callback_data="back_to_contact"
+        )
+    )
+
+    # Показываем, что комментарий сохранен с inline-кнопками
+    bot.send_message(
+        chat_id,
+        "💬 Комментарий сохранен",
+        reply_markup=kb
+    )
+
+    user_data[chat_id] = data
+    return
 
 
 # ------------------------------------------------------------------------
