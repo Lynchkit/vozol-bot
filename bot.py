@@ -1173,7 +1173,7 @@ def handle_contact_input(message):
     bot.send_message(
         chat_id,
         "💬 Введите комментарий или отправьте заказ",
-        reply_markup=kb
+        reply_markup=types.ReplyKeyboardRemove()
     )
 
     # 3. Удаляем промежуточное сообщение (опционально)
