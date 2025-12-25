@@ -3267,6 +3267,7 @@ def universal_handler(message):
                 text="Не списывать баллы",
                 callback_data="no_points"
             ))
+            bot.send_message(chat_id, msg, reply_markup=kb)
             data["wait_for_points"] = True
             data["temp_total_try"] = total_try
             data["temp_user_points"] = user_points
