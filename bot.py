@@ -2058,175 +2058,6 @@ def cmd_users(message):
 
 
 @ensure_user
-@bot.message_handler(commands=['review'])
-def cmd_review(message):
-    chat_id = message.chat.id
-    parts = message.text.split(maxsplit=1)
-    if len(parts) != 2:
-        return bot.send_message(chat_id, "Использование: /review <название_вкуса>")
-
-    q = _normalize(parts[1])
-    # Сначала точное совпадение
-    matches = [
-        itm["flavor"]
-        for cat in menu.values()
-        for itm in cat["flavors"]
-        if _normalize(itm["flavor"]) == q
-    ]
-    # Если нет — подстрока
-    if not matches:
-        matches = [
-            itm["flavor"]
-            for cat in menu.values()
-            for itm in cat["flavors"]
-            if q in _normalize(itm["flavor"])
-        ]
-
-    if not matches:
-        all_fl = sorted({itm["flavor"] for cat in menu.values() for itm in cat["flavors"]})
-        return bot.send_message(
-            chat_id,
-            "Вкус не найден. Доступные вкусы:\n" + "\n".join(all_fl)
-        )
-    if len(matches) > 1:
-        return bot.send_message(
-            chat_id,
-            "Найдено несколько вкусов, уточните:\n" +
-            "\n".join(f"/review {m}" for m in matches)
-        )
-
-    # ровно один матч
-    flavor = matches[0]
-    user_data[chat_id]["temp_review_flavor"] = flavor
-
-    kb = types.InlineKeyboardMarkup(row_width=5)
-    for i in range(1, 6):
-        kb.add(types.InlineKeyboardButton(text="⭐️"*i, callback_data=f"review_rate|{i}"))
-    bot.send_message(chat_id, f"Пожалуйста, оцените вкус «{flavor}»", reply_markup=kb)
-
-@ensure_user
-@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("review_rate|"))
-def callback_review_rate(call):
-    chat_id = call.from_user.id
-    rating = int(call.data.split("|",1)[1])
-    data = user_data[chat_id]
-    data["temp_review_rating"] = rating
-    data["awaiting_review_comment"] = True
-    user_data[chat_id] = data
-
-    bot.answer_callback_query(call.id, f"Вы выбрали {rating}⭐️")
-    bot.send_message(chat_id, "Оставьте комментарий или отправьте /skip, чтобы пропустить",
-                     reply_markup=types.ReplyKeyboardRemove())
-
-@ensure_user
-@bot.message_handler(func=lambda m: user_data.get(m.chat.id,{}).get("awaiting_review_comment"), content_types=['text'])
-def handle_review_comment(message):
-    chat_id = message.chat.id
-    data = user_data[chat_id]
-    flavor = data.pop("temp_review_flavor")
-    rating = data.pop("temp_review_rating")
-    raw = message.text.strip()
-    comment = "" if raw.lower() == "/skip" else raw
-    data["awaiting_review_comment"] = False
-    user_data[chat_id] = data
-
-    now = datetime.datetime.utcnow().isoformat()
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO reviews (chat_id, category, flavor, rating, comment, timestamp)"
-        " VALUES (?, ?, ?, ?, ?, ?)",
-        (chat_id, None, flavor, rating, comment, now)
-    )
-    conn.commit()
-    cur.execute("SELECT AVG(rating) FROM reviews WHERE flavor = ?", (flavor,))
-    avg = round(cur.fetchone()[0] or 0, 1)
-    cur.close()
-    conn.close()
-
-    # обновляем меню
-    for cat in menu.values():
-        for itm in cat["flavors"]:
-            if itm["flavor"] == flavor:
-                itm["rating"] = avg
-    with open(MENU_PATH, "w", encoding="utf-8") as f:
-        json.dump(menu, f, ensure_ascii=False, indent=2)
-
-    bot.send_message(
-        chat_id,
-        f"Спасибо за отзыв! Средний рейтинг «{flavor}» теперь {avg}⭐️",
-        reply_markup=get_inline_main_menu(chat_id)
-    )
-
-@ensure_user
-@bot.message_handler(commands=['reviewtop'])
-def cmd_reviewtop(message):
-    chat_id = message.chat.id
-
-    conn = get_db_connection()
-    cur = conn.cursor()
-    # сгруппируем по вкусу, посчитаем средний рейтинг и кол-во отзывов
-    cur.execute("""
-        SELECT flavor,
-               ROUND(AVG(rating),1) AS avg_r,
-               COUNT(*) AS cnt
-        FROM reviews
-        GROUP BY flavor
-        HAVING cnt > 0
-        ORDER BY avg_r DESC, cnt DESC
-        LIMIT 5
-    """)
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    if not rows:
-        return bot.send_message(chat_id, "Пока нет отзывов ни на один вкус.")
-
-    text = ["🏆 Топ-5 вкусов по оценкам:"]
-    for i, (flavor, avg_r, cnt) in enumerate(rows, start=1):
-        text.append(f"{i}. {flavor} — {avg_r}⭐ ({cnt} отз.)")
-
-    bot.send_message(chat_id, "\n".join(text))
-
-@ensure_user
-@bot.message_handler(commands=['show_reviews'])
-def cmd_show_reviews(message):
-    chat_id = message.chat.id
-    parts = message.text.split(maxsplit=1)
-    if len(parts) != 2:
-        return bot.send_message(chat_id, "Использование: /show_reviews <название_вкуса>")
-
-    flavor_query = parts[1].strip()
-    print(f"DEBUG: show_reviews for '{flavor_query}'")  # лог в консоль
-
-    conn = get_db_connection()
-    cur = conn.cursor()
-    # нечувствительный к регистру поиск
-    cur.execute(
-        "SELECT rating, comment, timestamp FROM reviews "
-        "WHERE LOWER(flavor) LIKE '%' || LOWER(?) || '%' "
-        "ORDER BY timestamp DESC",
-        (flavor_query,)
-    )
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    if not rows:
-        return bot.send_message(chat_id, f"Для вкуса «{flavor_query}» ещё нет отзывов.")
-
-    lines = [f"📝 Отзывы для «{flavor_query}»:"]
-    for rating, comment, ts in rows:
-        date = ts.split("T")[0]
-        if comment:
-            lines.append(f"⭐️ {rating} — {comment} ({date})")
-        else:
-            lines.append(f"⭐️ {rating} — без комментария ({date})")
-
-    bot.send_message(chat_id, "\n".join(lines))
-
-@ensure_user
 @bot.message_handler(commands=['help'])
 def cmd_help(message: types.Message):
     if message.chat.id == GROUP_CHAT_ID:
@@ -2242,17 +2073,16 @@ def cmd_help(message: types.Message):
         bot.send_message(message.chat.id, help_text, parse_mode="HTML")
     else:
         help_text = (
-          "<b>Доступные команды:</b>\n\n"
-          "/start         — Перезапустить бота / регистрация\n"
-          "/points        — Проверить баланс бонусных баллов\n"
-          "/convert [N]   — Курсы и конвертация TRY → RUB/USD/UAH\n"
-          "/review &lt;вкус&gt; — Оставить отзыв\n"
-          "/show_reviews  — Показать отзывы\n"
-          "/history       — История заказов\n"
-          "/help          — Это сообщение помощи"
+            "<b>Доступные команды:</b>\n\n"
+            "<pre>"
+            "/start          — Перезапустить бота / регистрация\n"
+            "/points         — Проверить баланс бонусных баллов\n"
+            "/convert [N]    — Курсы и конвертация TRY → RUB/USD/UAH\n"
+            "/history        — История заказов\n"
+            "/help           — Это сообщение помощи\n"
+            "</pre>"
         )
         bot.send_message(message.chat.id, help_text, parse_mode="HTML")
-
 
 
 # ------------------------------------------------------------------------
