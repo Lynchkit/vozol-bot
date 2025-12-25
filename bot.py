@@ -3261,6 +3261,12 @@ def universal_handler(message):
                     + t(chat_id, "enter_points").format(max_points=max_points)
             )
             bot.send_message(chat_id, msg, reply_markup=types.ReplyKeyboardRemove())
+
+            kb = types.InlineKeyboardMarkup()
+            kb.add(types.InlineKeyboardButton(
+                text="Не списывать баллы",
+                callback_data="no_points"
+            ))
             data["wait_for_points"] = True
             data["temp_total_try"] = total_try
             data["temp_user_points"] = user_points
