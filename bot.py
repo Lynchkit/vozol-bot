@@ -1035,9 +1035,12 @@ def handle_address_input(message):
         data['wait_for_address'] = False
         data['current_category'] = None
         # 1) Убираем клавиатуру запроса локации
-        bot.send_message(chat_id,
-                         t(chat_id, "choose_category"),
-                         reply_markup=types.ReplyKeyboardRemove())
+        bot.send_message(
+            chat_id,
+            "🔙 Вернулись назад",
+            reply_markup=types.ReplyKeyboardRemove()
+        )
+
         # 2) Показываем основное inline-меню
         bot.send_message(chat_id,
                          t(chat_id, "choose_category"),
