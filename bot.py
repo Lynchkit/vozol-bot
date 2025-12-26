@@ -3285,28 +3285,38 @@ def callback_no_points(call):
     bot.answer_callback_query(call.id)
 
     data = user_data.get(chat_id, {})
-    total_try = data.get("temp_total_try", 0)
     cart = data.get("cart", [])
+    total_try = data.get("temp_total_try", 0)
 
     # выключаем режим ввода баллов
     data["wait_for_points"] = False
     data["pending_discount"] = 0
     data["pending_points_spent"] = 0
 
-    kb = address_keyboard(chat_id)
+    # ---- валюты ----
+    rates = fetch_rates()
+    rub = round(total_try * rates.get("RUB", 0) + 500 * len(cart), 2)
+    usd = round(total_try * rates.get("USD", 0) + 2 * len(cart), 2)
+    eur = round(total_try * rates.get("EUR", 0) + 2 * len(cart), 2)
+    uah = round(total_try * rates.get("UAH", 0) + 350 * len(cart), 2)
+    conv = f"({rub}₽, ${usd}, €{eur}, ₴{uah})"
 
+    # ---- корзина ----
     summary = "\n".join(
         f"{i['category']}: {i['flavor']} — {i['price']}₺" for i in cart
     )
 
     bot.send_message(
         chat_id,
-        f"🛒 Корзина:\n\n{summary}\n\nК оплате: {total_try}₺\n\nУкажи адрес:",
-        reply_markup=kb
+        f"🛒 Корзина:\n\n{summary}\n\n"
+        f"💵 К оплате: {total_try}₺ {conv}\n\n"
+        f"{t(chat_id, 'enter_address')}",
+        reply_markup=address_keyboard(chat_id)
     )
 
     data["wait_for_address"] = True
     user_data[chat_id] = data
+
 
 
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("cancel_order|"))
