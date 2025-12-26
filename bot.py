@@ -343,17 +343,13 @@ def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
         ))
 
     return kb
-def main_menu(chat_id):
+def skip_points_keyboard():
     kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton("Помощь", callback_data="help"))
-    kb.add(types.InlineKeyboardButton("Баллы", callback_data="points"))
-    kb.add(types.InlineKeyboardButton("Конвертация", callback_data="convert"))
-    bot.send_message(chat_id, "Главное меню:", reply_markup=kb)
-def back_button():
-    kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="back"))
+    kb.add(types.InlineKeyboardButton(
+        text="❌ Не списывать баллы",
+        callback_data="no_points"
+    ))
     return kb
-
 # ------------------------------------------------------------------------
 #   10. Inline-кнопки для выбора вкусов
 # ------------------------------------------------------------------------
@@ -920,104 +916,54 @@ def handle_clear_cart(call):
 # ------------------------------------------------------------------------
 #   24. Callback: завершить заказ (с проверкой и списанием stock)
 # ------------------------------------------------------------------------
-def skip_points_keyboard():
-    kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton(
-        text="❌ Не списывать баллы",
-        callback_data="no_points"
-    ))
-    return kb
-
 @ensure_user
 @bot.callback_query_handler(func=lambda call: call.data == "finish_order")
 def handle_finish_order(call):
     chat_id = call.from_user.id
     bot.answer_callback_query(call.id)
-    data = user_data.get(chat_id, {})
 
+    data = user_data.get(chat_id, {})
     cart = data.get("cart", [])
     if not cart:
-        bot.send_message(chat_id, t(chat_id, "cart_empty"))
+        bot.send_message(chat_id, "Корзина пуста")
         return
 
-    total_try = sum(item["price"] for item in cart)
+    total_try = sum(i['price'] for i in cart)
 
-    conn_local = get_db_connection()
-    cursor_local = conn_local.cursor()
-    cursor_local.execute("SELECT points FROM users WHERE chat_id = ?", (chat_id,))
-    row = cursor_local.fetchone()
-    cursor_local.close()
-    conn_local.close()
+    # достаём баллы
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT points FROM users WHERE chat_id = ?", (chat_id,))
+    row = cur.fetchone()
+    conn.close()
 
     user_points = row[0] if row else 0
 
+    # 💥 если баллы есть → спрашиваем использовать?
     if user_points > 0:
-        max_points = min(user_points, total_try)
-        points_try = user_points * 1
-        msg = (
-            t(chat_id, "points_info").format(points=user_points, points_try=points_try)
-            + "\n"
-            + t(chat_id, "enter_points").format(max_points=max_points)
-        )
-        # ❗ Показываем кнопку "Не списывать баллы"
-        bot.send_message(chat_id, msg, reply_markup=skip_points_keyboard())
-
         data["wait_for_points"] = True
         data["temp_total_try"] = total_try
         data["temp_user_points"] = user_points
+        user_data[chat_id] = data
 
-    else:
-        kb = address_keyboard(chat_id)
-        bot.send_message(
-            chat_id,
-            f"🛒 {t(chat_id, 'view_cart')}:\n\n"
-            + "\n".join(f"{item['category']}: {item['flavor']} — {item['price']}₺" for item in cart)
-            + f"\n\n{t(chat_id, 'enter_address')}",
-            reply_markup=kb
+        msg = (
+            f"🎁 У тебя {user_points} баллов (максимум можно использовать {min(user_points, total_try)})\n"
+            "Введи сколько баллов списать, или нажми кнопку:"
         )
-        data["wait_for_address"] = True
+        bot.send_message(chat_id, msg, reply_markup=skip_points_keyboard())
+        return
 
-    user_data[chat_id] = data
-# ------------------------------------------------------------------------
-#   Callback: НЕ списывать баллы
-# ------------------------------------------------------------------------
-@ensure_user
-@bot.callback_query_handler(func=lambda call: call.data == "no_points")
-def callback_no_points(call):
-    chat_id = call.from_user.id
-    bot.answer_callback_query(call.id)
-
-    data = user_data.get(chat_id, {})
-    total_try = data.get("temp_total_try", 0)
-    cart = data.get("cart", [])
-
-    # убираем режим ввода баллов
-    data["wait_for_points"] = False
-    data["pending_discount"] = 0
-    data["pending_points_spent"] = 0
-
-    # готовим клавиатуру для адреса
+    # ❗ если баллов нет — сразу идём к адресу
     kb = address_keyboard(chat_id)
-
-    # корзина
-    summary = "\n".join(
-        f"{item['category']}: {item['flavor']} — {item['price']}₺"
-        for item in cart
-    )
-
-    msg = (
-        "🛒 Корзина:\n\n"
-        f"{summary}\n\n"
-        f"К оплате: {total_try}₺\n\n"
-        "Чтобы завершить заказ, укажите адрес:"
-    )
-
-    bot.send_message(chat_id, msg, reply_markup=kb)
-
+    bot.send_message(chat_id, f"К оплате: {total_try}₺\nУкажи адрес:", reply_markup=kb)
     data["wait_for_address"] = True
     user_data[chat_id] = data
 
 
+
+# ------------------------------------------------------------------------
+#   25. Handler: ввод количества баллов для списания
+# ------------------------------------------------------------------------
 @ensure_user
 @bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_points"), content_types=['text'])
 def handle_points_input(message):
@@ -1025,34 +971,6 @@ def handle_points_input(message):
     data = user_data.get(chat_id, {})
     text = message.text.strip()
 
-    # 1️⃣ Если пользователь выбрал "Не списывать баллы"
-    if text.lower() in ["не списывать баллы", "не списывать", "пропустить"]:
-        data["wait_for_points"] = False
-        data["pending_discount"] = 0
-        data["pending_points_spent"] = 0
-
-        total_try = data.get("temp_total_try", 0)
-        cart = data.get("cart", [])
-        kb = address_keyboard(chat_id)
-
-        summary = "\n".join(
-            f"{item['category']}: {item['flavor']} — {item['price']}₺"
-            for item in cart
-        )
-
-        msg = (
-            "🛒 Корзина:\n\n"
-            f"{summary}\n\n"
-            f"Итог к оплате: {total_try}₺\n\n"
-            "Чтобы завершить заказ, укажите адрес:"
-        )
-
-        bot.send_message(chat_id, msg, reply_markup=kb)
-        data["wait_for_address"] = True
-        user_data[chat_id] = data
-        return
-
-    # 2️⃣ Если ввели не число
     if not text.isdigit():
         bot.send_message(chat_id, t(chat_id, "invalid_points").format(max_points=data.get("temp_total_try", 0)))
         return
@@ -1062,12 +980,10 @@ def handle_points_input(message):
     total_try = data.get("temp_total_try", 0)
     max_points = min(user_points, total_try)
 
-    # 3️⃣ Проверка количества баллов
     if points_to_spend < 0 or points_to_spend > max_points:
         bot.send_message(chat_id, t(chat_id, "invalid_points").format(max_points=max_points))
         return
 
-    # 4️⃣ Списание баллов если > 0
     if points_to_spend > 0:
         conn_local = get_db_connection()
         cursor_local = conn_local.cursor()
@@ -1076,7 +992,6 @@ def handle_points_input(message):
         cursor_local.close()
         conn_local.close()
 
-    # 5️⃣ Готовим итог заказа
     discount_try = points_to_spend * 1
     data["pending_discount"] = discount_try
     data["pending_points_spent"] = points_to_spend
@@ -1100,6 +1015,7 @@ def handle_points_input(message):
 
     bot.send_message(chat_id, msg, reply_markup=kb)
     data["wait_for_address"] = True
+
     user_data[chat_id] = data
 
 
@@ -1844,19 +1760,10 @@ def cmd_points(message):
     conn_local.close()
 
     if row is None or row[0] == 0:
-        bot.send_message(
-            chat_id,
-            t(chat_id, "points_info").format(points=0, points_try=0),
-            reply_markup=back_button()   # ← вот здесь
-        )
+        bot.send_message(chat_id, t(chat_id, "points_info").format(points=0, points_try=0))
     else:
         points = row[0]
-        bot.send_message(
-            chat_id,
-            t(chat_id, "points_info").format(points=points, points_try=points),
-            reply_markup=back_button()   # ← и вот здесь
-        )
-
+        bot.send_message(chat_id, t(chat_id, "points_info").format(points=points, points_try=points))
 
 
 # ------------------------------------------------------------------------
@@ -1873,8 +1780,9 @@ def cmd_convert(message):
     eur     = rates.get("EUR", 0)
     uah     = rates.get("UAH", 0)
 
+    # Если хотя бы один курс не вытащился — сразу вылетаем
     if 0 in (rub, usd, eur, uah):
-        return bot.send_message(chat_id, "Курсы валют сейчас недоступны, попробуйте позже.", reply_markup=back_button())
+        return bot.send_message(chat_id, "Курсы валют сейчас недоступны, попробуйте позже.")
 
     # Просто показать текущие курсы
     if len(parts) == 1:
@@ -1886,17 +1794,18 @@ def cmd_convert(message):
             f"1₺ = {eur:.2f} €\n"
             "Для пересчёта напишите: /convert 1300"
         )
-        return bot.send_message(chat_id, text, reply_markup=back_button())
+        return bot.send_message(chat_id, text)
 
     # Если передали сумму — делаем расчёт
     if len(parts) == 2:
         try:
             amount = float(parts[1].replace(",", "."))
         except ValueError:
-            return bot.send_message(chat_id, "Формат: /convert 1300 (или другую сумму в лирах)", reply_markup=back_button())
+            return bot.send_message(chat_id, "Формат: /convert 1300 (или другую сумму в лирах)")
 
         res_rub = amount * rub
         res_usd = amount * usd
+        # вот здесь мы прибавляем 2 ₼ к евро
         res_eur = amount * eur + 2
         res_uah = amount * uah
 
@@ -1906,10 +1815,10 @@ def cmd_convert(message):
             f"{amount:.2f}₺ = {res_eur:.2f} €\n"
             f"{amount:.2f}₺ = {res_uah:.2f} ₴"
         )
-        return bot.send_message(chat_id, text, reply_markup=back_button())
+        return bot.send_message(chat_id, text)
 
-    return bot.send_message(chat_id, "Использование: /convert 1300", reply_markup=back_button())
-
+    # Если больше аргументов — просим уточнить
+    return bot.send_message(chat_id, "Использование: /convert 1300")
 
 @ensure_user
 @bot.message_handler(commands=['total'])
@@ -2158,12 +2067,13 @@ def cmd_help(message: types.Message):
         help_text = (
           "/stats      — View store statistics (ADMIN only)\n"
           "/change     — Enter menu-edit mode (ADMIN only)\n"
-          "/stock <N>  — Set overall delivered count & clear log\n"
+          "/stock &lt;N&gt;  — Set overall delivered count & clear log\n"
           "/sold       — Today's deliveries report (MSK-based)\n"
           "/payment    — Payment details\n"
           "/total      — Show stock levels for all flavors\n"
           "/help       — This help message"
         )
+        bot.send_message(message.chat.id, help_text, parse_mode="HTML")
     else:
         help_text = (
             "<b>Доступные команды:</b>\n\n"
@@ -2175,8 +2085,7 @@ def cmd_help(message: types.Message):
             "/help           — Это сообщение помощи\n"
             "</pre>"
         )
-
-    bot.send_message(message.chat.id, help_text, parse_mode="HTML", reply_markup=back_button())
+        bot.send_message(message.chat.id, help_text, parse_mode="HTML")
 
 
 # ------------------------------------------------------------------------
@@ -3440,6 +3349,35 @@ def universal_handler(message):
         bot.send_message(chat_id, "\n\n".join(texts))
         return
 
+@ensure_user
+@bot.callback_query_handler(func=lambda call: call.data == "no_points")
+def callback_no_points(call):
+    chat_id = call.from_user.id
+    bot.answer_callback_query(call.id)
+
+    data = user_data.get(chat_id, {})
+    total_try = data.get("temp_total_try", 0)
+    cart = data.get("cart", [])
+
+    # выключаем режим ввода баллов
+    data["wait_for_points"] = False
+    data["pending_discount"] = 0
+    data["pending_points_spent"] = 0
+
+    kb = address_keyboard(chat_id)
+
+    summary = "\n".join(
+        f"{i['category']}: {i['flavor']} — {i['price']}₺" for i in cart
+    )
+
+    bot.send_message(
+        chat_id,
+        f"🛒 Корзина:\n\n{summary}\n\nК оплате: {total_try}₺\n\nУкажи адрес:",
+        reply_markup=kb
+    )
+
+    data["wait_for_address"] = True
+    user_data[chat_id] = data
 
 
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("cancel_order|"))
@@ -3579,13 +3517,6 @@ def handle_order_delivered(call: types.CallbackQuery):
         message_id=call.message.message_id,
         reply_markup=kb
     )
-@bot.callback_query_handler(func=lambda call: call.data == "back")
-def back(call):
-    # удаляем сообщение, где был контент
-    bot.delete_message(call.message.chat.id, call.message.message_id)
-
-    # показываем меню заново
-    main_menu(call.message.chat.id)
 
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("deliver_currency|"))
 def handle_deliver_currency(call: types.CallbackQuery):
