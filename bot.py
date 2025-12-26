@@ -435,6 +435,14 @@ def edit_action_keyboard() -> types.ReplyKeyboardMarkup:
 def cmd_start(message):
     chat_id = message.chat.id
 
+    # --- Сброс reply-клавиатуры, если осталась от оформления заказа ---
+    bot.send_message(
+        chat_id,
+        "🔄",
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+
+    # --- Инициализация user_data при первом запуске ---
     if chat_id not in user_data:
         user_data[chat_id] = {
             "lang": None,
@@ -462,10 +470,13 @@ def cmd_start(message):
             "temp_review_flavor": None,
             "temp_review_rating": 0
         }
+
     data = user_data[chat_id]
 
-    # Сбрасываем всё, кроме lang
-    data.update({
+    # --- Сбрасываем всё, кроме выбранного языка ---
+    lang = data.get("lang", None)
+    user_data[chat_id] = {
+        "lang": lang,
         "cart": [],
         "current_category": None,
         "wait_for_points": False,
@@ -489,8 +500,9 @@ def cmd_start(message):
         "awaiting_review_comment": False,
         "temp_review_flavor": None,
         "temp_review_rating": 0
-    })
+    }
 
+    # --- Регистрация пользователя в БД ---
     conn_local = get_db_connection()
     cursor_local = conn_local.cursor()
     cursor_local.execute("SELECT chat_id FROM users WHERE chat_id = ?", (chat_id,))
@@ -503,25 +515,40 @@ def cmd_start(message):
             row = cursor_local.fetchone()
             if row:
                 referred_by = row[0]
+
+        # создаём уникальный referral_code
         new_code = generate_ref_code()
         while True:
             cursor_local.execute("SELECT referral_code FROM users WHERE referral_code = ?", (new_code,))
             if cursor_local.fetchone() is None:
                 break
             new_code = generate_ref_code()
+
         cursor_local.execute(
             "INSERT INTO users (chat_id, points, referral_code, referred_by) VALUES (?, ?, ?, ?)",
             (chat_id, 0, new_code, referred_by)
         )
         conn_local.commit()
+
     cursor_local.close()
     conn_local.close()
 
+    # --- Показываем выбор языка если не выбран ---
+    if user_data[chat_id]["lang"] is None:
+        bot.send_message(
+            chat_id,
+            t(chat_id, "choose_language"),
+            reply_markup=get_inline_language_buttons(chat_id)
+        )
+        return
+
+    # --- Язык выбран → показываем главное меню ---
     bot.send_message(
         chat_id,
-        t(chat_id, "choose_language"),
-        reply_markup=get_inline_language_buttons(chat_id)
+        t(chat_id, "choose_category"),
+        reply_markup=get_inline_main_menu(chat_id)
     )
+
 
 
 # ------------------------------------------------------------------------
@@ -965,14 +992,21 @@ def handle_finish_order(call):
 #   25. Handler: ввод количества баллов для списания
 # ------------------------------------------------------------------------
 @ensure_user
-@bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_points"), content_types=['text'])
+@bot.message_handler(
+    func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_points"),
+    content_types=['text']
+)
 def handle_points_input(message):
     chat_id = message.chat.id
     data = user_data.get(chat_id, {})
     text = message.text.strip()
 
+    # --- проверяем корректность ввода ---
     if not text.isdigit():
-        bot.send_message(chat_id, t(chat_id, "invalid_points").format(max_points=data.get("temp_total_try", 0)))
+        bot.send_message(
+            chat_id,
+            t(chat_id, "invalid_points").format(max_points=data.get("temp_total_try", 0))
+        )
         return
 
     points_to_spend = int(text)
@@ -984,31 +1018,37 @@ def handle_points_input(message):
         bot.send_message(chat_id, t(chat_id, "invalid_points").format(max_points=max_points))
         return
 
-    # ❗ НЕ СПИСЫВАЕМ здесь из базы!
+    # --- сохраняем скидку и ждём адрес; баллы НЕ списываем здесь ---
     data["pending_discount"] = points_to_spend
     data["pending_points_spent"] = points_to_spend
     data["wait_for_points"] = False
 
     cart = data.get("cart", [])
-    summary = "\n".join(f"{i['category']}: {i['flavor']} — {i['price']}₺" for i in cart)
     total_after = max(total_try - points_to_spend, 0)
+    summary = "\n".join(f"{i['category']}: {i['flavor']} — {i['price']}₺" for i in cart)
 
-    bot.send_message(chat_id,
-        f"🛒 Корзина:\n\n{summary}\n\n"
+    # --- конвертации (как в финальном заказе) ---
+    rates = fetch_rates()
+    rub = round(total_after * rates.get("RUB", 0) + 500 * len(cart), 2)
+    usd = round(total_after * rates.get("USD", 0) + 2 * len(cart), 2)
+    eur = round(total_after * rates.get("EUR", 0) + 2 * len(cart), 2)
+    uah = round(total_after * rates.get("UAH", 0) + 350 * len(cart), 2)
+    conv = f"({rub}₽, ${usd}, €{eur}, ₴{uah})"
+
+    # --- вывод пользователю ---
+    msg = (
+        "🛒 Корзина:\n\n"
+        f"{summary}\n\n"
         f"🎁 Скидка: {points_to_spend}₺\n"
-        f"К оплате: {total_after}₺\n\n"
-        f"{t(chat_id,'enter_address')}",
-        reply_markup=address_keyboard(chat_id)
+        f"💳 К оплате: {total_after}₺ {conv}\n\n"
+        f"{t(chat_id, 'enter_address')}"
     )
+
+    bot.send_message(chat_id, msg, reply_markup=address_keyboard(chat_id))
 
     data["wait_for_address"] = True
     user_data[chat_id] = data
 
-
-
-# ------------------------------------------------------------------------
-#   26. Handler: ввод адреса
-# ------------------------------------------------------------------------
 # ------------------------------------------------------------------------
 #   26. Handler: ввод адреса
 # ------------------------------------------------------------------------
@@ -1145,7 +1185,7 @@ def handle_contact_input(message):
     # убираем reply-клавиатуру
     bot.send_message(
         chat_id,
-        f"Контакт сохранен.\n\nИтог к оплате: {total_after}₺",
+        f"Контакт сохранен.",
         reply_markup=types.ReplyKeyboardRemove()
     )
 
