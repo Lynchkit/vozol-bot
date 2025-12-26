@@ -978,6 +978,44 @@ def handle_finish_order(call):
         data["wait_for_address"] = True
 
     user_data[chat_id] = data
+# ------------------------------------------------------------------------
+#   Callback: НЕ списывать баллы
+# ------------------------------------------------------------------------
+@ensure_user
+@bot.callback_query_handler(func=lambda call: call.data == "no_points")
+def callback_no_points(call):
+    chat_id = call.from_user.id
+    bot.answer_callback_query(call.id)
+
+    data = user_data.get(chat_id, {})
+    total_try = data.get("temp_total_try", 0)
+    cart = data.get("cart", [])
+
+    # убираем режим ввода баллов
+    data["wait_for_points"] = False
+    data["pending_discount"] = 0
+    data["pending_points_spent"] = 0
+
+    # готовим клавиатуру для адреса
+    kb = address_keyboard(chat_id)
+
+    # корзина
+    summary = "\n".join(
+        f"{item['category']}: {item['flavor']} — {item['price']}₺"
+        for item in cart
+    )
+
+    msg = (
+        "🛒 Корзина:\n\n"
+        f"{summary}\n\n"
+        f"К оплате: {total_try}₺\n\n"
+        "Чтобы завершить заказ, укажите адрес:"
+    )
+
+    bot.send_message(chat_id, msg, reply_markup=kb)
+
+    data["wait_for_address"] = True
+    user_data[chat_id] = data
 
 
 @ensure_user
