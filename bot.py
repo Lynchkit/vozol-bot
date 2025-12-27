@@ -981,11 +981,37 @@ def handle_finish_order(call):
         return
 
     # ❗ если баллов нет — сразу идём к адресу
+    cart = data.get("cart", [])
     kb = address_keyboard(chat_id)
-    bot.send_message(chat_id, f"К оплате: {total_try}₺\nУкажи адрес:", reply_markup=kb)
-    data["wait_for_address"] = True
-    user_data[chat_id] = data
 
+    # --- формируем список позиций ---
+    summary = "\n".join(
+        f"{i['category']}: {i['flavor']} — {i['price']}₺"
+        for i in cart
+    )
+
+    # --- рассчитываем валюты ---
+    rates = fetch_rates()
+    rub = round(total_try * rates.get("RUB", 0), 2)
+    usd = round(total_try * rates.get("USD", 0), 2)
+    eur = round(total_try * rates.get("EUR", 0), 2)
+    uah = round(total_try * rates.get("UAH", 0), 2)
+    conv = f"({rub}₽, ${usd}, €{eur}, ₴{uah})"
+
+    # --- отправляем сообщение пользователю ---
+    msg = (
+        f"🛒 Корзина:\n\n"
+        f"{summary}\n\n"
+        f"💵 К оплате: {total_try}₺ {conv}\n\n"
+        f"{t(chat_id, 'enter_address')}"
+    )
+
+    bot.send_message(chat_id, msg, reply_markup=kb)
+
+    data["wait_for_address"] = True
+    data["pending_discount"] = 0  # на всякий случай сбрасываем
+    data["pending_points_spent"] = 0
+    user_data[chat_id] = data
 
 
 # ------------------------------------------------------------------------
