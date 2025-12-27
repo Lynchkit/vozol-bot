@@ -1260,6 +1260,18 @@ def handle_comment_input(message):
         "Комментарий сохранён.",
         reply_markup=kb
     )
+    kb.add(
+        types.InlineKeyboardButton(
+            text=t(chat_id, "back"),
+            callback_data="back_to_contact"
+        )
+    )
+    kb.add(
+        types.InlineKeyboardButton(
+            text=t(chat_id, "back"),
+            callback_data="back_to_contact"
+        )
+    )
 
 
 # ------------------------------------------------------------------------
