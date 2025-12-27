@@ -435,46 +435,19 @@ def edit_action_keyboard() -> types.ReplyKeyboardMarkup:
 def cmd_start(message):
     chat_id = message.chat.id
 
-    # --- Сброс reply-клавиатуры, если осталась от оформления заказа ---
+    # --- Сброс клавиатуры ---
     bot.send_message(
         chat_id,
         "🔙 Вернулись в главное меню",
         reply_markup=types.ReplyKeyboardRemove()
     )
 
-    # --- Инициализация user_data при первом запуске ---
+    # --- Инициализация, если впервые ---
     if chat_id not in user_data:
-        user_data[chat_id] = {
-            "lang": None,
-            "cart": [],
-            "current_category": None,
-            "wait_for_points": False,
-            "wait_for_address": False,
-            "wait_for_contact": False,
-            "wait_for_comment": False,
-            "address": "",
-            "contact": "",
-            "comment": "",
-            "pending_discount": 0,
-            "pending_points_spent": 0,
-            "temp_total_try": 0,
-            "temp_user_points": 0,
-            "edit_phase": None,
-            "edit_cat": None,
-            "edit_flavor": None,
-            "edit_index": None,
-            "edit_cart_phase": None,
-            "awaiting_review_flavor": None,
-            "awaiting_review_rating": False,
-            "awaiting_review_comment": False,
-            "temp_review_flavor": None,
-            "temp_review_rating": 0
-        }
+        user_data[chat_id] = {"lang": None}
 
-    data = user_data[chat_id]
-
-    # --- Сбрасываем всё, кроме выбранного языка ---
-    lang = data.get("lang", None)
+    # --- сохраняем язык и очищаем всё остальное ---
+    lang = user_data[chat_id].get("lang")
     user_data[chat_id] = {
         "lang": lang,
         "cart": [],
@@ -502,38 +475,46 @@ def cmd_start(message):
         "temp_review_rating": 0
     }
 
-    # --- Регистрация пользователя в БД ---
-    conn_local = get_db_connection()
-    cursor_local = conn_local.cursor()
-    cursor_local.execute("SELECT chat_id FROM users WHERE chat_id = ?", (chat_id,))
-    if cursor_local.fetchone() is None:
-        text = message.text or ""
+    # --- регистрация пользователя / обработка referral ---
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT referral_code, referred_by FROM users WHERE chat_id = ?", (chat_id,))
+    row = cur.fetchone()
+
+    if row is None:
         referred_by = None
+        text = message.text or ""
+
+        # если зашёл по ссылке ref
         if "ref=" in text:
             code = text.split("ref=")[1]
-            cursor_local.execute("SELECT chat_id FROM users WHERE referral_code = ?", (code,))
-            row = cursor_local.fetchone()
-            if row:
-                referred_by = row[0]
+            cur.execute("SELECT chat_id FROM users WHERE referral_code = ?", (code,))
+            r = cur.fetchone()
+            if r:
+                referred_by = r[0]
 
-        # создаём уникальный referral_code
+        # генерируем уникальный код
         new_code = generate_ref_code()
         while True:
-            cursor_local.execute("SELECT referral_code FROM users WHERE referral_code = ?", (new_code,))
-            if cursor_local.fetchone() is None:
+            cur.execute("SELECT chat_id FROM users WHERE referral_code = ?", (new_code,))
+            if cur.fetchone() is None:
                 break
             new_code = generate_ref_code()
 
-        cursor_local.execute(
+        cur.execute(
             "INSERT INTO users (chat_id, points, referral_code, referred_by) VALUES (?, ?, ?, ?)",
             (chat_id, 0, new_code, referred_by)
         )
-        conn_local.commit()
+        conn.commit()
 
-    cursor_local.close()
-    conn_local.close()
+        referral_code = new_code
+    else:
+        referral_code = row[0]  # уже существующий
 
-    # --- Показываем выбор языка если не выбран ---
+    cur.close()
+    conn.close()
+
+    # --- если язык еще не выбран — показать выбор языка ---
     if user_data[chat_id]["lang"] is None:
         bot.send_message(
             chat_id,
@@ -542,14 +523,23 @@ def cmd_start(message):
         )
         return
 
-    # --- Язык выбран → показываем главное меню ---
+    # === язык выбран → показать рефкод + меню ===
+    invite_link = f"https://t.me/DROPOINTBOT?start=ref={referral_code}"
+
+    bot.send_message(
+        chat_id,
+        f"🎁 <b>200 баллов за приглашение друга!</b>\n\n"
+        f"<b>Реферальный код:</b> <code>{referral_code}</code>\n"
+        f"<b>Ссылка для приглашения:</b>\n{invite_link}",
+        parse_mode="HTML"
+    )
+
+    # --- главное меню ---
     bot.send_message(
         chat_id,
         t(chat_id, "choose_category"),
         reply_markup=get_inline_main_menu(chat_id)
     )
-
-
 
 # ------------------------------------------------------------------------
 #   15. Callback: выбор языка
