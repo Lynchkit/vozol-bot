@@ -1212,7 +1212,7 @@ def handle_contact_input(message):
     bot.send_message(
         chat_id,
         f"Контакт сохранен.",
-        reply_markup=types.ReplyKeyboardRemove()
+        reply_markup=kb
     )
 
     # показываем inline-кнопки
