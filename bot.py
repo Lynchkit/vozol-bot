@@ -1224,8 +1224,6 @@ def handle_contact_input(message):
 
     user_data[chat_id] = data
 
-
-
 @ensure_user
 @bot.message_handler(
     func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_comment"),
@@ -1236,41 +1234,36 @@ def handle_comment_input(message):
     data = user_data.get(chat_id, {})
     text = message.text.strip()
 
-    # --- Сохраняем комментарий ---
+    # --- сохраняем комментарий ---
     if text:
         data["comment"] = text
     else:
         data["comment"] = "—"
 
-    data["wait_for_comment"] = False
+    # остаёмся в wait_for_comment, чтобы можно было править комментарий
+    data["wait_for_comment"] = True
     user_data[chat_id] = data
 
-    # --- показываем кнопку ОТПРАВИТЬ ЗАКАЗ ---
-    kb = types.InlineKeyboardMarkup(row_width=1)
+    # --- inline-кнопки: отправить заказ + назад ---
+    kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         types.InlineKeyboardButton(
-            text=t(chat_id, "send_order"),
+            text=f" {t(chat_id, 'send_order')}",
             callback_data="send_order_final"
+        ),
+        types.InlineKeyboardButton(
+            text=f" {t(chat_id, 'back')}",
+            callback_data="back_to_contact"   # обработчик у тебя уже есть
         )
     )
 
-    # ❗ reply-клавиатуру НЕ убираем на этом шаге
+    # ❗ reply-клавиатуру НЕ трогаем — остаётся какой была
     bot.send_message(
         chat_id,
-        "Комментарий сохранён.",
+        "💬 Комментарий сохранён.\n\n"
+        "Если хотите изменить — напишите новый текст.\n",
+
         reply_markup=kb
-    )
-    kb.add(
-        types.InlineKeyboardButton(
-            text=t(chat_id, "back"),
-            callback_data="back_to_contact"
-        )
-    )
-    kb.add(
-        types.InlineKeyboardButton(
-            text=t(chat_id, "back"),
-            callback_data="back_to_contact"
-        )
     )
 
 
