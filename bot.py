@@ -1226,8 +1226,41 @@ def handle_contact_input(message):
 
 
 
-# ------------------------------------------------------------------------
-#   28. Handler: ввод комментария и сохранение заказа (с учётом списания stock)
+@ensure_user
+@bot.message_handler(
+    func=lambda m: user_data.get(m.chat.id, {}).get("wait_for_comment"),
+    content_types=['text']
+)
+def handle_comment_input(message):
+    chat_id = message.chat.id
+    data = user_data.get(chat_id, {})
+    text = message.text.strip()
+
+    # --- Сохраняем комментарий ---
+    if text:
+        data["comment"] = text
+    else:
+        data["comment"] = "—"
+
+    data["wait_for_comment"] = False
+    user_data[chat_id] = data
+
+    # --- показываем кнопку ОТПРАВИТЬ ЗАКАЗ ---
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        types.InlineKeyboardButton(
+            text=t(chat_id, "send_order"),
+            callback_data="send_order_final"
+        )
+    )
+
+    # ❗ reply-клавиатуру НЕ убираем на этом шаге
+    bot.send_message(
+        chat_id,
+        "Комментарий сохранён.",
+        reply_markup=kb
+    )
+
 
 # ------------------------------------------------------------------------
 #   Callback: финальное оформление заказа (списание баллов, запись в БД)
