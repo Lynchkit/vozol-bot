@@ -1166,68 +1166,63 @@ def handle_contact_input(message):
     if text == t(chat_id, "back"):
         data['wait_for_address'] = True
         data['wait_for_contact'] = False
-        bot.send_message(
-            chat_id,
-            t(chat_id, "enter_address"),
-            reply_markup=address_keyboard(chat_id)
-        )
+        kb = address_keyboard(chat_id)
+        bot.send_message(chat_id, t(chat_id, "enter_address"), reply_markup=kb)
         user_data[chat_id] = data
         return
 
     # --- Ввод ника ---
     if text == t(chat_id, "enter_nickname"):
-        bot.send_message(
-            chat_id,
-            "Введите ваш Telegram-ник (без @):",
-            reply_markup=types.ReplyKeyboardRemove()
-        )
+        bot.send_message(chat_id, "Введите ваш Telegram-ник (без @):", reply_markup=types.ReplyKeyboardRemove())
         return
 
-    # --- Получение контакта ---
+    # --- Ввод контакта ---
     if message.content_type == 'contact' and message.contact:
         contact = message.contact.phone_number
     elif message.content_type == 'text' and message.text:
         contact = "@" + message.text.strip().lstrip("@")
     else:
-        bot.send_message(
-            chat_id,
-            t(chat_id, "enter_contact"),
-            reply_markup=contact_keyboard(chat_id)
-        )
+        bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=contact_keyboard(chat_id))
         return
 
-    # --- Сохраняем ---
     data['contact'] = contact
     data['wait_for_contact'] = False
     data['wait_for_comment'] = True
-    user_data[chat_id] = data
 
-    # --- пересчёт суммы ---
+    # --- расчёт суммы с учётом pending баллов ---
     cart = data.get("cart", [])
     total_try = sum(i['price'] for i in cart)
     pending_points = data.get("pending_points_spent", 0)
-    total_after = max(total_try - pending_points, 0)
+    total_after = total_try - pending_points
 
     # --- inline-кнопки ---
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         types.InlineKeyboardButton(
-            text=f" {t(chat_id, 'send_order')}",
+            text=f" {t(chat_id, 'send_order')} ({total_after}₺)",
             callback_data="send_order_final"
         ),
         types.InlineKeyboardButton(
-            text=f" {t(chat_id, 'back')}",
+            text=f"️ {t(chat_id, 'back')}",
             callback_data="back_to_contact"
         )
     )
 
-    # --- Убираем reply и предлагаем комментарий ---
+    # убираем reply-клавиатуру
     bot.send_message(
         chat_id,
-        "Контакт сохранён.\n\n💬 Напишите комментарий или просто отправьте заказ",
+        f"Контакт сохранен.",
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+
+    # показываем inline-кнопки
+    bot.send_message(
+        chat_id,
+        "💬 Напишите комментарий или просто отправьте заказ",
         reply_markup=kb
     )
 
+    user_data[chat_id] = data
 
 
 
