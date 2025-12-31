@@ -946,8 +946,9 @@ def handle_finish_order(call):
         return
 
     total_try = sum(i['price'] for i in cart)
+    qty = len(cart)
 
-    # достаём баллы
+    # --- достаём баллы ---
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("SELECT points FROM users WHERE chat_id = ?", (chat_id,))
@@ -971,7 +972,6 @@ def handle_finish_order(call):
         return
 
     # ❗ если баллов нет — сразу идём к адресу
-    cart = data.get("cart", [])
     kb = address_keyboard(chat_id)
 
     # --- формируем список позиций ---
@@ -980,12 +980,12 @@ def handle_finish_order(call):
         for i in cart
     )
 
-    # --- рассчитываем валюты ---
+    # --- рассчитываем валюты с комиссиями (как в финальном заказе) ---
     rates = fetch_rates()
-    rub = round(total_try * rates.get("RUB", 0), 2)
-    usd = round(total_try * rates.get("USD", 0), 2)
-    eur = round(total_try * rates.get("EUR", 0), 2)
-    uah = round(total_try * rates.get("UAH", 0), 2)
+    rub = round(total_try * rates.get("RUB", 0) + 500 * qty, 2)
+    usd = round(total_try * rates.get("USD", 0) + 2 * qty, 2)
+    eur = round(total_try * rates.get("EUR", 0) + 2 * qty, 2)
+    uah = round(total_try * rates.get("UAH", 0) + 350 * qty, 2)
     conv = f"({rub}₽, ${usd}, €{eur}, ₴{uah})"
 
     # --- отправляем сообщение пользователю ---
@@ -999,9 +999,10 @@ def handle_finish_order(call):
     bot.send_message(chat_id, msg, reply_markup=kb)
 
     data["wait_for_address"] = True
-    data["pending_discount"] = 0  # на всякий случай сбрасываем
+    data["pending_discount"] = 0
     data["pending_points_spent"] = 0
     user_data[chat_id] = data
+
 
 
 # ------------------------------------------------------------------------
