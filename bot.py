@@ -316,13 +316,21 @@ def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=2)
     lang = user_data.get(chat_id, {}).get("lang") or "ru"
 
-    # Категории
     for cat in menu:
-        total_stock = sum(item.get("stock", 0) for item in menu[cat]["flavors"])
-        label = f"{cat} (out of stock)" if total_stock == 0 and lang == "en" \
-                else f"{cat} (нет в наличии)" if total_stock == 0 \
-                else cat
-        kb.add(types.InlineKeyboardButton(text=label, callback_data=f"category|{cat}"))
+        total_stock = sum(int(item.get("stock", 0)) for item in menu[cat]["flavors"])
+
+        if total_stock == 0:
+            label = f"{cat} ❌"
+        else:
+            label = cat
+
+        kb.add(types.InlineKeyboardButton(
+            text=label,
+            callback_data=f"category|{cat}"
+        ))
+
+    return kb
+
 
     # Кнопки корзины и дальнейших действий — только если в корзине есть товары
     cart_count = len(user_data.get(chat_id, {}).get("cart", []))
