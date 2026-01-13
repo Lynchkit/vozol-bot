@@ -320,7 +320,7 @@ def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
     for cat in menu:
         total_stock = sum(item.get("stock", 0) for item in menu[cat]["flavors"])
         label = f"{cat} (out of stock)" if total_stock == 0 and lang == "en" \
-                else f"{cat} (нет в наличии)" if total_stock == 0 \
+                else f"{cat} (❌)" if total_stock == 0 \
                 else cat
         kb.add(types.InlineKeyboardButton(text=label, callback_data=f"category|{cat}"))
 
@@ -370,7 +370,7 @@ def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
         # Берём средний рейтинг из menu.json, если он есть
         rating = item.get("rating")
         rating_str = f" ⭐{rating}" if rating else ""
-        label = f"{price}₺ | {stock} шт | {emoji} {flavor}{rating_str}"
+        label = f"{emoji} {flavor}{rating_str} · {stock}x"
         kb.add(types.InlineKeyboardButton(
             text=label,
             callback_data=f"flavor|{idx}"
@@ -3282,7 +3282,8 @@ def universal_handler(message):
             if it.get("stock", 0) > 0:
                 emoji = it.get("emoji", "")
                 flavor0 = it["flavor"]
-                label = f"{price}₺ | {stock} шт | {emoji} {flavor}{rating_str}"
+                label = f"{emoji} {flavor}{rating_str} · {stock}x"
+
                 if text == label:
                     data['cart'].append({'category': cat0, 'flavor': flavor0, 'price': price})
                     template = t(chat_id, "added_to_cart")
