@@ -378,7 +378,7 @@ def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
         # Берём средний рейтинг из menu.json, если он есть
         rating = item.get("rating")
         rating_str = f" ⭐{rating}" if rating else ""
-        label = f"{emoji} {flavor}{rating_str} · {stock} шт"
+        label = f"{stock} шт · {emoji} {flavor}{rating_str}"
         kb.add(types.InlineKeyboardButton(
             text=label,
             callback_data=f"flavor|{idx}"
@@ -3290,7 +3290,7 @@ def universal_handler(message, flavor=None):
             if it.get("stock", 0) > 0:
                 emoji = it.get("emoji", "")
                 flavor0 = it["flavor"]
-                label = f"{emoji} {flavor}{rating_str} · {stock} шт"
+                label = f"{stock} шт · {emoji} {flavor}{rating_str}"
 
                 if text == label:
                     data['cart'].append({'category': cat0, 'flavor': flavor0, 'price': price})
