@@ -1190,7 +1190,7 @@ def handle_contact_input(message):
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         types.InlineKeyboardButton(
-            text=f" {t(chat_id, 'send_order')} ({total_after}₺)",
+            text=f" {t(chat_id, 'send_order')}",
             callback_data="send_order_final"
         ),
         types.InlineKeyboardButton(
