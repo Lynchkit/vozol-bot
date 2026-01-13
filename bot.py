@@ -370,7 +370,7 @@ def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
         # Берём средний рейтинг из menu.json, если он есть
         rating = item.get("rating")
         rating_str = f" ⭐{rating}" if rating else ""
-        label = f"{price}₺ | {stock} шт | {emoji} {flavor}{rating_str}"
+        label = f"{emoji} {flavor}{rating_str} · {stock} шт"
         kb.add(types.InlineKeyboardButton(
             text=label,
             callback_data=f"flavor|{idx}"
@@ -2077,7 +2077,7 @@ def cmd_help(message: types.Message):
 # ------------------------------------------------------------------------
 @ensure_user
 @bot.message_handler(content_types=['text', 'location', 'venue', 'contact'])
-def universal_handler(message):
+def universal_handler(message, flavor=None):
     chat_id = message.chat.id
     text = message.text or ""
     if chat_id not in user_data:
@@ -3282,7 +3282,8 @@ def universal_handler(message):
             if it.get("stock", 0) > 0:
                 emoji = it.get("emoji", "")
                 flavor0 = it["flavor"]
-                label = f"{price}₺ | {stock} шт | {emoji} {flavor}{rating_str}"
+                label = f"{emoji} {flavor}{rating_str} · {stock} шт"
+
                 if text == label:
                     data['cart'].append({'category': cat0, 'flavor': flavor0, 'price': price})
                     template = t(chat_id, "added_to_cart")
