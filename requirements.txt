@@ -4,3 +4,4 @@ apscheduler
 pandas
 matplotlib
 psycopg2-binary
+pytz
