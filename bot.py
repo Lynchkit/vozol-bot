@@ -1811,36 +1811,24 @@ def cmd_total(message):
 
     lines = []
     total_pcs = 0
-
     for cat, cat_data in menu.items():
-        cat_lines = []
-        cat_total = 0
-
+        lines.append(f"<b>{cat}</b>:")
         for itm in cat_data.get("flavors", []):
-            stock = int(itm.get("stock", 0))
-            if stock <= 0:
-                continue  # ⬅️ скрываем нулевые вкусы
-
             flavor = itm.get("flavor", "—")
-            cat_total += stock
+            stock  = int(itm.get("stock", 0))
             total_pcs += stock
-            cat_lines.append(f"  • {flavor} — {stock} pcs")
+            lines.append(f"  • {flavor} — {stock} pcs")
+        lines.append("")  # разделитель между категориями
 
-        # если в категории есть хоть что-то — показываем
-        if cat_lines:
-            lines.append(f"<b>{cat}</b>:")
-            lines.extend(cat_lines)
-            lines.append("")
-
-    # убираем последний перенос
+    # удаляем последнюю пустую строку
     if lines and lines[-1] == "":
         lines.pop()
 
+    # добавляем итог
     lines.append(f"\n<b>Total:</b> {total_pcs} pcs")
 
-    text = "\n".join(lines) if total_pcs > 0 else "No stock available."
+    text = "\n".join(lines) if lines else "No flavors available."
     bot.send_message(chat_id, text, parse_mode="HTML")
-
 
 @bot.message_handler(commands=['stocknow'])
 def cmd_stocknow(message: types.Message):
@@ -1917,18 +1905,7 @@ def compose_sold_report() -> str:
     conn.close()
 
     if not rows:
-        total_stock_left = sum(
-            int(itm.get("stock", 0))
-            for cat in menu.values()
-            for itm in cat.get("flavors", [])
-            if int(itm.get("stock", 0)) > 0
-        )
-
-        return (
-            "📊 Deliveries report:\n"
-            "No deliveries recorded today.\n\n"
-            f"📦 Remaining stock total: {total_stock_left} pcs"
-        )
+        return "📊 Deliveries report: no deliveries recorded today."
 
     # 3️⃣ Собираем данные по доставкам
     detail_lines = []
