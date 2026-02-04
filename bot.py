@@ -1925,8 +1925,8 @@ def compose_sold_report() -> str:
         )
 
         return (
-            "📊 Deliveries report: No deliveries recorded today.\n"
-            f"📦 Stock available: {total_stock} pcs"
+            "📊 Deliveries today: 0\n"
+            f"📦 Stock remaining: {total_stock} pcs"
         )
 
     # 3️⃣ Собираем данные по доставкам
