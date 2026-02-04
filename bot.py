@@ -1925,8 +1925,7 @@ def compose_sold_report() -> str:
         )
 
         return (
-            "📊 Deliveries report:\n"
-            "No deliveries recorded today.\n\n"
+            "📊 Deliveries report: No deliveries recorded today.\n"
             f"📦 Stock available: {total_stock} pcs"
         )
 
