@@ -108,14 +108,6 @@ cursor_init.execute("""
         referred_by    INTEGER
     )
 """)
-# Добавляем поля для сохранения последних данных доставки
-try:
-    cursor_init.execute("ALTER TABLE users ADD COLUMN last_address TEXT")
-    cursor_init.execute("ALTER TABLE users ADD COLUMN last_contact TEXT")
-    conn_init.commit()
-except sqlite3.OperationalError:
-    # если столбцы уже существуют — пропускаем
-    pass
 
 # Создание таблицы orders (с новыми полями уже учтёнными через ALTER)
 cursor_init.execute("""
@@ -978,40 +970,6 @@ def handle_finish_order(call):
         )
         bot.send_message(chat_id, msg, reply_markup=skip_points_keyboard())
         return
-    # --- проверяем, есть ли сохранённые данные ---
-    conn_check = get_db_connection()
-    cur_check = conn_check.cursor()
-    cur_check.execute(
-        "SELECT last_address, last_contact FROM users WHERE chat_id = ?",
-        (chat_id,)
-    )
-    row = cur_check.fetchone()
-    cur_check.close()
-    conn_check.close()
-
-    if row and row[0] and row[1]:
-        last_address, last_contact = row
-
-        kb = types.InlineKeyboardMarkup(row_width=1)
-        kb.add(
-            types.InlineKeyboardButton(
-                text="✅ Использовать прошлые данные",
-                callback_data="use_last_data"
-            ),
-            types.InlineKeyboardButton(
-                text="✏️ Ввести новые данные",
-                callback_data="enter_new_data"
-            )
-        )
-
-        bot.send_message(
-            chat_id,
-            f"📦 Использовать прошлые данные?\n\n"
-            f"📍 {last_address}\n"
-            f"📱 {last_contact}",
-            reply_markup=kb
-        )
-        return
 
     # ❗ если баллов нет — сразу идём к адресу
     kb = address_keyboard(chat_id)
@@ -1046,59 +1004,6 @@ def handle_finish_order(call):
     user_data[chat_id] = data
 
 
-@ensure_user
-@bot.callback_query_handler(func=lambda c: c.data == "use_last_data")
-def handle_use_last_data(call):
-    chat_id = call.from_user.id
-    bot.answer_callback_query(call.id)
-
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT last_address, last_contact FROM users WHERE chat_id = ?",
-        (chat_id,)
-    )
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
-
-    if row:
-        user_data[chat_id]["address"] = row[0]
-        user_data[chat_id]["contact"] = row[1]
-        user_data[chat_id]["wait_for_comment"] = True
-
-        kb = types.InlineKeyboardMarkup(row_width=2)
-        kb.add(
-            types.InlineKeyboardButton(
-                text="✅ Отправить заказ",
-                callback_data="send_order_final"
-            ),
-            types.InlineKeyboardButton(
-                text="✏️ Изменить данные",
-                callback_data="enter_new_data"
-            )
-        )
-
-        bot.send_message(
-            chat_id,
-            "💬 Можете добавить комментарий или сразу отправить заказ.",
-            reply_markup=kb
-        )
-
-
-@ensure_user
-@bot.callback_query_handler(func=lambda c: c.data == "enter_new_data")
-def handle_enter_new_data(call):
-    chat_id = call.from_user.id
-    bot.answer_callback_query(call.id)
-
-    user_data[chat_id]["wait_for_address"] = True
-
-    bot.send_message(
-        chat_id,
-        "Введите адрес:",
-        reply_markup=address_keyboard(chat_id)
-    )
 
 # ------------------------------------------------------------------------
 #   25. Handler: ввод количества баллов для списания
@@ -1454,16 +1359,6 @@ def finalize_order(call):
     conn_local.commit()
     cursor_local.close()
     conn_local.close()
-    # --- 💾 СОХРАНЯЕМ ПОСЛЕДНИЕ ДАННЫЕ ДОСТАВКИ ---
-    conn_save = get_db_connection()
-    cur_save = conn_save.cursor()
-    cur_save.execute(
-        "UPDATE users SET last_address = ?, last_contact = ? WHERE chat_id = ?",
-        (address, contact, chat_id)
-    )
-    conn_save.commit()
-    cur_save.close()
-    conn_save.close()
 
     # --- уведомления ---
     summary = "\n".join(
