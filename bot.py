@@ -1507,7 +1507,7 @@ def finalize_order(call):
             callback_data=f"order_delivered|{order_id}|{chat_id}"
         ),
         types.InlineKeyboardButton(
-            text="🚗 Courier On The Way",
+            text="🚗 OMW",
             callback_data=f"courier_on_way|{order_id}|{chat_id}"
         )
     )
@@ -1676,7 +1676,7 @@ def handle_send_order_final(call):
             callback_data=f"order_delivered|{order_id}|{chat_id}"
         ),
         types.InlineKeyboardButton(
-            text="🚗 Courier On The Way",
+            text="🚗 OMW",
             callback_data=f"courier_on_way|{order_id}|{chat_id}"
         )
     )
@@ -3331,7 +3331,7 @@ def universal_handler(message):
                     callback_data=f"order_delivered|{order_id}|{chat_id}"
                 ),
                 types.InlineKeyboardButton(
-                    text="🚗 Courier On The Way",
+                    text="🚗 OMW",
                     callback_data=f"courier_on_way|{order_id}|{chat_id}"
                 )
             )
