@@ -1496,11 +1496,22 @@ def finalize_order(call):
         f"📱 Contact: {contact}\n"
         f"💬 Comment: {translate_to_en(comment)}"
     )
-    kb_admin = types.InlineKeyboardMarkup(row_width=2)
+    kb_admin = types.InlineKeyboardMarkup(row_width=3)
     kb_admin.add(
-        types.InlineKeyboardButton(text="❌ Cancel order", callback_data=f"cancel_order|{order_id}"),
-        types.InlineKeyboardButton(text="✅ Delivered", callback_data=f"order_delivered|{order_id}")
+        types.InlineKeyboardButton(
+            text="❌ Cancel Order",
+            callback_data=f"cancel_order|{order_id}|{chat_id}"
+        ),
+        types.InlineKeyboardButton(
+            text="✅ Delivered",
+            callback_data=f"order_delivered|{order_id}|{chat_id}"
+        ),
+        types.InlineKeyboardButton(
+            text="🚗 Courier On The Way",
+            callback_data=f"courier_on_way|{order_id}|{chat_id}"
+        )
     )
+
     bot.send_message(GROUP_CHAT_ID, full_en, reply_markup=kb_admin)
 
     # --- сообщение пользователю ---
@@ -1726,19 +1737,6 @@ def handle_back_to_contact(call):
 
     user_data[chat_id] = data
 
-@bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("courier_on_way|"))
-def handle_courier_on_way(call):
-    _, order_id, user_chat_id = call.data.split("|")
-    user_chat_id = int(user_chat_id)
-
-    try:
-        bot.send_message(
-            user_chat_id,
-            "🚗 Курьер принял Ваш заказ и уже в пути!"
-        )
-        bot.answer_callback_query(call.id, "Client notified ✅")
-    except Exception:
-        bot.answer_callback_query(call.id, "Error ❌", show_alert=True)
 # ------------------------------------------------------------------------
 #   29. /change: перевод в режим редактирования меню (только на английском)
 # ------------------------------------------------------------------------
@@ -3317,17 +3315,27 @@ def universal_handler(message):
                 f"📱 Contact: {data.get('contact', '—')}\n"
                 f"💬 Comment: {comment_en}"
             )
+            chat_id = message.from_user.id
             # вместо:
             # bot.send_message(GROUP_CHAT_ID, full_en)
 
             # создаём клавиатуру
-            kb = types.InlineKeyboardMarkup()
-            kb.add(types.InlineKeyboardButton(
-                text="❌ Отменить заказ",
-                callback_data=f"cancel_order|{order_id}"
-            ))
+            kb = types.InlineKeyboardMarkup(row_width=3)
+            kb.add(
+                types.InlineKeyboardButton(
+                    text="❌ Cancel Order",
+                    callback_data=f"cancel_order|{order_id}|{chat_id}"
+                ),
+                types.InlineKeyboardButton(
+                    text="✅ Delivered",
+                    callback_data=f"order_delivered|{order_id}|{chat_id}"
+                ),
+                types.InlineKeyboardButton(
+                    text="🚗 Courier On The Way",
+                    callback_data=f"courier_on_way|{order_id}|{chat_id}"
+                )
+            )
 
-            # отправляем админам вместе с кнопкой
             bot.send_message(
                 GROUP_CHAT_ID,
                 full_en,
@@ -3768,7 +3776,19 @@ def handle_back_to_group(call: types.CallbackQuery):
         message_id=call.message.message_id,
         reply_markup=kb
     )
+@bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("courier_on_way|"))
+def handle_courier_on_way(call):
+    _, order_id, user_chat_id = call.data.split("|")
+    user_chat_id = int(user_chat_id)
 
+    try:
+        bot.send_message(
+            user_chat_id,
+            "🚗 Курьер принял Ваш заказ и уже в пути!"
+        )
+        bot.answer_callback_query(call.id, "Client notified ✅")
+    except Exception:
+        bot.answer_callback_query(call.id, "Error ❌", show_alert=True)
 # ------------------------------------------------------------------------
 #   36. Запуск бота
 # ------------------------------------------------------------------------
