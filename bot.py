@@ -3535,8 +3535,12 @@ def handle_cancel_order(call):
     if user_id not in ADMINS:
         return bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
 
-    _, oid = call.data.split("|", 1)
-    order_id = int(oid)
+    parts = call.data.split("|")
+
+    if len(parts) < 2:
+        return bot.answer_callback_query(call.id, "Data error", show_alert=True)
+
+    order_id = int(parts[1])
 
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -3640,8 +3644,12 @@ def handle_order_delivered(call: types.CallbackQuery):
     bot.answer_callback_query(call.id)
 
     # 4. Извлекаем order_id из callback_data
-    _, oid = call.data.split("|", 1)
-    order_id = int(oid)
+    parts = call.data.split("|")
+
+    if len(parts) < 2:
+        return bot.answer_callback_query(call.id, "Data error", show_alert=True)
+
+    order_id = int(parts[1])
 
     # 5. Формируем клавиатуру выбора валют
     currencies = ["cash", "rub", "dollar", "euro", "uah", "iban", "crypto", "free"]
