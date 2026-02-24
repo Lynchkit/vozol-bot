@@ -3643,6 +3643,12 @@ def handle_order_delivered(call: types.CallbackQuery):
     # 3. Подтверждаем callback, чтобы убрать спиннер
     bot.answer_callback_query(call.id)
 
+    bot.edit_message_reply_markup(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=None
+    )
+
     # 4. Извлекаем order_id из callback_data
     parts = call.data.split("|")
 
@@ -3786,17 +3792,32 @@ def handle_back_to_group(call: types.CallbackQuery):
     )
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("courier_on_way|"))
 def handle_courier_on_way(call):
-    _, order_id, user_chat_id = call.data.split("|")
-    user_chat_id = int(user_chat_id)
+    parts = call.data.split("|")
 
-    try:
-        bot.send_message(
-            user_chat_id,
-            "🚗 Курьер принял Ваш заказ и уже в пути!"
+    if len(parts) < 3:
+        return bot.answer_callback_query(call.id, "Data error ❌", show_alert=True)
+
+    order_id = int(parts[1])
+    user_chat_id = int(parts[2])
+
+    # 1️⃣ Уведомляем клиента
+    bot.send_message(
+        user_chat_id,
+        "🚗 Курьер принял Ваш заказ и уже в пути!"
+    )
+
+    # 2️⃣ Добавляем статус в текст (но оставляем кнопки)
+    if "🚗 In Delivery" not in call.message.text:
+        new_text = call.message.text + "\n\n🚗 In Delivery"
+
+        bot.edit_message_text(
+            new_text,
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=call.message.reply_markup  # ← ВАЖНО: сохраняем кнопки
         )
-        bot.answer_callback_query(call.id, "Client notified ✅")
-    except Exception:
-        bot.answer_callback_query(call.id, "Error ❌", show_alert=True)
+
+    bot.answer_callback_query(call.id, "Marked as In Delivery 🚗")
 # ------------------------------------------------------------------------
 #   36. Запуск бота
 # ------------------------------------------------------------------------
