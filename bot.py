@@ -1986,7 +1986,7 @@ def cmd_stocknow(message: types.Message):
 def cmd_payment(message):
     chat_id = message.chat.id
     # 1) Номер IBAN
-    bot.send_message(chat_id, "TR22 0004 6013 3088 8000 0301 47")
+    bot.send_message(chat_id, "TR59 0013 4000 0111 1321 7000 01")
     # 2) Имя получателя
     bot.send_message(chat_id, "Artur Yuldashev")
     # 3) Адрес кошелька
