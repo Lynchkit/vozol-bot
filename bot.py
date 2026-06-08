@@ -322,15 +322,21 @@ def get_inline_language_buttons(chat_id: int) -> types.InlineKeyboardMarkup:
 # ------------------------------------------------------------------------
 def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=2)
-    lang = user_data.get(chat_id, {}).get("lang") or "ru"
 
-    # Категории
-    for cat in menu:
-        total_stock = sum(item.get("stock", 0) for item in menu[cat]["flavors"])
-        label = f"{cat} (out of stock)" if total_stock == 0 and lang == "en" \
-                else f"{cat} 🚫" if total_stock == 0 \
-                else cat
-        kb.add(types.InlineKeyboardButton(text=label, callback_data=f"category|{cat}"))
+    # Категории для пользователя:
+    # показываем только те категории, где есть хотя бы один вкус со stock > 0.
+    # Пустые категории НЕ удаляются из menu.json и остаются доступными в /change.
+    for cat, cat_data in menu.items():
+        flavors = cat_data.get("flavors", [])
+        total_stock = sum(int(item.get("stock", 0)) for item in flavors)
+
+        if total_stock <= 0:
+            continue
+
+        kb.add(types.InlineKeyboardButton(
+            text=cat,
+            callback_data=f"category|{cat}"
+        ))
 
     # Кнопки корзины и дальнейших действий — только если в корзине есть товары
     cart_count = len(user_data.get(chat_id, {}).get("cart", []))
