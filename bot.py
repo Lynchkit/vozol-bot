@@ -981,12 +981,21 @@ def ask_saved_or_new_delivery_data(chat_id: int, total_try: int, points_to_spend
         )
 
         total_after = max(total_try - points_to_spend, 0)
+        qty = len(cart)
+
+        rates = fetch_rates()
+        rub = round(total_after * rates.get("RUB", 0) + 500 * qty, 2)
+        usd = round(total_after * rates.get("USD", 0) + 2 * qty, 2)
+        eur = round(total_after * rates.get("EUR", 0) + 2 * qty, 2)
+        uah = round(total_after * rates.get("UAH", 0) + 350 * qty, 2)
+        conv = f"({rub}₽, ${usd}, €{eur}, ₴{uah})"
+
         bot.send_message(
             chat_id,
             f"Хотите использовать последние данные?\n\n"
             f"📍 Адрес: {last_address}\n"
             f"📱 Телефон/ник: {last_contact}\n\n"
-            f"💳 К оплате: {total_after}₺",
+            f"К оплате: {total_after}₺ {conv}",
             reply_markup=kb
         )
         return True
