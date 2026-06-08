@@ -983,7 +983,7 @@ def ask_saved_or_new_delivery_data(chat_id: int, total_try: int, points_to_spend
         total_after = max(total_try - points_to_spend, 0)
         bot.send_message(
             chat_id,
-            f"📦 Хотите использовать последние данные?\n\n"
+            f"Хотите использовать последние данные?\n\n"
             f"📍 Адрес: {last_address}\n"
             f"📱 Телефон/ник: {last_contact}\n\n"
             f"💳 К оплате: {total_after}₺",
