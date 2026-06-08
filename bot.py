@@ -971,11 +971,11 @@ def ask_saved_or_new_delivery_data(chat_id: int, total_try: int, points_to_spend
         kb = types.InlineKeyboardMarkup(row_width=1)
         kb.add(
             types.InlineKeyboardButton(
-                text="✅ Использовать",
+                text="Использовать",
                 callback_data="use_last_data"
             ),
             types.InlineKeyboardButton(
-                text="✏️ Новый адрес",
+                text="Новый адрес",
                 callback_data="enter_new_data"
             )
         )
