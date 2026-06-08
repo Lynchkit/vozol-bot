@@ -944,6 +944,85 @@ def handle_clear_cart(call):
     user_data[chat_id] = data
 
 
+def ask_saved_or_new_delivery_data(chat_id: int, total_try: int, points_to_spend: int = 0) -> bool:
+    """
+    После этапа баллов предлагает использовать последние сохранённые данные доставки.
+    Если данных ещё нет, сразу переводит пользователя на ввод нового адреса.
+    Возвращает True, если показал выбор последних данных, иначе False.
+    """
+    data = user_data.get(chat_id, {})
+    cart = data.get("cart", [])
+
+    # --- проверяем, есть ли сохранённые данные ---
+    conn_check = get_db_connection()
+    cur_check = conn_check.cursor()
+    cur_check.execute(
+        "SELECT last_address, last_contact FROM users WHERE chat_id = ?",
+        (chat_id,)
+    )
+    row = cur_check.fetchone()
+    cur_check.close()
+    conn_check.close()
+
+    # Если пользователь уже оформлял заказ — даём выбор
+    if row and row[0] and row[1]:
+        last_address, last_contact = row
+
+        kb = types.InlineKeyboardMarkup(row_width=1)
+        kb.add(
+            types.InlineKeyboardButton(
+                text="✅ Использовать",
+                callback_data="use_last_data"
+            ),
+            types.InlineKeyboardButton(
+                text="✏️ Новый адрес",
+                callback_data="enter_new_data"
+            )
+        )
+
+        total_after = max(total_try - points_to_spend, 0)
+        bot.send_message(
+            chat_id,
+            f"📦 Хотите использовать последние данные?\n\n"
+            f"📍 Адрес: {last_address}\n"
+            f"📱 Телефон/ник: {last_contact}\n\n"
+            f"💳 К оплате: {total_after}₺",
+            reply_markup=kb
+        )
+        return True
+
+    # Если сохранённых данных нет — новый пользователь сразу вводит адрес
+    rates = fetch_rates()
+    total_after = max(total_try - points_to_spend, 0)
+    rub = round(total_after * rates.get("RUB", 0) + 500 * len(cart), 2)
+    usd = round(total_after * rates.get("USD", 0) + 2 * len(cart), 2)
+    eur = round(total_after * rates.get("EUR", 0) + 2 * len(cart), 2)
+    uah = round(total_after * rates.get("UAH", 0) + 350 * len(cart), 2)
+    conv = f"({rub}₽, ${usd}, €{eur}, ₴{uah})"
+
+    summary = "\n".join(
+        f"{i['category']}: {i['flavor']} — {i['price']}₺"
+        for i in cart
+    )
+
+    discount_line = f"🎁 Скидка: {points_to_spend}₺\n" if points_to_spend > 0 else ""
+    msg = (
+        f"🛒 Корзина:\n\n"
+        f"{summary}\n\n"
+        f"{discount_line}"
+        f"💳 К оплате: {total_after}₺ {conv}\n\n"
+        f"{t(chat_id, 'enter_address')}"
+    )
+
+    bot.send_message(chat_id, msg, reply_markup=address_keyboard(chat_id))
+
+    data["wait_for_address"] = True
+    data["wait_for_contact"] = False
+    data["wait_for_comment"] = False
+    user_data[chat_id] = data
+    return False
+
+
 # ------------------------------------------------------------------------
 #   24. Callback: завершить заказ (с проверкой и списанием stock)
 # ------------------------------------------------------------------------
@@ -984,72 +1063,11 @@ def handle_finish_order(call):
         )
         bot.send_message(chat_id, msg, reply_markup=skip_points_keyboard())
         return
-    # --- проверяем, есть ли сохранённые данные ---
-    conn_check = get_db_connection()
-    cur_check = conn_check.cursor()
-    cur_check.execute(
-        "SELECT last_address, last_contact FROM users WHERE chat_id = ?",
-        (chat_id,)
-    )
-    row = cur_check.fetchone()
-    cur_check.close()
-    conn_check.close()
-
-    if row and row[0] and row[1]:
-        last_address, last_contact = row
-
-        kb = types.InlineKeyboardMarkup(row_width=1)
-        kb.add(
-            types.InlineKeyboardButton(
-                text="✅ Использовать прошлые данные",
-                callback_data="use_last_data"
-            ),
-            types.InlineKeyboardButton(
-                text="✏️ Ввести новые данные",
-                callback_data="enter_new_data"
-            )
-        )
-
-        bot.send_message(
-            chat_id,
-            f"📦 Использовать прошлые данные?\n\n"
-            f"📍 {last_address}\n"
-            f"📱 {last_contact}",
-            reply_markup=kb
-        )
-        return
-
-    # ❗ если баллов нет — сразу идём к адресу
-    kb = address_keyboard(chat_id)
-
-    # --- формируем список позиций ---
-    summary = "\n".join(
-        f"{i['category']}: {i['flavor']} — {i['price']}₺"
-        for i in cart
-    )
-
-    # --- рассчитываем валюты с комиссиями (как в финальном заказе) ---
-    rates = fetch_rates()
-    rub = round(total_try * rates.get("RUB", 0) + 500 * qty, 2)
-    usd = round(total_try * rates.get("USD", 0) + 2 * qty, 2)
-    eur = round(total_try * rates.get("EUR", 0) + 2 * qty, 2)
-    uah = round(total_try * rates.get("UAH", 0) + 350 * qty, 2)
-    conv = f"({rub}₽, ${usd}, €{eur}, ₴{uah})"
-
-    # --- отправляем сообщение пользователю ---
-    msg = (
-        f"🛒 Корзина:\n\n"
-        f"{summary}\n\n"
-        f"💵 К оплате: {total_try}₺ {conv}\n\n"
-        f"{t(chat_id, 'enter_address')}"
-    )
-
-    bot.send_message(chat_id, msg, reply_markup=kb)
-
-    data["wait_for_address"] = True
     data["pending_discount"] = 0
     data["pending_points_spent"] = 0
     user_data[chat_id] = data
+
+    ask_saved_or_new_delivery_data(chat_id, total_try, 0)
 
 
 @ensure_user
@@ -1068,9 +1086,11 @@ def handle_use_last_data(call):
     cur.close()
     conn.close()
 
-    if row:
+    if row and row[0] and row[1]:
         user_data[chat_id]["address"] = row[0]
         user_data[chat_id]["contact"] = row[1]
+        user_data[chat_id]["wait_for_address"] = False
+        user_data[chat_id]["wait_for_contact"] = False
         user_data[chat_id]["wait_for_comment"] = True
 
         kb = types.InlineKeyboardMarkup(row_width=2)
@@ -1080,16 +1100,23 @@ def handle_use_last_data(call):
                 callback_data="send_order_final"
             ),
             types.InlineKeyboardButton(
-                text="✏️ Изменить данные",
+                text="✏️ Новые данные",
                 callback_data="enter_new_data"
             )
         )
 
         bot.send_message(
             chat_id,
-            "💬 Можете добавить комментарий или сразу отправить заказ.",
+            "✅ Последние данные выбраны.\n\n💬 Можете добавить комментарий или сразу отправить заказ.",
             reply_markup=kb
         )
+    else:
+        bot.send_message(
+            chat_id,
+            "Сохранённых данных пока нет. Введите адрес:",
+            reply_markup=address_keyboard(chat_id)
+        )
+        user_data[chat_id]["wait_for_address"] = True
 
 
 @ensure_user
@@ -1098,11 +1125,15 @@ def handle_enter_new_data(call):
     chat_id = call.from_user.id
     bot.answer_callback_query(call.id)
 
+    user_data[chat_id]["address"] = ""
+    user_data[chat_id]["contact"] = ""
     user_data[chat_id]["wait_for_address"] = True
+    user_data[chat_id]["wait_for_contact"] = False
+    user_data[chat_id]["wait_for_comment"] = False
 
     bot.send_message(
         chat_id,
-        "Введите адрес:",
+        "Введите новый адрес:",
         reply_markup=address_keyboard(chat_id)
     )
 
@@ -1141,31 +1172,9 @@ def handle_points_input(message):
     data["pending_points_spent"] = points_to_spend
     data["wait_for_points"] = False
 
-    cart = data.get("cart", [])
-    total_after = max(total_try - points_to_spend, 0)
-    summary = "\n".join(f"{i['category']}: {i['flavor']} — {i['price']}₺" for i in cart)
-
-    # --- конвертации (как в финальном заказе) ---
-    rates = fetch_rates()
-    rub = round(total_after * rates.get("RUB", 0) + 500 * len(cart), 2)
-    usd = round(total_after * rates.get("USD", 0) + 2 * len(cart), 2)
-    eur = round(total_after * rates.get("EUR", 0) + 2 * len(cart), 2)
-    uah = round(total_after * rates.get("UAH", 0) + 350 * len(cart), 2)
-    conv = f"({rub}₽, ${usd}, €{eur}, ₴{uah})"
-
-    # --- вывод пользователю ---
-    msg = (
-        "🛒 Корзина:\n\n"
-        f"{summary}\n\n"
-        f"🎁 Скидка: {points_to_spend}₺\n"
-        f"💳 К оплате: {total_after}₺ {conv}\n\n"
-        f"{t(chat_id, 'enter_address')}"
-    )
-
-    bot.send_message(chat_id, msg, reply_markup=address_keyboard(chat_id))
-
-    data["wait_for_address"] = True
     user_data[chat_id] = data
+
+    ask_saved_or_new_delivery_data(chat_id, total_try, points_to_spend)
 
 # ------------------------------------------------------------------------
 #   26. Handler: ввод адреса
@@ -3509,29 +3518,9 @@ def callback_no_points(call):
     data["pending_discount"] = 0
     data["pending_points_spent"] = 0
 
-    # ---- валюты ----
-    rates = fetch_rates()
-    rub = round(total_try * rates.get("RUB", 0) + 500 * len(cart), 2)
-    usd = round(total_try * rates.get("USD", 0) + 2 * len(cart), 2)
-    eur = round(total_try * rates.get("EUR", 0) + 2 * len(cart), 2)
-    uah = round(total_try * rates.get("UAH", 0) + 350 * len(cart), 2)
-    conv = f"({rub}₽, ${usd}, €{eur}, ₴{uah})"
-
-    # ---- корзина ----
-    summary = "\n".join(
-        f"{i['category']}: {i['flavor']} — {i['price']}₺" for i in cart
-    )
-
-    bot.send_message(
-        chat_id,
-        f"🛒 Корзина:\n\n{summary}\n\n"
-        f"💵 К оплате: {total_try}₺ {conv}\n\n"
-        f"{t(chat_id, 'enter_address')}",
-        reply_markup=address_keyboard(chat_id)
-    )
-
-    data["wait_for_address"] = True
     user_data[chat_id] = data
+
+    ask_saved_or_new_delivery_data(chat_id, total_try, 0)
 
 
 
