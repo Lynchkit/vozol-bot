@@ -1,5 +1,6 @@
 import os
 import json
+import html
 import requests
 import datetime
 import random
@@ -32,10 +33,7 @@ if not TOKEN:
         "Run the container with -e TOKEN=<your_token>."
     )
 
-ADMIN_ID      = int(os.getenv("ADMIN_ID",      "424751188"))
-ADMIN_ID_TWO  = int(os.getenv("ADMIN_ID_TWO",  "748250885"))
-ADMIN_ID_THREE= int(os.getenv("ADMIN_ID_THREE","6492697568"))
-ADMINS        = {ADMIN_ID, ADMIN_ID_TWO, ADMIN_ID_THREE}
+ADMIN_ID = int(os.getenv("ADMIN_ID", "424751188"))
 
 GROUP_CHAT_ID    = int(os.getenv("GROUP_CHAT_ID",    "-1002414380144"))
 PERSONAL_CHAT_ID = int(os.getenv("PERSONAL_CHAT_ID", "0"))
@@ -105,17 +103,24 @@ cursor_init.execute("""
         chat_id        INTEGER PRIMARY KEY,
         points         INTEGER DEFAULT 0,
         referral_code  TEXT UNIQUE,
-        referred_by    INTEGER
+        referred_by    INTEGER,
+        last_address   TEXT,
+        last_contact   TEXT,
+        language       TEXT
     )
 """)
-# Добавляем поля для сохранения последних данных доставки
-try:
-    cursor_init.execute("ALTER TABLE users ADD COLUMN last_address TEXT")
-    cursor_init.execute("ALTER TABLE users ADD COLUMN last_contact TEXT")
-    conn_init.commit()
-except sqlite3.OperationalError:
-    # если столбцы уже существуют — пропускаем
-    pass
+# Миграция существующей БД Railway: каждый отсутствующий столбец добавляется
+# отдельно, поэтому наличие одного поля не мешает добавить остальные.
+cursor_init.execute("PRAGMA table_info(users)")
+user_columns = {row[1] for row in cursor_init.fetchall()}
+for column_name, column_type in (
+    ("last_address", "TEXT"),
+    ("last_contact", "TEXT"),
+    ("language", "TEXT"),
+):
+    if column_name not in user_columns:
+        cursor_init.execute(f"ALTER TABLE users ADD COLUMN {column_name} {column_type}")
+conn_init.commit()
 
 # Создание таблицы orders (с новыми полями уже учтёнными через ALTER)
 cursor_init.execute("""
@@ -165,8 +170,23 @@ translations = load_json(LANG_PATH)
 # 0. Убедимся, что у пользователя всегда есть запись в user_data, новое добавленное
 def init_user(chat_id: int):
     if chat_id not in user_data:
+        saved_language = None
+        conn_local = get_db_connection()
+        cursor_local = conn_local.cursor()
+        try:
+            cursor_local.execute("SELECT language FROM users WHERE chat_id = ?", (chat_id,))
+            row = cursor_local.fetchone()
+            if row and row[0] in ("ru", "en"):
+                saved_language = row[0]
+        except sqlite3.OperationalError:
+            # На случай первого запуска во время миграции старой БД.
+            saved_language = None
+        finally:
+            cursor_local.close()
+            conn_local.close()
+
         user_data[chat_id] = {
-            "lang": None,
+            "lang": saved_language,
             "cart": [],
             "current_category": None,
             "wait_for_points": False,
@@ -231,8 +251,105 @@ def t(chat_id: int, key: str) -> str:
     Возвращает перевод из languages.json по ключу.
     Если перевод не найден — возвращает сам ключ.
     """
+    if chat_id not in user_data:
+        init_user(chat_id)
     lang = user_data.get(chat_id, {}).get("lang") or "ru"
-    return translations.get(lang, {}).get(key, key)
+    fallback = {
+        "ru": {
+            "error_out_of_stock": "Этого товара больше нет в наличии.",
+        },
+        "en": {
+            "error_out_of_stock": "This item is no longer in stock.",
+        },
+    }
+    return translations.get(lang, {}).get(key, fallback.get(lang, {}).get(key, key))
+
+
+def tr(chat_id: int, ru_text: str, en_text: str) -> str:
+    """Возвращает короткий встроенный перевод без зависимости от JSON-файла."""
+    if chat_id not in user_data:
+        init_user(chat_id)
+    lang = user_data.get(chat_id, {}).get("lang") or "ru"
+    return en_text if lang == "en" else ru_text
+
+
+def is_owner(user_id: int) -> bool:
+    """Единственный владелец бота задаётся переменной Railway ADMIN_ID."""
+    return user_id == ADMIN_ID
+
+
+def save_user_language(chat_id: int, lang_code: str) -> None:
+    """Сохраняет язык в SQLite, чтобы Railway restart его не сбрасывал."""
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    cursor_local.execute(
+        "UPDATE users SET language = ? WHERE chat_id = ?",
+        (lang_code, chat_id),
+    )
+    if cursor_local.rowcount == 0:
+        referral_code = generate_ref_code()
+        while True:
+            cursor_local.execute(
+                "SELECT 1 FROM users WHERE referral_code = ?",
+                (referral_code,),
+            )
+            if cursor_local.fetchone() is None:
+                break
+            referral_code = generate_ref_code()
+        cursor_local.execute(
+            "INSERT INTO users (chat_id, points, referral_code, language) VALUES (?, 0, ?, ?)",
+            (chat_id, referral_code, lang_code),
+        )
+    conn_local.commit()
+    cursor_local.close()
+    conn_local.close()
+
+
+def send_referral_info(chat_id: int, referral_code: str) -> None:
+    """Отправляет реферальные данные на выбранном пользователем языке."""
+    bot_username = bot.get_me().username
+    invite_link = f"https://t.me/{bot_username}?start=ref={referral_code}"
+    if user_data.get(chat_id, {}).get("lang") == "en":
+        text = (
+            "🎁 <b>Get 200 points for inviting a friend!</b>\n\n"
+            f"<b>Referral code:</b> <code>{referral_code}</code>\n"
+            f"<b>Invitation link:</b>\n{invite_link}"
+        )
+    else:
+        text = (
+            "🎁 <b>200 баллов за приглашение друга!</b>\n\n"
+            f"<b>Реферальный код:</b> <code>{referral_code}</code>\n"
+            f"<b>Ссылка для приглашения:</b>\n{invite_link}"
+        )
+    bot.send_message(chat_id, text, parse_mode="HTML")
+
+
+def broadcast_message_to_users(source_chat_id: int, source_message_id: int) -> tuple[int, int]:
+    """Копирует исходное сообщение всем зарегистрированным пользователям."""
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    cursor_local.execute("SELECT chat_id FROM users")
+    recipients = [row[0] for row in cursor_local.fetchall()]
+    cursor_local.close()
+    conn_local.close()
+
+    sent = 0
+    failed = 0
+    for recipient_id in recipients:
+        try:
+            bot.copy_message(
+                chat_id=recipient_id,
+                from_chat_id=source_chat_id,
+                message_id=source_message_id,
+            )
+            sent += 1
+        except Exception as exc:
+            failed += 1
+            print(f"Broadcast failed for {recipient_id}: {exc}")
+        # Не превышаем безопасный темп массовых отправок Telegram.
+        time.sleep(0.05)
+
+    return sent, failed
 
 
 def generate_ref_code(length: int = 6) -> str:
@@ -356,11 +473,16 @@ def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
             callback_data="finish_order"
         ))
 
+    kb.add(types.InlineKeyboardButton(
+        text=tr(chat_id, "🌐 Сменить язык", "🌐 Change language"),
+        callback_data="change_language"
+    ))
+
     return kb
-def skip_points_keyboard():
+def skip_points_keyboard(chat_id: int):
     kb = types.InlineKeyboardMarkup()
     kb.add(types.InlineKeyboardButton(
-        text="❌ Не списывать баллы",
+        text=tr(chat_id, "❌ Не списывать баллы", "❌ Do not use points"),
         callback_data="no_points"
     ))
     return kb
@@ -384,7 +506,8 @@ def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
         # Берём средний рейтинг из menu.json, если он есть
         rating = item.get("rating")
         rating_str = f" ⭐{rating}" if rating else ""
-        label = f"{emoji} {flavor}{rating_str} · {stock}шт"
+        stock_unit = tr(chat_id, "шт", "pcs")
+        label = f"{emoji} {flavor}{rating_str} · {stock} {stock_unit}"
         kb.add(types.InlineKeyboardButton(
             text=label,
             callback_data=f"flavor|{idx}"
@@ -437,7 +560,7 @@ def edit_action_keyboard() -> types.ReplyKeyboardMarkup:
     kb.add("➕ Add Category", "➖ Remove Category", "✏️ Rename Category")
     kb.add("💲 Fix Price", "ALL IN", "🔄 Actual Flavor")
     kb.add("🖼️ Add Category Picture", "Set Category Flavor to 0")
-    kb.add("📦 New Supply")  # новая кнопка
+    kb.add("📦 New Supply", "MESSAGE")
     kb.add("⬅️ Back", "❌ Cancel")
     return kb
 
@@ -448,17 +571,7 @@ def edit_action_keyboard() -> types.ReplyKeyboardMarkup:
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     chat_id = message.chat.id
-
-    # --- Сброс клавиатуры ---
-    bot.send_message(
-        chat_id,
-        "🔙 Вернулись в главное меню",
-        reply_markup=types.ReplyKeyboardRemove()
-    )
-
-    # --- Инициализация, если впервые ---
-    if chat_id not in user_data:
-        user_data[chat_id] = {"lang": None}
+    init_user(chat_id)
 
     # --- сохраняем язык и очищаем всё остальное ---
     lang = user_data[chat_id].get("lang")
@@ -492,7 +605,10 @@ def cmd_start(message):
     # --- регистрация пользователя / обработка referral ---
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT referral_code, referred_by FROM users WHERE chat_id = ?", (chat_id,))
+    cur.execute(
+        "SELECT referral_code, referred_by, language FROM users WHERE chat_id = ?",
+        (chat_id,),
+    )
     row = cur.fetchone()
 
     if row is None:
@@ -524,9 +640,18 @@ def cmd_start(message):
         referral_code = new_code
     else:
         referral_code = row[0]  # уже существующий
+        if row[2] in ("ru", "en"):
+            user_data[chat_id]["lang"] = row[2]
 
     cur.close()
     conn.close()
+
+    # --- Сброс reply-клавиатуры уже на сохранённом языке ---
+    bot.send_message(
+        chat_id,
+        tr(chat_id, "🔙 Вернулись в главное меню", "🔙 Back to the main menu"),
+        reply_markup=types.ReplyKeyboardRemove()
+    )
 
     # --- если язык еще не выбран — показать выбор языка ---
     if user_data[chat_id]["lang"] is None:
@@ -538,15 +663,7 @@ def cmd_start(message):
         return
 
     # === язык выбран → показать рефкод + меню ===
-    invite_link = f"https://t.me/DROPOINTBOT?start=ref={referral_code}"
-
-    bot.send_message(
-        chat_id,
-        f"🎁 <b>200 баллов за приглашение друга!</b>\n\n"
-        f"<b>Реферальный код:</b> <code>{referral_code}</code>\n"
-        f"<b>Ссылка для приглашения:</b>\n{invite_link}",
-        parse_mode="HTML"
-    )
+    send_referral_info(chat_id, referral_code)
 
     # --- главное меню ---
     bot.send_message(
@@ -558,44 +675,64 @@ def cmd_start(message):
 # ------------------------------------------------------------------------
 #   15. Callback: выбор языка
 # ------------------------------------------------------------------------
+@bot.message_handler(commands=['language', 'lang'])
+def cmd_language(message):
+    chat_id = message.chat.id
+    init_user(chat_id)
+    user_data[chat_id]["changing_language"] = True
+    bot.send_message(
+        chat_id,
+        "🌐 Выберите язык / Choose your language:",
+        reply_markup=get_inline_language_buttons(chat_id),
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "change_language")
+def handle_change_language(call):
+    chat_id = call.from_user.id
+    init_user(chat_id)
+    user_data[chat_id]["changing_language"] = True
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        chat_id,
+        "🌐 Выберите язык / Choose your language:",
+        reply_markup=get_inline_language_buttons(chat_id),
+    )
+
+
 @ensure_user
 @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("set_lang|"))
 def handle_set_lang(call):
     chat_id = call.from_user.id
     _, lang_code = call.data.split("|", 1)
+    if lang_code not in ("ru", "en"):
+        return bot.answer_callback_query(call.id, "Invalid language", show_alert=True)
 
-    if chat_id not in user_data:
-        user_data[chat_id] = {
-            "lang": lang_code,
-            "cart": [],
-            "current_category": None,
-            "wait_for_points": False,
-            "wait_for_address": False,
-            "wait_for_contact": False,
-            "wait_for_comment": False,
-            "address": "",
-            "contact": "",
-            "comment": "",
-            "pending_discount": 0,
-            "pending_points_spent": 0,
-            "temp_total_try": 0,
-            "temp_user_points": 0,
-            "edit_phase": None,
-            "edit_cat": None,
-            "edit_flavor": None,
-            "edit_index": None,
-            "edit_cart_phase": None,
-            "awaiting_review_flavor": None,
-            "awaiting_review_rating": False,
-            "awaiting_review_comment": False,
-            "temp_review_flavor": None,
-            "temp_review_rating": 0
-        }
-    else:
-        user_data[chat_id]["lang"] = lang_code
+    init_user(chat_id)
+    previous_language = user_data[chat_id].get("lang")
+    was_changing = user_data[chat_id].pop("changing_language", False)
+    user_data[chat_id]["lang"] = lang_code
+    save_user_language(chat_id, lang_code)
 
     bot.answer_callback_query(call.id, t(chat_id, "lang_set"))
-    bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
+    try:
+        bot.edit_message_reply_markup(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=None,
+        )
+    except Exception:
+        pass
+
+    bot.send_message(
+        chat_id,
+        tr(chat_id, "✅ Язык изменён на русский.", "✅ Language changed to English."),
+    )
+    bot.send_message(
+        chat_id,
+        t(chat_id, "choose_category"),
+        reply_markup=get_inline_main_menu(chat_id),
+    )
 
     conn_local = get_db_connection()
     cursor_local = conn_local.cursor()
@@ -604,23 +741,8 @@ def handle_set_lang(call):
     cursor_local.close()
     conn_local.close()
 
-    if row:
-        code = row[0]
-        bot_username = bot.get_me().username
-        ref_link = f"https://t.me/{bot_username}?start=ref={code}"
-        if user_data[chat_id]["lang"] == "en":
-            bot.send_message(
-                chat_id,
-                f"Your referral code: {code}\nShare this link with friends:\n{ref_link}"
-            )
-        else:
-            bot.send_message(
-                chat_id,
-                f"🎁 <b>200 баллов за приглашение друга!</b>\n\n"
-                f"Реферальный код: <code>{code}</code>\n"
-                f"Ссылка для приглашения:\n{ref_link}",
-                parse_mode="HTML"
-            )
+    if row and previous_language not in ("ru", "en") and not was_changing:
+        send_referral_info(chat_id, row[0])
 
 
 # ------------------------------------------------------------------------
@@ -971,11 +1093,11 @@ def ask_saved_or_new_delivery_data(chat_id: int, total_try: int, points_to_spend
         kb = types.InlineKeyboardMarkup(row_width=1)
         kb.add(
             types.InlineKeyboardButton(
-                text="Использовать",
+                text=tr(chat_id, "Использовать", "Use saved details"),
                 callback_data="use_last_data"
             ),
             types.InlineKeyboardButton(
-                text="Новый адрес",
+                text=tr(chat_id, "Новый адрес", "Enter new details"),
                 callback_data="enter_new_data"
             )
         )
@@ -990,14 +1112,21 @@ def ask_saved_or_new_delivery_data(chat_id: int, total_try: int, points_to_spend
         uah = round(total_after * rates.get("UAH", 0) + 350 * qty, 2)
         conv = f"({rub}₽, ${usd}, €{eur}, ₴{uah})"
 
-        bot.send_message(
-            chat_id,
-            f"Хотите использовать последние данные?\n\n"
-            f"📍 Адрес: {last_address}\n"
-            f"📱 Телефон/ник: {last_contact}\n\n"
-            f"К оплате: {total_after}₺ {conv}",
-            reply_markup=kb
-        )
+        if user_data.get(chat_id, {}).get("lang") == "en":
+            saved_data_text = (
+                "Would you like to use your saved delivery details?\n\n"
+                f"📍 Address: {last_address}\n"
+                f"📱 Phone/username: {last_contact}\n\n"
+                f"Amount due: {total_after}₺ {conv}"
+            )
+        else:
+            saved_data_text = (
+                "Хотите использовать последние данные?\n\n"
+                f"📍 Адрес: {last_address}\n"
+                f"📱 Телефон/ник: {last_contact}\n\n"
+                f"К оплате: {total_after}₺ {conv}"
+            )
+        bot.send_message(chat_id, saved_data_text, reply_markup=kb)
         return True
 
     # Если сохранённых данных нет — новый пользователь сразу вводит адрес
@@ -1014,12 +1143,18 @@ def ask_saved_or_new_delivery_data(chat_id: int, total_try: int, points_to_spend
         for i in cart
     )
 
-    discount_line = f"🎁 Скидка: {points_to_spend}₺\n" if points_to_spend > 0 else ""
+    discount_line = ""
+    if points_to_spend > 0:
+        discount_line = tr(
+            chat_id,
+            f"🎁 Скидка: {points_to_spend}₺\n",
+            f"🎁 Discount: {points_to_spend}₺\n",
+        )
     msg = (
-        f"🛒 Корзина:\n\n"
+        f"🛒 {tr(chat_id, 'Корзина', 'Cart')}:\n\n"
         f"{summary}\n\n"
         f"{discount_line}"
-        f"💳 К оплате: {total_after}₺ {conv}\n\n"
+        f"💳 {tr(chat_id, 'К оплате', 'Amount due')}: {total_after}₺ {conv}\n\n"
         f"{t(chat_id, 'enter_address')}"
     )
 
@@ -1044,7 +1179,7 @@ def handle_finish_order(call):
     data = user_data.get(chat_id, {})
     cart = data.get("cart", [])
     if not cart:
-        bot.send_message(chat_id, "Корзина пуста")
+        bot.send_message(chat_id, t(chat_id, "cart_empty"))
         return
 
     total_try = sum(i['price'] for i in cart)
@@ -1066,11 +1201,14 @@ def handle_finish_order(call):
         data["temp_user_points"] = user_points
         user_data[chat_id] = data
 
-        msg = (
+        msg = tr(
+            chat_id,
             f"🎁 У вас {user_points} баллов (максимум можно использовать {min(user_points, total_try)})\n"
-            "Введите сколько баллов списать, или нажмите кнопку:"
+            "Введите, сколько баллов списать, или нажмите кнопку:",
+            f"🎁 You have {user_points} points (you can use up to {min(user_points, total_try)})\n"
+            "Enter how many points to use, or press the button:",
         )
-        bot.send_message(chat_id, msg, reply_markup=skip_points_keyboard())
+        bot.send_message(chat_id, msg, reply_markup=skip_points_keyboard(chat_id))
         return
     data["pending_discount"] = 0
     data["pending_points_spent"] = 0
@@ -1105,24 +1243,32 @@ def handle_use_last_data(call):
         kb = types.InlineKeyboardMarkup(row_width=2)
         kb.add(
             types.InlineKeyboardButton(
-                text="✅ Отправить заказ",
+                text=tr(chat_id, "✅ Отправить заказ", "✅ Send order"),
                 callback_data="send_order_final"
             ),
             types.InlineKeyboardButton(
-                text="✏️ Новые данные",
+                text=tr(chat_id, "✏️ Новые данные", "✏️ New details"),
                 callback_data="enter_new_data"
             )
         )
 
         bot.send_message(
             chat_id,
-            "✅ Последние данные выбраны.\n\n💬 Можете добавить комментарий или сразу отправить заказ.",
+            tr(
+                chat_id,
+                "✅ Последние данные выбраны.\n\n💬 Можете добавить комментарий или сразу отправить заказ.",
+                "✅ Saved details selected.\n\n💬 You can add a comment or send the order now.",
+            ),
             reply_markup=kb
         )
     else:
         bot.send_message(
             chat_id,
-            "Сохранённых данных пока нет. Введите адрес:",
+            tr(
+                chat_id,
+                "Сохранённых данных пока нет. Введите адрес:",
+                "You do not have saved delivery details yet. Enter your address:",
+            ),
             reply_markup=address_keyboard(chat_id)
         )
         user_data[chat_id]["wait_for_address"] = True
@@ -1142,7 +1288,7 @@ def handle_enter_new_data(call):
 
     bot.send_message(
         chat_id,
-        "Введите новый адрес:",
+        tr(chat_id, "Введите новый адрес:", "Enter a new address:"),
         reply_markup=address_keyboard(chat_id)
     )
 
@@ -1206,7 +1352,7 @@ def handle_address_input(message):
         # убираем клавиатуру локации
         bot.send_message(
             chat_id,
-            "🔙 Вернулись назад",
+            tr(chat_id, "🔙 Вернулись назад", "🔙 Went back"),
             reply_markup=types.ReplyKeyboardRemove()
         )
 
@@ -1222,7 +1368,11 @@ def handle_address_input(message):
     if text == t(chat_id, "choose_on_map"):
         bot.send_message(
             chat_id,
-            "Чтобы выбрать точку:\n📎 → Геопозиция → «Выбрать на карте» → метка → Отправить",
+            tr(
+                chat_id,
+                "Чтобы выбрать точку:\n📎 → Геопозиция → «Выбрать на карте» → метка → Отправить",
+                "To choose a point:\n📎 → Location → Choose on map → place the pin → Send",
+            ),
             reply_markup=types.ReplyKeyboardRemove()
         )
         return
@@ -1283,7 +1433,11 @@ def handle_contact_input(message):
 
     # --- Ввод ника ---
     if text == t(chat_id, "enter_nickname"):
-        bot.send_message(chat_id, "Введите ваш Telegram-ник (без @):", reply_markup=types.ReplyKeyboardRemove())
+        bot.send_message(
+            chat_id,
+            tr(chat_id, "Введите ваш Telegram-ник (без @):", "Enter your Telegram username (without @):"),
+            reply_markup=types.ReplyKeyboardRemove(),
+        )
         return
 
     # --- Ввод контакта ---
@@ -1321,14 +1475,18 @@ def handle_contact_input(message):
     # убираем reply-клавиатуру
     bot.send_message(
         chat_id,
-        f"Контакт сохранен.",
+        tr(chat_id, "Контакт сохранён.", "Contact saved."),
         reply_markup=types.ReplyKeyboardRemove()
     )
 
     # показываем inline-кнопки
     bot.send_message(
         chat_id,
-        "💬 Напишите комментарий или просто отправьте заказ",
+        tr(
+            chat_id,
+            "💬 Напишите комментарий или просто отправьте заказ",
+            "💬 Write a comment or simply send the order",
+        ),
         reply_markup=kb
     )
 
@@ -1370,8 +1528,11 @@ def handle_comment_input(message):
     # ❗ reply-клавиатуру НЕ трогаем — остаётся какой была
     bot.send_message(
         chat_id,
-        "💬 Комментарий сохранён.\n\n"
-        "Если хотите изменить — напишите новый текст.\n",
+        tr(
+            chat_id,
+            "💬 Комментарий сохранён.\n\nЕсли хотите изменить — напишите новый текст.\n",
+            "💬 Comment saved.\n\nTo change it, send a new message.\n",
+        ),
 
         reply_markup=kb
     )
@@ -1424,7 +1585,14 @@ def finalize_order(call):
     for (cat0, flavor0), qty_needed in needed.items():
         item_obj = next((i for i in menu[cat0]["flavors"] if i["flavor"] == flavor0), None)
         if not item_obj or item_obj.get("stock", 0) < qty_needed:
-            bot.send_message(chat_id, f"😕 К сожалению, «{flavor0}» больше не доступен в нужном количестве.")
+            bot.send_message(
+                chat_id,
+                tr(
+                    chat_id,
+                    f"😕 К сожалению, «{flavor0}» больше не доступен в нужном количестве.",
+                    f"😕 Unfortunately, “{flavor0}” is no longer available in the requested quantity.",
+                ),
+            )
             return
 
     # --- уменьшаем stock ---
@@ -1469,7 +1637,15 @@ def finalize_order(call):
             "UPDATE users SET points = points + 200 WHERE chat_id = ?",
             (inviter,)
         )
-        bot.send_message(inviter, "🎉 Вам начислено 200 бонусных баллов за приглашение нового клиента!")
+        init_user(inviter)
+        bot.send_message(
+            inviter,
+            tr(
+                inviter,
+                "🎉 Вам начислено 200 бонусных баллов за приглашение нового клиента!",
+                "🎉 You received 200 bonus points for inviting a new customer!",
+            ),
+        )
         cursor_local.execute(
             "UPDATE users SET referred_by = NULL WHERE chat_id = ?",
             (chat_id,)
@@ -1545,7 +1721,25 @@ def finalize_order(call):
         reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
             .add(f"➕ {t(chat_id, 'add_more')}")
     )
-    bot.send_message(chat_id, full_rus)
+    if user_data.get(chat_id, {}).get("lang") == "en":
+        user_order_summary = (
+            f"📋 Your order #{order_id}:\n\n"
+            f"{summary}\n\n"
+            f"Total: {total_after}₺ {conv}\n"
+            f"📍 Address: {address}\n"
+            f"📱 Contact: {contact}\n"
+            f"💬 Comment: {comment}"
+        )
+    else:
+        user_order_summary = (
+            f"📋 Ваш заказ №{order_id}:\n\n"
+            f"{summary}\n\n"
+            f"Итог: {total_after}₺ {conv}\n"
+            f"📍 Адрес: {address}\n"
+            f"📱 Контакт: {contact}\n"
+            f"💬 Комментарий: {comment}"
+        )
+    bot.send_message(chat_id, user_order_summary)
 
     # --- СБРАСЫВАЕМ ДАННЫЕ ---
     data.update({
@@ -1574,7 +1768,11 @@ def handle_send_order_final(call):
 
     # Убираем reply-клавиатуру
     bot.answer_callback_query(call.id)
-    bot.send_message(chat_id, "⏳ Оформляем заказ...", reply_markup=types.ReplyKeyboardRemove())
+    bot.send_message(
+        chat_id,
+        tr(chat_id, "⏳ Оформляем заказ...", "⏳ Processing your order..."),
+        reply_markup=types.ReplyKeyboardRemove(),
+    )
 
     # Копируем логику из handle_comment_input (часть после if text == t(chat_id, "send_order"))
     cart = data.get('cart', [])
@@ -1596,7 +1794,14 @@ def handle_send_order_final(call):
     for (cat0, flavor0), qty_needed in needed.items():
         item_obj = next((i for i in menu[cat0]["flavors"] if i["flavor"] == flavor0), None)
         if not item_obj or item_obj.get("stock", 0) < qty_needed:
-            bot.send_message(chat_id, f"😕 К сожалению, «{flavor0}» больше не доступен в нужном количестве.")
+            bot.send_message(
+                chat_id,
+                tr(
+                    chat_id,
+                    f"😕 К сожалению, «{flavor0}» больше не доступен в нужном количестве.",
+                    f"😕 Unfortunately, “{flavor0}” is no longer available in the requested quantity.",
+                ),
+            )
             return
 
     # Списываем товары со склада
@@ -1633,7 +1838,14 @@ def handle_send_order_final(call):
             "UPDATE users SET points = points + ? WHERE chat_id = ?",
             (pts_earned, chat_id)
         )
-        bot.send_message(chat_id, f"👍 Вы получили {pts_earned} бонусных баллов за этот заказ.")
+        bot.send_message(
+            chat_id,
+            tr(
+                chat_id,
+                f"👍 Вы получили {pts_earned} бонусных баллов за этот заказ.",
+                f"👍 You earned {pts_earned} bonus points for this order.",
+            ),
+        )
 
     # Обработка реферальной премии
     cursor_local.execute(
@@ -1647,7 +1859,15 @@ def handle_send_order_final(call):
             "UPDATE users SET points = points + 200 WHERE chat_id = ?",
             (inviter,)
         )
-        bot.send_message(inviter, "🎉 Вам начислено 200 бонусных баллов за приглашение нового клиента!")
+        init_user(inviter)
+        bot.send_message(
+            inviter,
+            tr(
+                inviter,
+                "🎉 Вам начислено 200 бонусных баллов за приглашение нового клиента!",
+                "🎉 You received 200 bonus points for inviting a new customer!",
+            ),
+        )
         cursor_local.execute(
             "UPDATE users SET referred_by = NULL WHERE chat_id = ?",
             (chat_id,)
@@ -1716,14 +1936,24 @@ def handle_send_order_final(call):
     )
 
     # Отправляем пользователю полную историю заказа
-    user_order_summary = (
-        f"📋 Ваш заказ:\n\n"
-        f"{summary}\n\n"
-        f"Итог: {total_after}₺ {conv}\n"
-        f"📍 Адрес: {data.get('address', '—')}\n"
-        f"📱 Контакт: {data.get('contact', '—')}\n"
-        f"💬 Комментарий: {data.get('comment', '—')}"
-    )
+    if user_data.get(chat_id, {}).get("lang") == "en":
+        user_order_summary = (
+            f"📋 Your order:\n\n"
+            f"{summary}\n\n"
+            f"Total: {total_after}₺ {conv}\n"
+            f"📍 Address: {data.get('address', '—')}\n"
+            f"📱 Contact: {data.get('contact', '—')}\n"
+            f"💬 Comment: {data.get('comment', '—')}"
+        )
+    else:
+        user_order_summary = (
+            f"📋 Ваш заказ:\n\n"
+            f"{summary}\n\n"
+            f"Итог: {total_after}₺ {conv}\n"
+            f"📍 Адрес: {data.get('address', '—')}\n"
+            f"📱 Контакт: {data.get('contact', '—')}\n"
+            f"💬 Комментарий: {data.get('comment', '—')}"
+        )
     bot.send_message(chat_id, user_order_summary)
 
     # Сбрасываем состояние
@@ -1769,8 +1999,8 @@ def handle_back_to_contact(call):
 def cmd_change(message):
     chat_id = message.chat.id
 
-    # Доступ к /change только для трёх админов
-    if chat_id not in ADMINS:
+    # Доступ к /change только владельцу и только в личном чате с ботом.
+    if not is_owner(message.from_user.id) or message.chat.type != "private":
         bot.send_message(chat_id, "У вас нет доступа к этой команде.")
         return
 
@@ -1822,7 +2052,7 @@ def cmd_change(message):
 @ensure_user
 @bot.message_handler(func=lambda m: m.text == "📦 New Supply")
 def handle_new_supply(message):
-    if message.chat.id not in ADMINS:
+    if not is_owner(message.from_user.id):
         return bot.reply_to(message, "У вас нет доступа.")
 
     # Берём всех пользователей из базы
@@ -1836,7 +2066,15 @@ def handle_new_supply(message):
     # Шлём каждому сообщение
     for uid in users:
         try:
-            bot.send_message(uid, "🚚 Новая поставка прибыла. Проверь меню")
+            init_user(uid)
+            bot.send_message(
+                uid,
+                tr(
+                    uid,
+                    "🚚 Новая поставка прибыла. Проверьте меню.",
+                    "🚚 A new shipment has arrived. Check the menu.",
+                ),
+            )
         except Exception as e:
             print(f"Не удалось отправить сообщение {uid}: {e}")
 
@@ -1844,6 +2082,8 @@ def handle_new_supply(message):
 
 @bot.message_handler(commands=['stock'])
 def cmd_stock(message: types.Message):
+    if not is_owner(message.from_user.id):
+        return bot.reply_to(message, "❌ You do not have access to this command.")
     if message.chat.id != GROUP_CHAT_ID:
         return bot.reply_to(message, "❌ This command is available only in the admin group.")
 
@@ -1903,6 +2143,7 @@ def cmd_points(message):
 @bot.message_handler(commands=['convert'])
 def cmd_convert(message):
     chat_id = message.chat.id
+    init_user(chat_id)
     parts   = message.text.split()
     rates   = fetch_rates()
     rub     = rates.get("RUB", 0)
@@ -1912,17 +2153,31 @@ def cmd_convert(message):
 
     # Если хотя бы один курс не вытащился — сразу вылетаем
     if 0 in (rub, usd, eur, uah):
-        return bot.send_message(chat_id, "Курсы валют сейчас недоступны, попробуйте позже.")
+        return bot.send_message(
+            chat_id,
+            tr(
+                chat_id,
+                "Курсы валют сейчас недоступны, попробуйте позже.",
+                "Exchange rates are currently unavailable. Please try again later.",
+            ),
+        )
 
     # Просто показать текущие курсы
     if len(parts) == 1:
-        text = (
+        text = tr(
+            chat_id,
             "📊 Курс лиры сейчас:\n"
             f"1₺ = {rub:.2f} ₽\n"
             f"1₺ = {usd:.2f} $\n"
             f"1₺ = {uah:.2f} ₴\n\n"
             f"1₺ = {eur:.2f} €\n"
-            "Для пересчёта напишите: /convert 1300"
+            "Для пересчёта напишите: /convert 1300",
+            "📊 Current Turkish lira rates:\n"
+            f"1₺ = {rub:.2f} ₽\n"
+            f"1₺ = {usd:.2f} $\n"
+            f"1₺ = {uah:.2f} ₴\n\n"
+            f"1₺ = {eur:.2f} €\n"
+            "To convert an amount, send: /convert 1300",
         )
         return bot.send_message(chat_id, text)
 
@@ -1931,7 +2186,14 @@ def cmd_convert(message):
         try:
             amount = float(parts[1].replace(",", "."))
         except ValueError:
-            return bot.send_message(chat_id, "Формат: /convert 1300 (или другую сумму в лирах)")
+            return bot.send_message(
+                chat_id,
+                tr(
+                    chat_id,
+                    "Формат: /convert 1300 (или другую сумму в лирах)",
+                    "Format: /convert 1300 (or another amount in TRY)",
+                ),
+            )
 
         res_rub = amount * rub
         res_usd = amount * usd
@@ -1948,12 +2210,17 @@ def cmd_convert(message):
         return bot.send_message(chat_id, text)
 
     # Если больше аргументов — просим уточнить
-    return bot.send_message(chat_id, "Использование: /convert 1300")
+    return bot.send_message(
+        chat_id,
+        tr(chat_id, "Использование: /convert 1300", "Usage: /convert 1300"),
+    )
 
 @ensure_user
 @bot.message_handler(commands=['total'])
 def cmd_total(message):
     chat_id = message.chat.id
+    if not is_owner(message.from_user.id):
+        return bot.reply_to(message, "У вас нет доступа.")
 
     lines = []
     total_pcs = 0
@@ -1990,9 +2257,10 @@ def cmd_total(message):
 
 @bot.message_handler(commands=['stocknow'])
 def cmd_stocknow(message: types.Message):
-    # Доступ только в админ-группе
+    if not is_owner(message.from_user.id):
+        return bot.reply_to(message, "❌ You do not have access to this command.")
     if message.chat.id != GROUP_CHAT_ID:
-        return
+        return bot.reply_to(message, "❌ This command is available only in the admin group.")
 
     conn = get_db_connection()
     cur = conn.cursor()
@@ -2143,6 +2411,8 @@ def send_daily_sold_report():
 @ensure_user
 @bot.message_handler(commands=['sold'])
 def cmd_sold(message):
+    if not is_owner(message.from_user.id):
+        return bot.reply_to(message, "У вас нет доступа.")
     report = compose_sold_report()
     # при ручном вызове шлём в тот же чат, откуда команда
     bot.send_message(message.chat.id, report)
@@ -2153,7 +2423,7 @@ def cmd_sold(message):
 @bot.message_handler(commands=['stats'])
 def cmd_stats(message: types.Message):
     user_id = message.from_user.id
-    if user_id not in ADMINS:
+    if not is_owner(user_id):
         return bot.reply_to(message, "У вас нет доступа.")
 
     conn = get_db_connection()
@@ -2188,7 +2458,7 @@ def cmd_stats(message: types.Message):
 @ensure_user
 @bot.message_handler(commands=['users'])
 def cmd_users(message):
-    if message.chat.id not in ADMINS:
+    if not is_owner(message.from_user.id) or message.chat.type != "private":
         return bot.reply_to(message, "У вас нет доступа.")
 
     conn = get_db_connection()
@@ -2216,6 +2486,8 @@ def cmd_users(message):
 @bot.message_handler(commands=['help'])
 def cmd_help(message: types.Message):
     if message.chat.id == GROUP_CHAT_ID:
+        if not is_owner(message.from_user.id):
+            return bot.reply_to(message, "У вас нет доступа.")
         help_text = (
           "/stats      — View store statistics (ADMIN only)\n"
           "/change     — Enter menu-edit mode (ADMIN only)\n"
@@ -2227,15 +2499,27 @@ def cmd_help(message: types.Message):
         )
         bot.send_message(message.chat.id, help_text, parse_mode="HTML")
     else:
-        help_text = (
+        init_user(message.chat.id)
+        help_text = tr(
+            message.chat.id,
             "<b>Доступные команды:</b>\n\n"
             "<pre>"
             "/start          — Перезапустить бота / регистрация\n"
+            "/language       — Сменить язык\n"
             "/points         — Проверить баланс бонусных баллов\n"
             "/convert [N]    — Курсы и конвертация TRY → RUB/USD/UAH\n"
             "/history        — История заказов\n"
             "/help           — Это сообщение помощи\n"
-            "</pre>"
+            "</pre>",
+            "<b>Available commands:</b>\n\n"
+            "<pre>"
+            "/start          — Restart the bot / registration\n"
+            "/language       — Change language\n"
+            "/points         — Check your bonus points\n"
+            "/convert [N]    — TRY exchange rates and conversion\n"
+            "/history        — Order history\n"
+            "/help           — Show this help message\n"
+            "</pre>",
         )
         bot.send_message(message.chat.id, help_text, parse_mode="HTML")
 
@@ -2249,36 +2533,17 @@ def universal_handler(message):
     chat_id = message.chat.id
     text = message.text or ""
     if chat_id not in user_data:
-        user_data[chat_id] = {
-            "lang": "ru",
-            "cart": [],
-            "current_category": None,
-            "wait_for_points": False,
-            "wait_for_address": False,
-            "wait_for_contact": False,
-            "wait_for_comment": False,
-            "address": "",
-            "contact": "",
-            "comment": "",
-            "pending_discount": 0,
-            "pending_points_spent": 0,
-            "temp_total_try": 0,
-            "temp_user_points": 0,
-            "edit_phase": None,
-            "edit_cat": None,
-            "edit_flavor": None,
-            "edit_index": None,
-            "edit_cart_phase": None,
-            "awaiting_review_flavor": None,
-            "awaiting_review_rating": False,
-            "awaiting_review_comment": False,
-            "temp_review_flavor": None,
-            "temp_review_rating": 0
-        }
+        init_user(chat_id)
     data = user_data[chat_id]
 
     # ─── Режим редактирования меню (/change) ────────────────────────────────────────
     if data.get('edit_phase'):
+        if not is_owner(message.from_user.id):
+            data['edit_phase'] = None
+            user_data[chat_id] = data
+            bot.send_message(chat_id, "У вас нет доступа к админскому меню.")
+            return
+
         phase = data['edit_phase']
 
         # 1) Главное меню редактирования (всё на английском)
@@ -2391,7 +2656,99 @@ def universal_handler(message):
                 user_data[chat_id] = data
                 return
 
+            if text == "MESSAGE":
+                data['edit_phase'] = 'broadcast_message'
+                data.pop('broadcast_source_message_id', None)
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("⬅️ Back", "❌ Cancel")
+                bot.send_message(
+                    chat_id,
+                    "Write the message that should be sent to all bot users:",
+                    reply_markup=kb,
+                )
+                user_data[chat_id] = data
+                return
+
             bot.send_message(chat_id, "Choose action:", reply_markup=edit_action_keyboard())
+            return
+
+        # 1.1) Текст массовой рассылки
+        if phase == 'broadcast_message':
+            if text == "⬅️ Back":
+                data['edit_phase'] = 'choose_action'
+                bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
+                user_data[chat_id] = data
+                return
+            if text == "❌ Cancel":
+                data['edit_phase'] = None
+                data.pop('broadcast_source_message_id', None)
+                bot.send_message(chat_id, "Editing cancelled.", reply_markup=types.ReplyKeyboardRemove())
+                bot.send_message(
+                    chat_id,
+                    t(chat_id, "choose_category"),
+                    reply_markup=get_inline_main_menu(chat_id),
+                )
+                user_data[chat_id] = data
+                return
+            if message.content_type != 'text' or not text.strip():
+                bot.send_message(chat_id, "Please send a non-empty text message.")
+                return
+
+            data['broadcast_source_message_id'] = message.message_id
+            data['edit_phase'] = 'broadcast_confirm'
+            kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+            kb.add("✅ SEND TO ALL", "✏️ EDIT MESSAGE")
+            kb.add("⬅️ Back", "❌ Cancel")
+            bot.send_message(
+                chat_id,
+                f"Preview:\n\n{html.escape(text)}\n\nSend this message to every registered user?",
+                reply_markup=kb,
+            )
+            user_data[chat_id] = data
+            return
+
+        # 1.2) Подтверждение массовой рассылки
+        if phase == 'broadcast_confirm':
+            if text in ("⬅️ Back", "✏️ EDIT MESSAGE"):
+                data['edit_phase'] = 'broadcast_message'
+                data.pop('broadcast_source_message_id', None)
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("⬅️ Back", "❌ Cancel")
+                bot.send_message(chat_id, "Write the new message:", reply_markup=kb)
+                user_data[chat_id] = data
+                return
+            if text == "❌ Cancel":
+                data['edit_phase'] = None
+                data.pop('broadcast_source_message_id', None)
+                bot.send_message(chat_id, "Editing cancelled.", reply_markup=types.ReplyKeyboardRemove())
+                bot.send_message(
+                    chat_id,
+                    t(chat_id, "choose_category"),
+                    reply_markup=get_inline_main_menu(chat_id),
+                )
+                user_data[chat_id] = data
+                return
+            if text != "✅ SEND TO ALL":
+                bot.send_message(chat_id, "Confirm the broadcast or edit the message.")
+                return
+
+            source_message_id = data.get('broadcast_source_message_id')
+            if not source_message_id:
+                data['edit_phase'] = 'broadcast_message'
+                bot.send_message(chat_id, "Message was not saved. Please write it again.")
+                user_data[chat_id] = data
+                return
+
+            bot.send_message(chat_id, "⏳ Sending broadcast...", reply_markup=types.ReplyKeyboardRemove())
+            sent, failed = broadcast_message_to_users(chat_id, source_message_id)
+            data.pop('broadcast_source_message_id', None)
+            data['edit_phase'] = 'choose_action'
+            bot.send_message(
+                chat_id,
+                f"✅ Broadcast finished. Sent: {sent}. Failed: {failed}.",
+                reply_markup=edit_action_keyboard(),
+            )
+            user_data[chat_id] = data
             return
 
         # 2) Добавить категорию
@@ -3175,7 +3532,11 @@ def universal_handler(message):
         if text == t(chat_id, "choose_on_map"):
             bot.send_message(
                 chat_id,
-                "Чтобы выбрать точку:\n📎 → Геопозиция → «Выбрать на карте» → метка → Отправить",
+                tr(
+                    chat_id,
+                    "Чтобы выбрать точку:\n📎 → Геопозиция → «Выбрать на карте» → метка → Отправить",
+                    "To choose a point:\n📎 → Location → Choose on map → place the pin → Send",
+                ),
                 reply_markup=types.ReplyKeyboardRemove()
             )
             return
@@ -3213,7 +3574,11 @@ def universal_handler(message):
             return
 
         if text == t(chat_id, "enter_nickname"):
-            bot.send_message(chat_id, "Введите ваш Telegram-ник (без @):", reply_markup=types.ReplyKeyboardRemove())
+            bot.send_message(
+                chat_id,
+                tr(chat_id, "Введите ваш Telegram-ник (без @):", "Enter your Telegram username (without @):"),
+                reply_markup=types.ReplyKeyboardRemove(),
+            )
             return
 
         if message.content_type == 'contact' and message.contact:
@@ -3270,7 +3635,14 @@ def universal_handler(message):
             for (cat0, flavor0), qty_needed in needed.items():
                 item_obj = next((i for i in menu[cat0]["flavors"] if i["flavor"] == flavor0), None)
                 if not item_obj or item_obj.get("stock", 0) < qty_needed:
-                    bot.send_message(chat_id, f"😕 К сожалению, «{flavor0}» больше не доступен в нужном количестве.")
+                    bot.send_message(
+                        chat_id,
+                        tr(
+                            chat_id,
+                            f"😕 К сожалению, «{flavor0}» больше не доступен в нужном количестве.",
+                            f"😕 Unfortunately, “{flavor0}” is no longer available in the requested quantity.",
+                        ),
+                    )
                     return
 
             for (cat0, flavor0), qty_needed in needed.items():
@@ -3296,7 +3668,14 @@ def universal_handler(message):
             if earned > 0:
                 cursor_local.execute("UPDATE users SET points = points + ? WHERE chat_id = ?", (earned, chat_id))
                 conn_local.commit()
-                bot.send_message(chat_id, f"👍 Вы получили {earned} бонусных баллов за этот заказ.")
+                bot.send_message(
+                    chat_id,
+                    tr(
+                        chat_id,
+                        f"👍 Вы получили {earned} бонусных баллов за этот заказ.",
+                        f"👍 You earned {earned} bonus points for this order.",
+                    ),
+                )
 
             cursor_local.execute("SELECT referred_by FROM users WHERE chat_id = ?", (chat_id,))
             row = cursor_local.fetchone()
@@ -3304,7 +3683,15 @@ def universal_handler(message):
                 inviter = row[0]
                 cursor_local.execute("UPDATE users SET points = points + 200 WHERE chat_id = ?", (inviter,))
                 conn_local.commit()
-                bot.send_message(inviter, "🎉 Вам начислено 200 бонусных баллов за приглашение нового клиента!")
+                init_user(inviter)
+                bot.send_message(
+                    inviter,
+                    tr(
+                        inviter,
+                        "🎉 Вам начислено 200 бонусных баллов за приглашение нового клиента!",
+                        "🎉 You received 200 bonus points for inviting a new customer!",
+                    ),
+                )
                 cursor_local.execute("UPDATE users SET referred_by = NULL WHERE chat_id = ?", (chat_id,))
                 conn_local.commit()
 
@@ -3501,14 +3888,27 @@ def universal_handler(message):
         conn_local.close()
 
         if not rows:
-            bot.send_message(chat_id, "У вас пока нет сохранённых заказов.")
+            bot.send_message(
+                chat_id,
+                tr(
+                    chat_id,
+                    "У вас пока нет сохранённых заказов.",
+                    "You do not have any saved orders yet.",
+                ),
+            )
             return
         texts = []
         for order_id, items_json, total, timestamp in rows[:10]:
             items = json.loads(items_json)
             summary = "\n".join(f"{i['flavor']} — {i['price']}₺" for i in items)
             date = timestamp.split("T")[0]
-            texts.append(f"Заказ #{order_id} ({date}):\n{summary}\nИтого: {total}₺")
+            texts.append(
+                tr(
+                    chat_id,
+                    f"Заказ #{order_id} ({date}):\n{summary}\nИтого: {total}₺",
+                    f"Order #{order_id} ({date}):\n{summary}\nTotal: {total}₺",
+                )
+            )
         bot.send_message(chat_id, "\n\n".join(texts))
         return
 
@@ -3536,7 +3936,7 @@ def callback_no_points(call):
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("cancel_order|"))
 def handle_cancel_order(call):
     user_id = call.from_user.id
-    if user_id not in ADMINS:
+    if not is_owner(user_id):
         return bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
 
     parts = call.data.split("|")
@@ -3612,11 +4012,19 @@ def handle_cancel_order(call):
     conn.close()
 
     # 5) Уведомляем пользователя
-    msg = f"Ваш заказ #{order_id} отменён."
-    if pts_spent:
-        msg += f" Возвращено {pts_spent} списанных баллов."
-    if pts_earned:
-        msg += f" Списано {pts_earned} начисленных баллов."
+    init_user(user_chat_id)
+    if user_data.get(user_chat_id, {}).get("lang") == "en":
+        msg = f"Your order #{order_id} has been cancelled."
+        if pts_spent:
+            msg += f" {pts_spent} spent points were returned."
+        if pts_earned:
+            msg += f" {pts_earned} earned points were removed."
+    else:
+        msg = f"Ваш заказ #{order_id} отменён."
+        if pts_spent:
+            msg += f" Возвращено {pts_spent} списанных баллов."
+        if pts_earned:
+            msg += f" Списано {pts_earned} начисленных баллов."
     bot.send_message(user_chat_id, msg)
 
     # 6) Убираем кнопку «Отменить» в админском сообщении
@@ -3638,6 +4046,8 @@ def handle_cancel_order(call):
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("order_delivered|"))
 def handle_order_delivered(call: types.CallbackQuery):
 
+    if not is_owner(call.from_user.id):
+        return bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
     if call.message.chat.id != GROUP_CHAT_ID:
         return bot.answer_callback_query(call.id, "Нажали не в том чате", show_alert=True)
 
@@ -3677,6 +4087,11 @@ def handle_order_delivered(call: types.CallbackQuery):
 
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("deliver_currency|"))
 def handle_deliver_currency(call: types.CallbackQuery):
+
+    if not is_owner(call.from_user.id):
+        return bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
+    if call.message.chat.id != GROUP_CHAT_ID:
+        return bot.answer_callback_query(call.id, "Нажали не в том чате", show_alert=True)
 
     bot.answer_callback_query(call.id)
 
@@ -3752,8 +4167,12 @@ def handle_deliver_currency(call: types.CallbackQuery):
 # 3) Нажали «⏪ Back»
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("back_to_options|"))
 def handle_back_to_options(call: types.CallbackQuery):
+    if not is_owner(call.from_user.id):
+        return bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
+    if call.message.chat.id != GROUP_CHAT_ID:
+        return bot.answer_callback_query(call.id, "Нажали не в том чате", show_alert=True)
     # сразу прекращаем крутилку
-    call.answer()
+    bot.answer_callback_query(call.id)
     order_id = int(call.data.split("|", 1)[1])
 
     kb = types.InlineKeyboardMarkup(row_width=2)
@@ -3770,6 +4189,10 @@ def handle_back_to_options(call: types.CallbackQuery):
 # 3) «Back» — возвращаем оригинальную клавиатуру (❌ и ✅) без изменения текста
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("back_to_group|"))
 def handle_back_to_group(call: types.CallbackQuery):
+    if not is_owner(call.from_user.id):
+        return bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
+    if call.message.chat.id != GROUP_CHAT_ID:
+        return bot.answer_callback_query(call.id, "Нажали не в том чате", show_alert=True)
     bot.answer_callback_query(call.id)
     _, oid = call.data.split("|", 1)
     order_id = int(oid)
@@ -3792,6 +4215,11 @@ def handle_back_to_group(call: types.CallbackQuery):
     )
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("courier_on_way|"))
 def handle_courier_on_way(call):
+    if not is_owner(call.from_user.id):
+        return bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
+    if call.message.chat.id != GROUP_CHAT_ID:
+        return bot.answer_callback_query(call.id, "Нажали не в том чате", show_alert=True)
+
     parts = call.data.split("|")
 
     if len(parts) < 3:
@@ -3801,9 +4229,14 @@ def handle_courier_on_way(call):
     user_chat_id = int(parts[2])
 
     # 1️⃣ Уведомляем клиента
+    init_user(user_chat_id)
     bot.send_message(
         user_chat_id,
-        "🚗 Курьер принял Ваш заказ и уже в пути!"
+        tr(
+            user_chat_id,
+            "🚗 Курьер принял Ваш заказ и уже в пути!",
+            "🚗 The courier has accepted your order and is on the way!",
+        )
     )
 
     # 2️⃣ Добавляем статус в текст (но оставляем кнопки)
