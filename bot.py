@@ -1,6 +1,7 @@
 import os
 import json
 import html
+import hashlib
 import requests
 import datetime
 import random
@@ -137,6 +138,16 @@ for column_name in ("points_spent", "points_earned"):
             f"ALTER TABLE orders ADD COLUMN {column_name} INTEGER DEFAULT 0"
         )
 
+# Незавершённая корзина хранится отдельно от оперативного состояния бота.
+# Поэтому redeploy/restart Railway не уничтожает выбранные пользователем товары.
+cursor_init.execute("""
+    CREATE TABLE IF NOT EXISTS user_carts (
+        chat_id     INTEGER PRIMARY KEY,
+        items_json  TEXT NOT NULL DEFAULT '[]',
+        updated_at  TEXT NOT NULL
+    )
+""")
+
 # Создание таблицы reviews
 cursor_init.execute("""
     CREATE TABLE IF NOT EXISTS reviews (
@@ -184,6 +195,7 @@ def save_menu_safely() -> None:
 def init_user(chat_id: int):
     if chat_id not in user_data:
         saved_language = None
+        saved_cart = []
         conn_local = get_db_connection()
         cursor_local = conn_local.cursor()
         try:
@@ -191,7 +203,23 @@ def init_user(chat_id: int):
             row = cursor_local.fetchone()
             if row and row[0] in ("ru", "en"):
                 saved_language = row[0]
-        except sqlite3.OperationalError:
+
+            cursor_local.execute(
+                "SELECT items_json FROM user_carts WHERE chat_id = ?",
+                (chat_id,),
+            )
+            cart_row = cursor_local.fetchone()
+            if cart_row and cart_row[0]:
+                parsed_cart = json.loads(cart_row[0])
+                if isinstance(parsed_cart, list):
+                    saved_cart = [
+                        item for item in parsed_cart
+                        if isinstance(item, dict)
+                        and isinstance(item.get("category"), str)
+                        and isinstance(item.get("flavor"), str)
+                        and isinstance(item.get("price"), (int, float))
+                    ]
+        except (sqlite3.OperationalError, json.JSONDecodeError, TypeError):
             # На случай первого запуска во время миграции старой БД.
             saved_language = None
         finally:
@@ -200,7 +228,7 @@ def init_user(chat_id: int):
 
         user_data[chat_id] = {
             "lang": saved_language,
-            "cart": [],
+            "cart": saved_cart,
             "current_category": None,
             "wait_for_points": False,
             "wait_for_address": False,
@@ -229,6 +257,30 @@ def init_user(chat_id: int):
 #   6. Хранилище данных пользователей (in-memory)
 # ------------------------------------------------------------------------
 user_data = {}  # структура объяснялась ранее
+
+
+def save_user_cart(chat_id: int) -> None:
+    """Сохраняет текущую корзину пользователя в SQLite."""
+    cart = user_data.get(chat_id, {}).get("cart", [])
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    cursor_local.execute(
+        """
+        INSERT INTO user_carts (chat_id, items_json, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(chat_id) DO UPDATE SET
+            items_json = excluded.items_json,
+            updated_at = excluded.updated_at
+        """,
+        (
+            chat_id,
+            json.dumps(cart, ensure_ascii=False),
+            datetime.datetime.utcnow().isoformat(),
+        ),
+    )
+    conn_local.commit()
+    cursor_local.close()
+    conn_local.close()
 # 6.2 Декоратор для гарантированной инициализации
 def ensure_user(handler):
     def wrapper(message_or_call, *args, **kwargs):
@@ -284,6 +336,109 @@ def tr(chat_id: int, ru_text: str, en_text: str) -> str:
         init_user(chat_id)
     lang = user_data.get(chat_id, {}).get("lang") or "ru"
     return en_text if lang == "en" else ru_text
+
+
+def format_money(value) -> str:
+    """Форматирует сумму без лишнего .0."""
+    number = float(value)
+    return str(int(number)) if number.is_integer() else f"{number:.2f}"
+
+
+def _stable_token(*parts: str) -> str:
+    payload = "\x1f".join(str(part) for part in parts).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()[:16]
+
+
+def category_token(category: str) -> str:
+    return _stable_token("category", category)
+
+
+def product_token(category: str, flavor: str) -> str:
+    return _stable_token("product", category, flavor)
+
+
+def resolve_category(token: str) -> str | None:
+    """Поддерживает новые ID и старые сообщения с названием категории."""
+    if token in menu:
+        return token
+    for category in menu:
+        if category_token(category) == token:
+            return category
+    return None
+
+
+def resolve_product(token: str) -> tuple[str, dict] | None:
+    for category, category_data in menu.items():
+        for item in category_data.get("flavors", []):
+            if product_token(category, str(item.get("flavor", ""))) == token:
+                return category, item
+    return None
+
+
+def cart_quantity(chat_id: int, category: str, flavor: str) -> int:
+    return sum(
+        1 for item in user_data.get(chat_id, {}).get("cart", [])
+        if item.get("category") == category and item.get("flavor") == flavor
+    )
+
+
+def cart_totals(chat_id: int) -> tuple[int, float]:
+    cart = user_data.get(chat_id, {}).get("cart", [])
+    return len(cart), sum(float(item.get("price", 0)) for item in cart)
+
+
+def disable_inline_keyboard(call) -> None:
+    """Убирает кнопки у устаревшего сообщения, если Telegram это позволяет."""
+    try:
+        bot.edit_message_reply_markup(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=None,
+        )
+    except Exception:
+        pass
+
+
+def render_inline_screen(
+    chat_id: int,
+    text: str,
+    reply_markup,
+    call=None,
+    *,
+    allow_media_edit: bool = True,
+) -> None:
+    """Обновляет активный экран; при невозможности безопасно создаёт новый."""
+    if call is not None:
+        message = getattr(call, "message", None)
+        if message is not None:
+            is_media = bool(getattr(message, "photo", None)) or getattr(
+                message, "content_type", None
+            ) == "photo"
+            try:
+                if is_media and allow_media_edit:
+                    bot.edit_message_caption(
+                        caption=text,
+                        chat_id=message.chat.id,
+                        message_id=message.message_id,
+                        parse_mode="HTML",
+                        reply_markup=reply_markup,
+                    )
+                elif not is_media:
+                    bot.edit_message_text(
+                        text,
+                        chat_id=message.chat.id,
+                        message_id=message.message_id,
+                        parse_mode="HTML",
+                        reply_markup=reply_markup,
+                    )
+                else:
+                    raise RuntimeError("text screen requested from media message")
+                return
+            except Exception as exc:
+                if "message is not modified" in str(exc).lower():
+                    return
+                disable_inline_keyboard(call)
+    bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=reply_markup)
 
 
 def is_owner(user_id: int) -> bool:
@@ -439,7 +594,11 @@ def translate_to_en(text: str) -> str:
 # ------------------------------------------------------------------------
 #   8. Inline-кнопки для выбора языка
 # ------------------------------------------------------------------------
-def get_inline_language_buttons(chat_id: int, include_back: bool = False) -> types.InlineKeyboardMarkup:
+def get_inline_language_buttons(
+    chat_id: int,
+    include_back: bool = False,
+    back_callback: str | None = None,
+) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         types.InlineKeyboardButton(text="Русский 🇷🇺", callback_data="set_lang|ru"),
@@ -447,8 +606,8 @@ def get_inline_language_buttons(chat_id: int, include_back: bool = False) -> typ
     )
     if include_back:
         kb.add(types.InlineKeyboardButton(
-            text=t(chat_id, "back"),
-            callback_data="go_back_to_categories",
+            text=tr(chat_id, "⬅️ Назад", "⬅️ Back"),
+            callback_data=back_callback or "go_back_to_categories",
         ))
     return kb
 
@@ -456,7 +615,9 @@ def get_inline_language_buttons(chat_id: int, include_back: bool = False) -> typ
 #   9. Inline-кнопки для главного меню
 # ------------------------------------------------------------------------
 def get_inline_main_menu(chat_id: int, show_language: bool = False) -> types.InlineKeyboardMarkup:
-    kb = types.InlineKeyboardMarkup(row_width=2)
+    # show_language оставлен в сигнатуре для совместимости со старыми вызовами.
+    # Язык находится только в разделе «Профиль».
+    kb = types.InlineKeyboardMarkup(row_width=1)
 
     # Категории для пользователя:
     # показываем только те категории, где есть хотя бы один вкус со stock > 0.
@@ -468,47 +629,63 @@ def get_inline_main_menu(chat_id: int, show_language: bool = False) -> types.Inl
         if total_stock <= 0:
             continue
 
+        price = format_money(cat_data.get("price", 0))
         kb.add(types.InlineKeyboardButton(
-            text=cat,
-            callback_data=f"category|{cat}"
+            text=f"{cat} · {price}₺",
+            callback_data=f"category|{category_token(cat)}"
         ))
 
     # Кнопки корзины и дальнейших действий — только если в корзине есть товары
-    cart_count = len(user_data.get(chat_id, {}).get("cart", []))
+    cart_count, cart_total = cart_totals(chat_id)
     if cart_count > 0:
-        # «Посмотреть корзину» с количеством
         kb.add(types.InlineKeyboardButton(
-            text=f"🛒 {t(chat_id, 'view_cart')} ({cart_count})",
+            text=tr(
+                chat_id,
+                f"🛒 Корзина · {cart_count} шт. · {format_money(cart_total)}₺",
+                f"🛒 Cart · {cart_count} pcs · {format_money(cart_total)}₺",
+            ),
             callback_data="view_cart"
         ))
-        # «Очистить» и «Завершить»
-        kb.add(types.InlineKeyboardButton(
-            text=f"🗑️ {t(chat_id, 'clear_cart')}",
-            callback_data="clear_cart"
-        ))
-        kb.add(types.InlineKeyboardButton(
-            text=f"✅ {t(chat_id, 'finish_order')}",
-            callback_data="finish_order"
-        ))
 
-    if show_language:
-        kb.add(types.InlineKeyboardButton(
-            text=tr(chat_id, "🌐 Сменить язык", "🌐 Change language"),
-            callback_data="change_language"
-        ))
+    kb.add(types.InlineKeyboardButton(
+        text=tr(chat_id, "👤 Профиль", "👤 Profile"),
+        callback_data="profile",
+    ))
 
     return kb
-def skip_points_keyboard(chat_id: int):
-    kb = types.InlineKeyboardMarkup()
+def points_choice_keyboard(chat_id: int, max_points: int):
+    kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(types.InlineKeyboardButton(
-        text=tr(chat_id, "❌ Не списывать баллы", "❌ Do not use points"),
+        text=tr(
+            chat_id,
+            f"🎁 Использовать все {max_points}",
+            f"🎁 Use all {max_points}",
+        ),
+        callback_data="points_all",
+    ))
+    kb.add(types.InlineKeyboardButton(
+        text=tr(chat_id, "✏️ Ввести другую сумму", "✏️ Enter another amount"),
+        callback_data="points_custom",
+    ))
+    kb.add(types.InlineKeyboardButton(
+        text=tr(chat_id, "Без баллов", "Do not use points"),
         callback_data="no_points"
     ))
     kb.add(types.InlineKeyboardButton(
-        text=t(chat_id, "back"),
+        text=tr(chat_id, "⬅️ Назад в корзину", "⬅️ Back to cart"),
         callback_data="back_to_cart",
     ))
     return kb
+
+
+def skip_points_keyboard(chat_id: int):
+    """Совместимость со старым именем функции."""
+    data = user_data.get(chat_id, {})
+    max_points = min(
+        int(data.get("temp_user_points", 0) or 0),
+        int(data.get("temp_total_try", 0) or 0),
+    )
+    return points_choice_keyboard(chat_id, max_points)
 
 
 def back_to_main_keyboard(chat_id: int) -> types.InlineKeyboardMarkup:
@@ -523,7 +700,7 @@ def back_to_main_keyboard(chat_id: int) -> types.InlineKeyboardMarkup:
 # ------------------------------------------------------------------------
 def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=1)
-    price = menu[cat]["price"]
+    price = format_money(menu[cat]["price"])
 
     # Сохраняем в user_data текущий список «живых» вкусов
     user_data[chat_id]["current_flavors"] = [
@@ -539,49 +716,149 @@ def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
         rating = item.get("rating")
         rating_str = f" ⭐{rating}" if rating else ""
         stock_unit = tr(chat_id, "шт", "pcs")
-        label = f"{emoji} {flavor}{rating_str} · {stock} {stock_unit}"
+        label = f"{emoji} {flavor}{rating_str} · {price}₺ · {stock} {stock_unit}"
         kb.add(types.InlineKeyboardButton(
             text=label,
-            callback_data=f"flavor|{idx}"
+            callback_data=f"product|{product_token(cat, flavor)}"
         ))
 
     kb.add(types.InlineKeyboardButton(
-        text=f"⬅️ {t(chat_id, 'back_to_categories')}",
+        text=tr(chat_id, "⬅️ К категориям", "⬅️ To categories"),
         callback_data="go_back_to_categories"
     ))
     return kb
 
+
+def main_menu_text(chat_id: int) -> str:
+    return tr(
+        chat_id,
+        "<b>🛍 Главное меню</b>\n\nВыберите модель:",
+        "<b>🛍 Main menu</b>\n\nChoose a model:",
+    )
+
+
+def show_main_menu(chat_id: int, call=None) -> None:
+    render_inline_screen(
+        chat_id,
+        main_menu_text(chat_id),
+        get_inline_main_menu(chat_id),
+        call,
+        allow_media_edit=False,
+    )
+
+
+def show_category_screen(chat_id: int, category: str, call=None) -> None:
+    if category not in menu:
+        show_main_menu(chat_id, call)
+        return
+
+    user_data[chat_id]["current_category"] = category
+    price = format_money(menu[category].get("price", 0))
+    text = tr(
+        chat_id,
+        f"<b>{html.escape(category)}</b>\nЦена: <b>{price}₺</b>\n\nВыберите вкус:",
+        f"<b>{html.escape(category)}</b>\nPrice: <b>{price}₺</b>\n\nChoose a flavor:",
+    )
+    keyboard = get_inline_flavors(chat_id, category)
+    photo_url = str(menu[category].get("photo_url", "") or "").strip()
+
+    # Если пользователь уже находится на фото-карточке этой категории,
+    # обновляем её подпись. Иначе выключаем старые кнопки и создаём карточку.
+    message = getattr(call, "message", None) if call is not None else None
+    is_media = bool(getattr(message, "photo", None)) or getattr(
+        message, "content_type", None
+    ) == "photo"
+    if call is not None and is_media:
+        render_inline_screen(chat_id, text, keyboard, call)
+        return
+    if photo_url:
+        if call is not None:
+            disable_inline_keyboard(call)
+        try:
+            bot.send_photo(
+                chat_id,
+                photo_url,
+                caption=text,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+            return
+        except Exception as exc:
+            print(f"Failed to send category photo for {category}: {exc}")
+    render_inline_screen(chat_id, text, keyboard, call)
+
+
+def recover_catalog_screen(chat_id: int, call=None) -> None:
+    """Возвращает пользователя с устаревшей кнопки в актуальный каталог."""
+    category = user_data.get(chat_id, {}).get("current_category")
+    if category in menu:
+        show_category_screen(chat_id, category, call)
+    else:
+        show_main_menu(chat_id, call)
+
 # ------------------------------------------------------------------------
 #   11. Reply-клавиатуры (альтернатива inline)
 # ------------------------------------------------------------------------
-def address_keyboard(chat_id: int) -> types.ReplyKeyboardMarkup:
+def nav_text(chat_id: int, destination: str) -> str:
+    labels = {
+        "cart": ("⬅️ Назад в корзину", "⬅️ Back to cart"),
+        "address": ("⬅️ Назад к адресу", "⬅️ Back to address"),
+        "contact": ("⬅️ Назад к контакту", "⬅️ Back to contact"),
+        "points": ("⬅️ Назад к баллам", "⬅️ Back to points"),
+        "review": ("⬅️ Назад к заказу", "⬅️ Back to order"),
+        "menu": ("⬅️ Назад в меню", "⬅️ Back to menu"),
+    }
+    ru_text, en_text = labels.get(destination, ("⬅️ Назад", "⬅️ Back"))
+    return tr(chat_id, ru_text, en_text)
+
+
+def is_navigation_text(chat_id: int, text: str, destination: str | None = None) -> bool:
+    accepted = {t(chat_id, "back"), nav_text(chat_id, "back")}
+    if destination:
+        accepted.add(nav_text(chat_id, destination))
+    return text in accepted
+
+
+def no_comment_text(chat_id: int) -> str:
+    return tr(chat_id, "Без комментария", "No comment")
+
+
+def address_keyboard(chat_id: int, back_destination: str = "cart") -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add(types.KeyboardButton(t(chat_id, "share_location"), request_location=True))
     kb.add(t(chat_id, "choose_on_map"))
     kb.add(t(chat_id, "enter_address_text"))
-    kb.add(t(chat_id, "back"))
+    kb.add(nav_text(chat_id, back_destination))
     return kb
 
 
 
-def contact_keyboard(chat_id: int) -> types.ReplyKeyboardMarkup:
+def contact_keyboard(chat_id: int, back_destination: str = "address") -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add(types.KeyboardButton(t(chat_id, "share_contact"), request_contact=True))
     kb.add(t(chat_id, "enter_nickname"))
-    kb.add(t(chat_id, "back"))
+    kb.add(nav_text(chat_id, back_destination))
     return kb
 
 
 
 def comment_keyboard(chat_id: int) -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.add(t(chat_id, "back"))
+    kb.add(no_comment_text(chat_id))
+    kb.add(nav_text(chat_id, "contact"))
     return kb
 
 
-def text_entry_back_keyboard(chat_id: int) -> types.ReplyKeyboardMarkup:
+def text_entry_back_keyboard(
+    chat_id: int,
+    destination: str = "back",
+    *,
+    include_no_comment: bool = False,
+) -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.add(t(chat_id, "back"))
+    if include_no_comment:
+        kb.add(no_comment_text(chat_id))
+    kb.add(nav_text(chat_id, destination))
     return kb
 # ------------------------------------------------------------------------
 #   12. Клавиатура редактирования меню (/change) — ВСЁ НА АНГЛИЙСКОМ
@@ -679,13 +956,6 @@ def cmd_start(message):
     cur.close()
     conn.close()
 
-    # --- Сброс reply-клавиатуры уже на сохранённом языке ---
-    bot.send_message(
-        chat_id,
-        tr(chat_id, "🔙 Вернулись в главное меню", "🔙 Back to the main menu"),
-        reply_markup=types.ReplyKeyboardRemove()
-    )
-
     # --- если язык еще не выбран — показать выбор языка ---
     if user_data[chat_id]["lang"] is None:
         bot.send_message(
@@ -695,17 +965,22 @@ def cmd_start(message):
         )
         return
 
+    # У известного пользователя убираем reply-клавиатуру предыдущего шага.
+    # До первого выбора языка её ещё нет, поэтому лишнее русское сообщение
+    # перед двуязычным экраном больше не появляется.
+    bot.send_message(
+        chat_id,
+        tr(chat_id, "🔙 Вернулись в главное меню", "🔙 Back to the main menu"),
+        reply_markup=types.ReplyKeyboardRemove(),
+    )
+
     # Реферальная карточка показывается один раз при регистрации, а не при
     # каждом возврате через /start.
     if is_new_user:
         send_referral_info(chat_id, referral_code)
 
     # --- главное меню ---
-    bot.send_message(
-        chat_id,
-        t(chat_id, "choose_category"),
-        reply_markup=get_inline_main_menu(chat_id, show_language=True)
-    )
+    show_main_menu(chat_id)
 
 # ------------------------------------------------------------------------
 #   15. Callback: выбор языка
@@ -715,10 +990,15 @@ def cmd_language(message):
     chat_id = message.chat.id
     init_user(chat_id)
     user_data[chat_id]["changing_language"] = True
+    user_data[chat_id]["language_return"] = "menu"
     bot.send_message(
         chat_id,
         "🌐 Выберите язык / Choose your language:",
-        reply_markup=get_inline_language_buttons(chat_id, include_back=True),
+        reply_markup=get_inline_language_buttons(
+            chat_id,
+            include_back=True,
+            back_callback="go_back_to_categories",
+        ),
     )
 
 
@@ -727,11 +1007,17 @@ def handle_change_language(call):
     chat_id = call.from_user.id
     init_user(chat_id)
     user_data[chat_id]["changing_language"] = True
+    return_to = user_data[chat_id].get("language_return") or "menu"
+    user_data[chat_id]["language_return"] = return_to
     bot.answer_callback_query(call.id)
     bot.send_message(
         chat_id,
         "🌐 Выберите язык / Choose your language:",
-        reply_markup=get_inline_language_buttons(chat_id, include_back=True),
+        reply_markup=get_inline_language_buttons(
+            chat_id,
+            include_back=True,
+            back_callback="profile" if return_to == "profile" else "go_back_to_categories",
+        ),
     )
 
 
@@ -746,8 +1032,11 @@ def handle_set_lang(call):
     init_user(chat_id)
     previous_language = user_data[chat_id].get("lang")
     was_changing = user_data[chat_id].pop("changing_language", False)
+    return_to = user_data[chat_id].pop("language_return", "menu")
     user_data[chat_id]["lang"] = lang_code
     save_user_language(chat_id, lang_code)
+
+    initial_selection = previous_language not in ("ru", "en") and not was_changing
 
     bot.answer_callback_query(call.id, t(chat_id, "lang_set"))
     try:
@@ -759,16 +1048,6 @@ def handle_set_lang(call):
     except Exception:
         pass
 
-    bot.send_message(
-        chat_id,
-        tr(chat_id, "✅ Язык изменён на русский.", "✅ Language changed to English."),
-    )
-    bot.send_message(
-        chat_id,
-        t(chat_id, "choose_category"),
-        reply_markup=get_inline_main_menu(chat_id),
-    )
-
     conn_local = get_db_connection()
     cursor_local = conn_local.cursor()
     cursor_local.execute("SELECT referral_code FROM users WHERE chat_id = ?", (chat_id,))
@@ -776,8 +1055,17 @@ def handle_set_lang(call):
     cursor_local.close()
     conn_local.close()
 
-    if row and previous_language not in ("ru", "en") and not was_changing:
+    if initial_selection and row:
         send_referral_info(chat_id, row[0])
+
+    # При первой настройке главное меню отправляется последним сообщением,
+    # чтобы оно не оказалось выше реферальной карточки и не потерялось.
+    if return_to == "profile" and previous_language in ("ru", "en"):
+        show_profile(chat_id, call)
+    elif initial_selection:
+        show_main_menu(chat_id)
+    else:
+        show_main_menu(chat_id, call)
 
 
 # ------------------------------------------------------------------------
@@ -787,29 +1075,17 @@ def handle_set_lang(call):
 @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("category|"))
 def handle_category(call):
     chat_id = call.from_user.id
-    _, cat = call.data.split("|", 1)
+    init_user(chat_id)
+    _, token = call.data.split("|", 1)
+    cat = resolve_category(token)
 
-    if cat not in menu:
-        return bot.answer_callback_query(call.id, t(chat_id, "error_invalid"), show_alert=True)
+    if not cat:
+        bot.answer_callback_query(call.id, t(chat_id, "error_invalid"), show_alert=True)
+        show_main_menu(chat_id, call)
+        return
 
     bot.answer_callback_query(call.id)
-    user_data[chat_id]["current_category"] = cat
-
-    photo_url = menu[cat].get("photo_url", "").strip()
-    if photo_url:
-        try:
-            bot.send_photo(chat_id, photo_url)
-        except Exception as e:
-            print(f"Failed to send category photo for {cat}: {e}")
-
-    # Генерируем клавиатуру уже с индексами вкусов
-    kb = get_inline_flavors(chat_id, cat)
-
-    bot.send_message(
-        chat_id,
-        f"{t(chat_id, 'choose_flavor')} «{cat}»",
-        reply_markup=kb
-    )
+    show_category_screen(chat_id, cat, call)
 
 # ------------------------------------------------------------------------
 #   17. Callback: «Назад к категориям»
@@ -833,51 +1109,74 @@ def handle_go_back_to_categories(call):
     data.pop("return_to_review_after_contact", None)
     data.pop("return_to_review_after_comment", None)
     data.pop("changing_language", None)
-    bot.send_message(chat_id, tr(chat_id, "Главное меню", "Main menu"),
-                     reply_markup=types.ReplyKeyboardRemove())
-    bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
+    data.pop("language_return", None)
+    show_main_menu(chat_id, call)
 
 
 # ------------------------------------------------------------------------
 #   18. Callback: выбор вкуса
 # ------------------------------------------------------------------------
 @ensure_user
-@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("flavor|"))
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("product|"))
 def handle_flavor(call):
     chat_id = call.from_user.id
-    _, idx_str = call.data.split("|", 1)
-    try:
-        idx = int(idx_str)
-        cat = user_data[chat_id]["current_category"]
-        item = user_data[chat_id]["current_flavors"][idx]
-    except (ValueError, KeyError, IndexError):
-        return bot.answer_callback_query(call.id, t(chat_id, "error_invalid"), show_alert=True)
+    init_user(chat_id)
+    _, token = call.data.split("|", 1)
+    resolved = resolve_product(token)
+    if not resolved:
+        bot.answer_callback_query(call.id, t(chat_id, "error_invalid"), show_alert=True)
+        recover_catalog_screen(chat_id, call)
+        return
+
+    cat, item = resolved
+    if int(item.get("stock", 0)) <= 0:
+        return bot.answer_callback_query(call.id, t(chat_id, "error_out_of_stock"), show_alert=True)
 
     flavor = item["flavor"]
-    price  = menu[cat]["price"]
+    price = menu[cat]["price"]
+    stock = int(item.get("stock", 0))
+    in_cart = cart_quantity(chat_id, cat, flavor)
     bot.answer_callback_query(call.id)
 
     desc = item.get(f"description_{user_data[chat_id]['lang']}", "")
-    caption = f"<b>{flavor}</b> — {cat}\n{desc}\n📌 {price}₺" if desc else f"<b>{flavor}</b> — {cat}\n📌 {price}₺"
+    lines = [
+        f"<b>{html.escape(str(flavor))}</b>",
+        html.escape(str(cat)),
+        "",
+    ]
+    if desc:
+        lines.extend([html.escape(str(desc)), ""])
+    lines.extend([
+        tr(chat_id, f"Цена: <b>{format_money(price)}₺</b>", f"Price: <b>{format_money(price)}₺</b>"),
+        tr(chat_id, f"В наличии: {stock} шт.", f"In stock: {stock} pcs"),
+    ])
+    if in_cart:
+        lines.append(tr(chat_id, f"В корзине: {in_cart} шт.", f"In cart: {in_cart} pcs"))
+    caption = "\n".join(lines)
 
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(
         types.InlineKeyboardButton(
             text=f"➕ {t(chat_id, 'add_to_cart')}",
-            callback_data=f"add_to_cart|{idx}"
+            callback_data=f"cart_add|{token}"
         ),
         types.InlineKeyboardButton(
-            text=t(chat_id, "back"),
-            callback_data="back_to_flavors"
+            text=tr(chat_id, "⬅️ К вкусам", "⬅️ To flavors"),
+            callback_data=f"category|{category_token(cat)}"
         )
     )
-    if user_data[chat_id]["cart"]:
+    count, total = cart_totals(chat_id)
+    if count:
         kb.add(types.InlineKeyboardButton(
-            text=f"✅ {t(chat_id, 'finish_order')}",
-            callback_data="finish_order"
+            text=tr(
+                chat_id,
+                f"🛒 Корзина · {count} шт. · {format_money(total)}₺",
+                f"🛒 Cart · {count} pcs · {format_money(total)}₺",
+            ),
+            callback_data="view_cart"
         ))
 
-    bot.send_message(chat_id, caption, parse_mode="HTML", reply_markup=kb)
+    render_inline_screen(chat_id, caption, kb, call)
 
 
 @ensure_user
@@ -893,62 +1192,115 @@ def handle_back_to_flavors(call):
             reply_markup=get_inline_main_menu(chat_id),
         )
         return
-    bot.send_message(
-        chat_id,
-        f"{t(chat_id, 'choose_flavor')} «{cat}»",
-        reply_markup=get_inline_flavors(chat_id, cat),
-    )
+    show_category_screen(chat_id, cat, call)
 
 # ------------------------------------------------------------------------
 #   19. Callback: добавить в корзину (без изменения stock)
 # ------------------------------------------------------------------------
 @ensure_user
-@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("add_to_cart|"))
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("cart_add|"))
 def handle_add_to_cart(call):
     chat_id = call.from_user.id
-    _, idx_str = call.data.split("|", 1)
+    init_user(chat_id)
+    _, token = call.data.split("|", 1)
+    resolved = resolve_product(token)
+    if not resolved:
+        bot.answer_callback_query(call.id, t(chat_id, "error_invalid"), show_alert=True)
+        recover_catalog_screen(chat_id, call)
+        return
 
-    # парсим индекс
-    try:
-        idx = int(idx_str)
-        cat = user_data[chat_id]["current_category"]
-        item = user_data[chat_id]["current_flavors"][idx]
-    except (ValueError, KeyError, IndexError):
-        # неверные данные — просто игнорируем
-        return bot.answer_callback_query(call.id, t(chat_id, "error_invalid"), show_alert=True)
-
-    # проверяем наличие
-    if int(item.get("stock", 0)) <= 0:
-        return bot.answer_callback_query(call.id, t(chat_id, "error_out_of_stock"), show_alert=True)
+    cat, item = resolved
+    stock = int(item.get("stock", 0))
+    current_qty = cart_quantity(chat_id, cat, item["flavor"])
+    if stock <= current_qty:
+        return bot.answer_callback_query(
+            call.id,
+            tr(
+                chat_id,
+                f"В корзине уже всё доступное количество: {stock} шт.",
+                f"Your cart already contains all {stock} available units.",
+            ),
+            show_alert=True,
+        )
 
     bot.answer_callback_query(call.id)
 
     # добавляем в корзину
     data = user_data.setdefault(chat_id, {})
     cart = data.setdefault("cart", [])
-    price = menu[cat]["price"]
+    data.update({
+        "pending_discount": 0,
+        "pending_points_spent": 0,
+        "wait_for_points": False,
+        "wait_for_address": False,
+        "wait_for_contact": False,
+        "wait_for_comment": False,
+    })
+    existing_item = next(
+        (
+            cart_item for cart_item in cart
+            if cart_item.get("category") == cat
+            and cart_item.get("flavor") == item["flavor"]
+        ),
+        None,
+    )
+    price = existing_item["price"] if existing_item else menu[cat]["price"]
     cart.append({
         "category": cat,
         "flavor": item["flavor"],
         "price": price
     })
+    save_user_cart(chat_id)
 
-    # отправляем подтверждение
-    template = t(chat_id, "added_to_cart")
-    suffix = template.split("»", 1)[1].strip()
-    count = len(cart)
-    bot.send_message(
+    count, total = cart_totals(chat_id)
+    text = tr(
         chat_id,
-        f"«{cat} — {item['flavor']}» {suffix.format(flavor=item['flavor'], count=count)}",
-        reply_markup=get_inline_main_menu(chat_id)
+        f"<b>✅ Добавлено в корзину</b>\n\n"
+        f"{html.escape(cat)}\n{html.escape(str(item['flavor']))}\n\n"
+        f"В корзине: {count} шт. на {format_money(total)}₺",
+        f"<b>✅ Added to cart</b>\n\n"
+        f"{html.escape(cat)}\n{html.escape(str(item['flavor']))}\n\n"
+        f"Cart: {count} pcs totaling {format_money(total)}₺",
     )
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton(
+        text=tr(chat_id, "➕ Добавить ещё из этой модели", "➕ Add another from this model"),
+        callback_data=f"category|{category_token(cat)}",
+    ))
+    kb.add(types.InlineKeyboardButton(
+        text=tr(
+            chat_id,
+            f"🛒 Открыть корзину · {count} шт. · {format_money(total)}₺",
+            f"🛒 Open cart · {count} pcs · {format_money(total)}₺",
+        ),
+        callback_data="view_cart",
+    ))
+    render_inline_screen(chat_id, text, kb, call)
 
+
+@bot.callback_query_handler(
+    func=lambda c: c.data and (
+        c.data.startswith("flavor|") or c.data.startswith("add_to_cart|")
+    )
+)
+def handle_stale_product_button(call):
+    init_user(call.from_user.id)
+    bot.answer_callback_query(
+        call.id,
+        tr(
+            call.from_user.id,
+            "Эта кнопка устарела. Откройте товар заново.",
+            "This button is outdated. Please open the product again.",
+        ),
+        show_alert=True,
+    )
+    recover_catalog_screen(call.from_user.id, call)
 
 
 # ------------------------------------------------------------------------
-#   20. Callback: «Просмотр корзины»
+#   20. Корзина: стабильные ID, + / −, удаление и подтверждение очистки
 # ------------------------------------------------------------------------
-def get_grouped_cart(chat_id: int) -> list[tuple[tuple[str, str, int], int]]:
+def get_grouped_cart(chat_id: int) -> list[tuple[tuple[str, str, int | float], int]]:
     grouped = {}
     for item in user_data.get(chat_id, {}).get("cart", []):
         key = (item["category"], item["flavor"], item["price"])
@@ -956,60 +1308,119 @@ def get_grouped_cart(chat_id: int) -> list[tuple[tuple[str, str, int], int]]:
     return list(grouped.items())
 
 
-def send_cart(chat_id: int) -> None:
+def find_cart_group(chat_id: int, token: str):
+    for (category, flavor, price), qty in get_grouped_cart(chat_id):
+        if product_token(category, flavor) == token:
+            return category, flavor, price, qty
+    return None
+
+
+def send_cart(chat_id: int, call=None) -> None:
     items_list = get_grouped_cart(chat_id)
     if not items_list:
-        bot.send_message(
+        kb = types.InlineKeyboardMarkup(row_width=1)
+        kb.add(types.InlineKeyboardButton(
+            text=tr(chat_id, "➕ Перейти к товарам", "➕ Browse products"),
+            callback_data="go_back_to_categories",
+        ))
+        kb.add(types.InlineKeyboardButton(
+            text=tr(chat_id, "👤 Профиль", "👤 Profile"),
+            callback_data="profile",
+        ))
+        render_inline_screen(
             chat_id,
-            t(chat_id, "cart_empty"),
-            reply_markup=get_inline_main_menu(chat_id),
+            tr(
+                chat_id,
+                "<b>🛒 Ваша корзина</b>\n\nКорзина пока пуста.",
+                "<b>🛒 Your cart</b>\n\nYour cart is empty.",
+            ),
+            kb,
+            call,
+            allow_media_edit=False,
         )
         return
 
-    text_lines = [f"🛒 {t(chat_id, 'view_cart')}:"]
+    text_lines = [tr(chat_id, "<b>🛒 Ваша корзина</b>", "<b>🛒 Your cart</b>"), ""]
     total = 0
+    total_qty = 0
     for idx, ((cat, flavor, price), qty) in enumerate(items_list, start=1):
-        line_total = price * qty
+        line_total = float(price) * qty
         total += line_total
-        text_lines.append(f"{idx}. {cat} — {flavor} — {price}₺ × {qty} = {line_total}₺")
-    text_lines.append("")
-    text_lines.append(f"💳 {tr(chat_id, 'Итого', 'Total')}: {total}₺")
+        total_qty += qty
+        text_lines.extend([
+            f"<b>{idx}. {html.escape(str(cat))}</b>",
+            f"   {html.escape(str(flavor))}",
+            f"   {format_money(price)}₺ × {qty} = <b>{format_money(line_total)}₺</b>",
+            "",
+        ])
 
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    for idx, _ in enumerate(items_list, start=1):
-        kb.add(
-            types.InlineKeyboardButton(
-                text=f"{t(chat_id, 'remove_item')} {idx}",
-                callback_data=f"remove_item|{idx}",
-            ),
-            types.InlineKeyboardButton(
-                text=f"{t(chat_id, 'edit_item')} {idx}",
-                callback_data=f"edit_item|{idx}",
-            ),
+    text_lines.append(
+        tr(
+            chat_id,
+            f"Всего: {total_qty} шт.\n<b>К оплате: {format_money(total)}₺</b>",
+            f"Items: {total_qty} pcs\n<b>Amount due: {format_money(total)}₺</b>",
         )
+    )
+
+    kb = types.InlineKeyboardMarkup(row_width=4)
+    for idx, ((cat, flavor, _price), qty) in enumerate(items_list, start=1):
+        token = product_token(cat, flavor)
+        item_label = f"{idx}. {flavor}"
+        if len(item_label) > 48:
+            item_label = item_label[:45] + "…"
+        kb.add(types.InlineKeyboardButton(
+            text=item_label,
+            callback_data=f"cart_qty|{token}",
+        ))
+        kb.add(
+            types.InlineKeyboardButton(text="➖", callback_data=f"cart_dec|{token}"),
+            types.InlineKeyboardButton(
+                text=tr(chat_id, f"{qty} шт.", f"{qty} pcs"),
+                callback_data=f"cart_qty|{token}",
+            ),
+            types.InlineKeyboardButton(text="➕", callback_data=f"cart_inc|{token}"),
+            types.InlineKeyboardButton(text="🗑", callback_data=f"cart_remove|{token}"),
+        )
+
     kb.add(types.InlineKeyboardButton(
-        text=f"✅ {t(chat_id, 'finish_order')}",
+        text=tr(
+            chat_id,
+            f"✅ Оформить · {format_money(total)}₺",
+            f"✅ Checkout · {format_money(total)}₺",
+        ),
         callback_data="finish_order",
     ))
     kb.add(types.InlineKeyboardButton(
-        text=t(chat_id, "back"),
+        text=tr(chat_id, "➕ Продолжить покупки", "➕ Continue shopping"),
         callback_data="go_back_to_categories",
     ))
-    bot.send_message(chat_id, "\n".join(text_lines), reply_markup=kb)
+    kb.add(types.InlineKeyboardButton(
+        text=tr(chat_id, "🗑 Очистить корзину", "🗑 Clear cart"),
+        callback_data="clear_cart",
+    ))
+    render_inline_screen(
+        chat_id,
+        "\n".join(text_lines),
+        kb,
+        call,
+        allow_media_edit=False,
+    )
 
 
 @ensure_user
 @bot.callback_query_handler(func=lambda call: call.data == "view_cart")
 def handle_view_cart(call):
     chat_id = call.from_user.id
+    init_user(chat_id)
     bot.answer_callback_query(call.id)
-    send_cart(chat_id)
+    send_cart(chat_id, call)
 
 
 @ensure_user
 @bot.callback_query_handler(func=lambda call: call.data == "back_to_cart")
 def handle_back_to_cart(call):
     chat_id = call.from_user.id
+    init_user(chat_id)
     bot.answer_callback_query(call.id)
     data = user_data[chat_id]
     data.update({
@@ -1020,299 +1431,320 @@ def handle_back_to_cart(call):
         "pending_discount": 0,
         "pending_points_spent": 0,
     })
-    bot.send_message(chat_id, tr(chat_id, "Возвращаемся в корзину.", "Back to your cart."),
-                     reply_markup=types.ReplyKeyboardRemove())
-    send_cart(chat_id)
+    data.pop("return_to_review_after_address", None)
+    data.pop("return_to_review_after_contact", None)
+    data.pop("return_to_review_after_comment", None)
+    send_cart(chat_id, call)
 
 
-# ------------------------------------------------------------------------
-#   21. Callback: «Удалить i» из корзины
-# ------------------------------------------------------------------------
-@ensure_user
-@bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("remove_item|"))
-def handle_remove_item(call):
-    chat_id = call.from_user.id
-    _, idx_str = call.data.split("|", 1)
-    idx = int(idx_str) - 1
-    data = user_data.get(chat_id, {})
-    cart = data.get("cart", [])
-
-    items_list = get_grouped_cart(chat_id)
-
-    if idx < 0 or idx >= len(items_list):
-        bot.answer_callback_query(call.id, t(chat_id, "error_invalid"))
-        return
-
-    (cat, flavor, price), qty = items_list[idx]
-
-    removed = False
-    new_cart = []
-    for it in cart:
-        if not removed and it["category"] == cat and it["flavor"] == flavor and it["price"] == price:
-            removed = True
-            continue
-        new_cart.append(it)
-    data["cart"] = new_cart
-
-    bot.answer_callback_query(call.id, t(chat_id, "item_removed").format(flavor=flavor))
-    send_cart(chat_id)
-
-
-# ------------------------------------------------------------------------
-#   22. Callback: «Изменить i» в корзине → ввод количества
-# ------------------------------------------------------------------------
-@ensure_user
-@bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("edit_item|"))
-def handle_edit_item_request(call):
-    chat_id = call.from_user.id
-    _, idx_str = call.data.split("|", 1)
-    idx = int(idx_str) - 1
-    data = user_data.get(chat_id, {})
-    cart = data.get("cart", [])
-
-    # Группируем для подсчёта
-    items_list = get_grouped_cart(chat_id)
-    if idx < 0 or idx >= len(items_list):
-        bot.answer_callback_query(call.id, t(chat_id, "error_invalid"))
-        return
-
-    (cat, flavor, price), old_qty = items_list[idx]
-    bot.answer_callback_query(call.id)
-
-    # Сохраняем состояние для ввода количества
-    data["edit_cart_phase"] = "enter_qty"
-    data["edit_index"] = idx
-    data["edit_cat"] = cat
-    data["edit_flavor"] = flavor
-    user_data[chat_id] = data
-
-    # Выводим по-русски или по-английски в зависимости от языка
-    lang = user_data.get(chat_id, {}).get("lang", "ru")
-    if lang == "ru":
-        prefix = f"Текущий товар: {cat} — {flavor} — {price}₺ (в корзине {old_qty} шт)."
-    else:
-        prefix = f"Current item: {cat} — {flavor} — {price}₺ (in cart {old_qty} pcs)."
-
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.add(t(chat_id, "back"))
-    bot.send_message(
-        chat_id,
-        prefix + "\n" + t(chat_id, "enter_new_qty"),
-        reply_markup=kb,
+@bot.callback_query_handler(
+    func=lambda call: call.data and call.data.startswith(
+        ("cart_inc|", "cart_dec|", "cart_remove|", "cart_qty|")
     )
-
-
-@ensure_user
-@bot.message_handler(
-    func=lambda m: user_data.get(m.chat.id, {}).get("edit_cart_phase") == "enter_qty",
-    content_types=['text']
 )
-def handle_enter_new_qty(message):
-    chat_id = message.chat.id
-    data = user_data.get(chat_id, {})
-    text = message.text.strip()
-    if text == t(chat_id, "back"):
-        data["edit_cart_phase"] = None
-        data.pop("edit_index", None)
-        data.pop("edit_cat", None)
-        data.pop("edit_flavor", None)
-        bot.send_message(chat_id, tr(chat_id, "Возвращаемся в корзину.", "Back to your cart."),
-                         reply_markup=types.ReplyKeyboardRemove())
-        send_cart(chat_id)
-        return
-    if not text.isdigit():
-        bot.send_message(chat_id, t(chat_id, "error_invalid"))
+def handle_cart_action(call):
+    chat_id = call.from_user.id
+    init_user(chat_id)
+    action, token = call.data.split("|", 1)
+    group = find_cart_group(chat_id, token)
+    if not group:
+        bot.answer_callback_query(
+            call.id,
+            tr(chat_id, "Эта позиция уже изменилась.", "This cart item has changed."),
+            show_alert=True,
+        )
+        send_cart(chat_id, call)
         return
 
-    new_qty = int(text)
-    idx = data.get("edit_index", -1)
-    cart = data.get("cart", [])
-    items_list = get_grouped_cart(chat_id)
-    if idx < 0 or idx >= len(items_list):
-        bot.send_message(chat_id, t(chat_id, "error_invalid"))
-        data["edit_cart_phase"] = None
-        return
+    category, flavor, price, qty = group
+    data = user_data[chat_id]
+    cart = data["cart"]
 
-    (cat, flavor, price), old_qty = items_list[idx]
-
-    stock_item = next(
-        (item for item in menu.get(cat, {}).get("flavors", []) if item.get("flavor") == flavor),
-        None,
-    )
-    max_qty = int(stock_item.get("stock", 0)) if stock_item else 0
-    if new_qty > max_qty:
-        bot.send_message(
-            chat_id,
-            tr(
-                chat_id,
-                f"Доступно только {max_qty} шт. Введите количество от 0 до {max_qty}.",
-                f"Only {max_qty} pcs are available. Enter a quantity from 0 to {max_qty}.",
-            ),
+    if action == "cart_qty":
+        bot.answer_callback_query(
+            call.id,
+            tr(chat_id, f"В корзине: {qty} шт.", f"In cart: {qty} pcs"),
         )
         return
 
-    new_cart = [it for it in cart if not (it["category"] == cat and it["flavor"] == flavor and it["price"] == price)]
-    for _ in range(new_qty):
-        new_cart.append({"category": cat, "flavor": flavor, "price": price})
-    data["cart"] = new_cart
+    if action == "cart_inc":
+        resolved = resolve_product(token)
+        stock = int(resolved[1].get("stock", 0)) if resolved else 0
+        if qty >= stock:
+            return bot.answer_callback_query(
+                call.id,
+                tr(
+                    chat_id,
+                    f"Доступно только {stock} шт.",
+                    f"Only {stock} pcs are available.",
+                ),
+                show_alert=True,
+            )
+        cart.append({"category": category, "flavor": flavor, "price": price})
+        bot.answer_callback_query(call.id, tr(chat_id, "Добавлено", "Added"))
 
-    data["edit_cart_phase"] = None
-    data.pop("edit_index", None)
-    data.pop("edit_cat", None)
-    data.pop("edit_flavor", None)
+    elif action == "cart_dec":
+        for index, item in enumerate(cart):
+            if item.get("category") == category and item.get("flavor") == flavor:
+                cart.pop(index)
+                break
+        bot.answer_callback_query(call.id, tr(chat_id, "Количество уменьшено", "Quantity decreased"))
 
-    result_text = (
-        t(chat_id, "item_removed").format(flavor=flavor)
-        if new_qty == 0
-        else t(chat_id, "qty_changed").format(flavor=flavor, qty=new_qty)
-    )
-    bot.send_message(chat_id, result_text, reply_markup=types.ReplyKeyboardRemove())
-    send_cart(chat_id)
+    else:
+        user_data[chat_id]["cart"] = [
+            item for item in cart
+            if not (
+                item.get("category") == category
+                and item.get("flavor") == flavor
+            )
+        ]
+        bot.answer_callback_query(
+            call.id,
+            tr(chat_id, "Позиция удалена", "Item removed"),
+        )
 
-    user_data[chat_id] = data
+    data.update({
+        "pending_discount": 0,
+        "pending_points_spent": 0,
+        "wait_for_points": False,
+        "wait_for_address": False,
+        "wait_for_contact": False,
+        "wait_for_comment": False,
+    })
+    save_user_cart(chat_id)
+    send_cart(chat_id, call)
 
 
-# ------------------------------------------------------------------------
-#   23. Callback: «Очистить корзину»
-# ------------------------------------------------------------------------
 @ensure_user
 @bot.callback_query_handler(func=lambda call: call.data == "clear_cart")
 def handle_clear_cart(call):
     chat_id = call.from_user.id
+    init_user(chat_id)
     bot.answer_callback_query(call.id)
-    data = user_data.get(chat_id, {})
-    data["cart"] = []
-    bot.send_message(chat_id, t(chat_id, "cart_cleared"), reply_markup=get_inline_main_menu(chat_id))
-    user_data[chat_id] = data
+    count, total = cart_totals(chat_id)
+    if not count:
+        send_cart(chat_id, call)
+        return
+
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton(
+            text=tr(chat_id, "Да, очистить", "Yes, clear it"),
+            callback_data="clear_cart_confirm",
+        ),
+        types.InlineKeyboardButton(
+            text=tr(chat_id, "Отмена", "Cancel"),
+            callback_data="clear_cart_cancel",
+        ),
+    )
+    render_inline_screen(
+        chat_id,
+        tr(
+            chat_id,
+            f"<b>Очистить корзину?</b>\n\nБудут удалены все {count} шт. на сумму {format_money(total)}₺.",
+            f"<b>Clear your cart?</b>\n\nAll {count} items totaling {format_money(total)}₺ will be removed.",
+        ),
+        kb,
+        call,
+        allow_media_edit=False,
+    )
 
 
-def ask_saved_or_new_delivery_data(chat_id: int, total_try: int, points_to_spend: int = 0) -> bool:
-    """
-    После этапа баллов предлагает использовать последние сохранённые данные доставки.
-    Если данных ещё нет, сразу переводит пользователя на ввод нового адреса.
-    Возвращает True, если показал выбор последних данных, иначе False.
-    """
+@bot.callback_query_handler(func=lambda call: call.data == "clear_cart_confirm")
+def handle_clear_cart_confirm(call):
+    chat_id = call.from_user.id
+    init_user(chat_id)
+    user_data[chat_id].update({
+        "cart": [],
+        "pending_discount": 0,
+        "pending_points_spent": 0,
+        "wait_for_points": False,
+        "wait_for_address": False,
+        "wait_for_contact": False,
+        "wait_for_comment": False,
+    })
+    save_user_cart(chat_id)
+    bot.answer_callback_query(call.id, tr(chat_id, "Корзина очищена", "Cart cleared"))
+    send_cart(chat_id, call)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "clear_cart_cancel")
+def handle_clear_cart_cancel(call):
+    chat_id = call.from_user.id
+    init_user(chat_id)
+    bot.answer_callback_query(call.id)
+    send_cart(chat_id, call)
+
+
+@bot.callback_query_handler(
+    func=lambda call: call.data and (
+        call.data.startswith("remove_item|") or call.data.startswith("edit_item|")
+    )
+)
+def handle_stale_cart_button(call):
+    chat_id = call.from_user.id
+    init_user(chat_id)
+    bot.answer_callback_query(
+        call.id,
+        tr(
+            chat_id,
+            "Эта кнопка корзины устарела. Откройте корзину снова.",
+            "This cart button is outdated. Please open your cart again.",
+        ),
+        show_alert=True,
+    )
+    send_cart(chat_id, call)
+
+
+def checkout_conversion_text(chat_id: int, total_after: int | float, qty: int) -> str:
+    rates = fetch_rates()
+    if not all(rates.get(code, 0) for code in ("RUB", "USD", "EUR", "UAH")):
+        return ""
+    rub = round(total_after * rates["RUB"] + 500 * qty, 2)
+    usd = round(total_after * rates["USD"] + 2 * qty, 2)
+    eur = round(total_after * rates["EUR"] + 2 * qty, 2)
+    uah = round(total_after * rates["UAH"] + 350 * qty, 2)
+    values = f"{rub}₽ · $" + f"{usd} · €{eur} · ₴{uah}"
+    return tr(
+        chat_id,
+        f"\nОриентировочно в других валютах:\n{values}",
+        f"\nEstimated in other currencies:\n{values}",
+    )
+
+
+def ask_saved_or_new_delivery_data(
+    chat_id: int,
+    total_try: int,
+    points_to_spend: int = 0,
+    call=None,
+) -> bool:
+    """Показывает второй шаг checkout: сохранённые либо новые данные."""
     data = user_data.get(chat_id, {})
     cart = data.get("cart", [])
+    total_after = max(total_try - points_to_spend, 0)
 
-    # --- проверяем, есть ли сохранённые данные ---
     conn_check = get_db_connection()
     cur_check = conn_check.cursor()
     cur_check.execute(
         "SELECT last_address, last_contact FROM users WHERE chat_id = ?",
-        (chat_id,)
+        (chat_id,),
     )
     row = cur_check.fetchone()
     cur_check.close()
     conn_check.close()
 
-    # Если пользователь уже оформлял заказ — даём выбор
+    data.update({
+        "wait_for_points": False,
+        "wait_for_address": False,
+        "wait_for_contact": False,
+        "wait_for_comment": False,
+    })
+    data["checkout_total_try"] = total_try
+    conversion = checkout_conversion_text(chat_id, total_after, len(cart))
+
     if row and row[0] and row[1]:
         last_address, last_contact = row
-
         kb = types.InlineKeyboardMarkup(row_width=1)
-        kb.add(
-            types.InlineKeyboardButton(
-                text=tr(chat_id, "Использовать", "Use saved details"),
-                callback_data="use_last_data"
-            ),
-            types.InlineKeyboardButton(
-                text=tr(chat_id, "Новый адрес", "Enter new details"),
-                callback_data="enter_new_data"
-            )
-        )
         kb.add(types.InlineKeyboardButton(
-            text=t(chat_id, "back"),
+            text=tr(chat_id, "✅ Использовать сохранённые данные", "✅ Use saved details"),
+            callback_data="use_last_data",
+        ))
+        kb.add(types.InlineKeyboardButton(
+            text=tr(chat_id, "✏️ Ввести новые данные", "✏️ Enter new details"),
+            callback_data="enter_new_data",
+        ))
+        kb.add(types.InlineKeyboardButton(
+            text=nav_text(chat_id, "cart"),
             callback_data="back_to_cart",
         ))
-
-        total_after = max(total_try - points_to_spend, 0)
-        qty = len(cart)
-
-        rates = fetch_rates()
-        rub = round(total_after * rates.get("RUB", 0) + 500 * qty, 2)
-        usd = round(total_after * rates.get("USD", 0) + 2 * qty, 2)
-        eur = round(total_after * rates.get("EUR", 0) + 2 * qty, 2)
-        uah = round(total_after * rates.get("UAH", 0) + 350 * qty, 2)
-        conv = f"({rub}₽, ${usd}, €{eur}, ₴{uah})"
-
-        if user_data.get(chat_id, {}).get("lang") == "en":
-            saved_data_text = (
-                "Would you like to use your saved delivery details?\n\n"
-                f"📍 Address: {last_address}\n"
-                f"📱 Phone/username: {last_contact}\n\n"
-                f"Amount due: {total_after}₺ {conv}"
-            )
-        else:
-            saved_data_text = (
-                "Хотите использовать последние данные?\n\n"
-                f"📍 Адрес: {last_address}\n"
-                f"📱 Телефон/ник: {last_contact}\n\n"
-                f"К оплате: {total_after}₺ {conv}"
-            )
-        bot.send_message(chat_id, saved_data_text, reply_markup=kb)
+        saved_data_text = tr(
+            chat_id,
+            "<b>2/4 · Доставка</b>\n\n"
+            "Использовать сохранённые данные?\n\n"
+            f"📍 {html.escape(str(last_address))}\n"
+            f"📱 {html.escape(str(last_contact))}\n\n"
+            f"<b>К оплате: {format_money(total_after)}₺</b>{conversion}",
+            "<b>2/4 · Delivery</b>\n\n"
+            "Use your saved details?\n\n"
+            f"📍 {html.escape(str(last_address))}\n"
+            f"📱 {html.escape(str(last_contact))}\n\n"
+            f"<b>Amount due: {format_money(total_after)}₺</b>{conversion}",
+        )
+        render_inline_screen(
+            chat_id,
+            saved_data_text,
+            kb,
+            call,
+            allow_media_edit=False,
+        )
         return True
 
-    # Если сохранённых данных нет — новый пользователь сразу вводит адрес
-    rates = fetch_rates()
-    total_after = max(total_try - points_to_spend, 0)
-    rub = round(total_after * rates.get("RUB", 0) + 500 * len(cart), 2)
-    usd = round(total_after * rates.get("USD", 0) + 2 * len(cart), 2)
-    eur = round(total_after * rates.get("EUR", 0) + 2 * len(cart), 2)
-    uah = round(total_after * rates.get("UAH", 0) + 350 * len(cart), 2)
-    conv = f"({rub}₽, ${usd}, €{eur}, ₴{uah})"
-
-    summary = "\n".join(
-        f"{i['category']}: {i['flavor']} — {i['price']}₺"
-        for i in cart
-    )
-
-    discount_line = ""
-    if points_to_spend > 0:
-        discount_line = tr(
-            chat_id,
-            f"🎁 Скидка: {points_to_spend}₺\n",
-            f"🎁 Discount: {points_to_spend}₺\n",
-        )
-    msg = (
-        f"🛒 {tr(chat_id, 'Корзина', 'Cart')}:\n\n"
-        f"{summary}\n\n"
-        f"{discount_line}"
-        f"💳 {tr(chat_id, 'К оплате', 'Amount due')}: {total_after}₺ {conv}\n\n"
-        f"{t(chat_id, 'enter_address')}"
-    )
-
-    bot.send_message(chat_id, msg, reply_markup=address_keyboard(chat_id))
-
     data["wait_for_address"] = True
-    data["wait_for_contact"] = False
-    data["wait_for_comment"] = False
-    user_data[chat_id] = data
+    message_text = tr(
+        chat_id,
+        "<b>2/4 · Доставка</b>\n\n"
+        f"<b>К оплате: {format_money(total_after)}₺</b>{conversion}\n\n"
+        "Укажите адрес доставки:",
+        "<b>2/4 · Delivery</b>\n\n"
+        f"<b>Amount due: {format_money(total_after)}₺</b>{conversion}\n\n"
+        "Enter the delivery address:",
+    )
+    if call is not None:
+        disable_inline_keyboard(call)
+    bot.send_message(
+        chat_id,
+        message_text,
+        parse_mode="HTML",
+        reply_markup=address_keyboard(chat_id),
+    )
     return False
 
 
 # ------------------------------------------------------------------------
 #   24. Callback: завершить заказ (с проверкой и списанием stock)
 # ------------------------------------------------------------------------
+def show_points_choice(chat_id: int, user_points: int, total_try: int, call=None) -> None:
+    max_points = min(int(user_points), int(total_try))
+    data = user_data[chat_id]
+    data.update({
+        "wait_for_points": False,
+        "temp_total_try": total_try,
+        "temp_user_points": user_points,
+        "pending_discount": 0,
+        "pending_points_spent": 0,
+    })
+    text = tr(
+        chat_id,
+        "<b>1/4 · Бонусные баллы</b>\n\n"
+        f"Баланс: {user_points}\n"
+        f"Для этого заказа можно использовать до <b>{max_points}</b> баллов.",
+        "<b>1/4 · Bonus points</b>\n\n"
+        f"Balance: {user_points}\n"
+        f"You can use up to <b>{max_points}</b> points for this order.",
+    )
+    render_inline_screen(
+        chat_id,
+        text,
+        points_choice_keyboard(chat_id, max_points),
+        call,
+        allow_media_edit=False,
+    )
+
+
 @ensure_user
 @bot.callback_query_handler(func=lambda call: call.data == "finish_order")
 def handle_finish_order(call):
     chat_id = call.from_user.id
+    init_user(chat_id)
     bot.answer_callback_query(call.id)
 
     data = user_data.get(chat_id, {})
     cart = data.get("cart", [])
     if not cart:
-        bot.send_message(
-            chat_id,
-            t(chat_id, "cart_empty"),
-            reply_markup=get_inline_main_menu(chat_id),
-        )
+        send_cart(chat_id, call)
         return
 
     total_try = sum(i['price'] for i in cart)
-    qty = len(cart)
-
     # --- достаём баллы ---
     conn = get_db_connection()
     cur = conn.cursor()
@@ -1322,107 +1754,208 @@ def handle_finish_order(call):
 
     user_points = row[0] if row else 0
 
-    # 💥 если баллы есть → спрашиваем использовать?
     if user_points > 0:
-        data["wait_for_points"] = True
-        data["temp_total_try"] = total_try
-        data["temp_user_points"] = user_points
-        user_data[chat_id] = data
-
-        msg = tr(
-            chat_id,
-            f"🎁 У вас {user_points} баллов (максимум можно использовать {min(user_points, total_try)})\n"
-            "Введите, сколько баллов списать, или нажмите кнопку:",
-            f"🎁 You have {user_points} points (you can use up to {min(user_points, total_try)})\n"
-            "Enter how many points to use, or press the button:",
-        )
-        bot.send_message(chat_id, msg, reply_markup=skip_points_keyboard(chat_id))
+        show_points_choice(chat_id, user_points, total_try, call)
         return
     data["pending_discount"] = 0
     data["pending_points_spent"] = 0
     user_data[chat_id] = data
 
-    ask_saved_or_new_delivery_data(chat_id, total_try, 0)
+    ask_saved_or_new_delivery_data(chat_id, total_try, 0, call)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "points_all")
+def handle_points_all(call):
+    chat_id = call.from_user.id
+    init_user(chat_id)
+    data = user_data[chat_id]
+    max_points = min(
+        int(data.get("temp_user_points", 0) or 0),
+        int(data.get("temp_total_try", 0) or 0),
+    )
+    data["pending_discount"] = max_points
+    data["pending_points_spent"] = max_points
+    data["wait_for_points"] = False
+    bot.answer_callback_query(call.id, tr(chat_id, "Баллы применены", "Points applied"))
+    ask_saved_or_new_delivery_data(
+        chat_id,
+        int(data.get("temp_total_try", 0) or 0),
+        max_points,
+        call,
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "points_custom")
+def handle_points_custom(call):
+    chat_id = call.from_user.id
+    init_user(chat_id)
+    data = user_data[chat_id]
+    data["wait_for_points"] = True
+    max_points = min(
+        int(data.get("temp_user_points", 0) or 0),
+        int(data.get("temp_total_try", 0) or 0),
+    )
+    bot.answer_callback_query(call.id)
+    disable_inline_keyboard(call)
+    bot.send_message(
+        chat_id,
+        tr(
+            chat_id,
+            f"<b>1/4 · Бонусные баллы</b>\n\nВведите число от 0 до {max_points}:",
+            f"<b>1/4 · Bonus points</b>\n\nEnter a number from 0 to {max_points}:",
+        ),
+        parse_mode="HTML",
+        reply_markup=text_entry_back_keyboard(chat_id, "points"),
+    )
+
+
+def show_comment_choice(chat_id: int, call=None) -> None:
+    data = user_data[chat_id]
+    data.update({
+        "wait_for_address": False,
+        "wait_for_contact": False,
+        "wait_for_comment": False,
+    })
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton(
+        text=tr(chat_id, "✏️ Добавить комментарий", "✏️ Add a comment"),
+        callback_data="comment_add",
+    ))
+    kb.add(types.InlineKeyboardButton(
+        text=tr(chat_id, "Без комментария", "No comment"),
+        callback_data="comment_skip",
+    ))
+    kb.add(types.InlineKeyboardButton(
+        text=nav_text(chat_id, "contact"),
+        callback_data="back_to_contact",
+    ))
+    render_inline_screen(
+        chat_id,
+        tr(
+            chat_id,
+            "<b>3/4 · Комментарий</b>\n\nХотите что-нибудь добавить к заказу?",
+            "<b>3/4 · Comment</b>\n\nWould you like to add a note to your order?",
+        ),
+        kb,
+        call,
+        allow_media_edit=False,
+    )
 
 
 @ensure_user
 @bot.callback_query_handler(func=lambda c: c.data == "use_last_data")
 def handle_use_last_data(call):
     chat_id = call.from_user.id
+    init_user(chat_id)
     bot.answer_callback_query(call.id)
 
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute(
         "SELECT last_address, last_contact FROM users WHERE chat_id = ?",
-        (chat_id,)
+        (chat_id,),
     )
     row = cur.fetchone()
     cur.close()
     conn.close()
 
     if row and row[0] and row[1]:
-        user_data[chat_id]["address"] = row[0]
-        user_data[chat_id]["contact"] = row[1]
-        user_data[chat_id]["wait_for_address"] = False
-        user_data[chat_id]["wait_for_contact"] = False
-        user_data[chat_id]["wait_for_comment"] = True
+        data = user_data[chat_id]
+        data["address"] = row[0]
+        data["contact"] = row[1]
+        data["delivery_used_saved"] = True
+        data["comment"] = ""
+        show_comment_choice(chat_id, call)
+        return
 
-        kb = types.InlineKeyboardMarkup(row_width=2)
-        kb.add(
-            types.InlineKeyboardButton(
-                text=tr(chat_id, "✅ Проверить заказ", "✅ Review order"),
-                callback_data="review_order"
-            ),
-            types.InlineKeyboardButton(
-                text=tr(chat_id, "✏️ Новые данные", "✏️ New details"),
-                callback_data="enter_new_data"
-            )
-        )
-        kb.add(types.InlineKeyboardButton(
-            text=t(chat_id, "back"),
-            callback_data="back_to_cart",
-        ))
-
-        bot.send_message(
+    user_data[chat_id]["wait_for_address"] = True
+    disable_inline_keyboard(call)
+    bot.send_message(
+        chat_id,
+        tr(
             chat_id,
-            tr(
-                chat_id,
-                "✅ Последние данные выбраны.\n\n💬 Можете добавить комментарий или сразу отправить заказ.",
-                "✅ Saved details selected.\n\n💬 You can add a comment or send the order now.",
-            ),
-            reply_markup=kb
-        )
-    else:
-        bot.send_message(
-            chat_id,
-            tr(
-                chat_id,
-                "Сохранённых данных пока нет. Введите адрес:",
-                "You do not have saved delivery details yet. Enter your address:",
-            ),
-            reply_markup=address_keyboard(chat_id)
-        )
-        user_data[chat_id]["wait_for_address"] = True
+            "<b>2/4 · Доставка</b>\n\nСохранённых данных пока нет. Укажите адрес:",
+            "<b>2/4 · Delivery</b>\n\nNo saved details were found. Enter your address:",
+        ),
+        parse_mode="HTML",
+        reply_markup=address_keyboard(chat_id),
+    )
 
 
 @ensure_user
 @bot.callback_query_handler(func=lambda c: c.data == "enter_new_data")
 def handle_enter_new_data(call):
     chat_id = call.from_user.id
+    init_user(chat_id)
     bot.answer_callback_query(call.id)
 
-    user_data[chat_id]["address"] = ""
-    user_data[chat_id]["contact"] = ""
-    user_data[chat_id]["wait_for_address"] = True
-    user_data[chat_id]["wait_for_contact"] = False
-    user_data[chat_id]["wait_for_comment"] = False
+    data = user_data[chat_id]
+    data["address"] = ""
+    data["contact"] = ""
+    data["delivery_used_saved"] = False
+    data["wait_for_address"] = True
+    data["wait_for_contact"] = False
+    data["wait_for_comment"] = False
 
+    disable_inline_keyboard(call)
     bot.send_message(
         chat_id,
-        tr(chat_id, "Введите новый адрес:", "Enter a new address:"),
-        reply_markup=address_keyboard(chat_id)
+        tr(
+            chat_id,
+            "<b>2/4 · Доставка</b>\n\nВведите новый адрес:",
+            "<b>2/4 · Delivery</b>\n\nEnter a new address:",
+        ),
+        parse_mode="HTML",
+        reply_markup=address_keyboard(chat_id),
     )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "back_to_delivery")
+def handle_back_to_delivery(call):
+    chat_id = call.from_user.id
+    init_user(chat_id)
+    bot.answer_callback_query(call.id)
+    data = user_data[chat_id]
+    ask_saved_or_new_delivery_data(
+        chat_id,
+        int(data.get("temp_total_try", 0) or sum(item["price"] for item in data.get("cart", []))),
+        int(data.get("pending_points_spent", 0) or 0),
+        call,
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "comment_add")
+def handle_comment_add(call):
+    chat_id = call.from_user.id
+    init_user(chat_id)
+    bot.answer_callback_query(call.id)
+    user_data[chat_id]["wait_for_comment"] = True
+    disable_inline_keyboard(call)
+    bot.send_message(
+        chat_id,
+        tr(
+            chat_id,
+            "<b>3/4 · Комментарий</b>\n\nНапишите комментарий одним сообщением:",
+            "<b>3/4 · Comment</b>\n\nSend your comment in one message:",
+        ),
+        parse_mode="HTML",
+        reply_markup=text_entry_back_keyboard(
+            chat_id,
+            "contact",
+            include_no_comment=True,
+        ),
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "comment_skip")
+def handle_comment_skip(call):
+    chat_id = call.from_user.id
+    init_user(chat_id)
+    bot.answer_callback_query(call.id)
+    data = user_data[chat_id]
+    data["comment"] = "—"
+    data["wait_for_comment"] = False
+    show_order_review(chat_id, call)
 
 # ------------------------------------------------------------------------
 #   25. Handler: ввод количества баллов для списания
@@ -1436,22 +1969,37 @@ def handle_points_input(message):
     chat_id = message.chat.id
     data = user_data.get(chat_id, {})
     text = message.text.strip()
+    user_points = int(data.get("temp_user_points", 0) or 0)
+    total_try = int(data.get("temp_total_try", 0) or 0)
+    max_points = min(user_points, total_try)
+
+    if is_navigation_text(chat_id, text, "points"):
+        data["wait_for_points"] = False
+        bot.send_message(
+            chat_id,
+            tr(chat_id, "Выберите способ списания баллов:", "Choose how to use points:"),
+            reply_markup=types.ReplyKeyboardRemove(),
+        )
+        show_points_choice(chat_id, user_points, total_try)
+        return
 
     # --- проверяем корректность ввода ---
     if not text.isdigit():
         bot.send_message(
             chat_id,
-            t(chat_id, "invalid_points").format(max_points=data.get("temp_total_try", 0))
+            t(chat_id, "invalid_points").format(max_points=max_points),
+            reply_markup=text_entry_back_keyboard(chat_id, "points"),
         )
         return
 
     points_to_spend = int(text)
-    user_points = data.get("temp_user_points", 0)
-    total_try = data.get("temp_total_try", 0)
-    max_points = min(user_points, total_try)
 
     if points_to_spend < 0 or points_to_spend > max_points:
-        bot.send_message(chat_id, t(chat_id, "invalid_points").format(max_points=max_points))
+        bot.send_message(
+            chat_id,
+            t(chat_id, "invalid_points").format(max_points=max_points),
+            reply_markup=text_entry_back_keyboard(chat_id, "points"),
+        )
         return
 
     # --- сохраняем скидку и ждём адрес; баллы НЕ списываем здесь ---
@@ -1460,7 +2008,15 @@ def handle_points_input(message):
     data["wait_for_points"] = False
 
     user_data[chat_id] = data
-
+    bot.send_message(
+        chat_id,
+        tr(
+            chat_id,
+            f"✅ Будет использовано {points_to_spend} баллов.",
+            f"✅ {points_to_spend} points will be used.",
+        ),
+        reply_markup=types.ReplyKeyboardRemove(),
+    )
     ask_saved_or_new_delivery_data(chat_id, total_try, points_to_spend)
 
 # ------------------------------------------------------------------------
@@ -1477,7 +2033,8 @@ def handle_address_input(message):
     text = message.text or ""
 
     # --- Кнопка Назад ---
-    if text == t(chat_id, "back"):
+    back_destination = "review" if data.get("return_to_review_after_address") else "cart"
+    if is_navigation_text(chat_id, text, back_destination):
         if data.pop("return_to_review_after_address", False):
             data['wait_for_address'] = False
             user_data[chat_id] = data
@@ -1493,7 +2050,7 @@ def handle_address_input(message):
 
         bot.send_message(
             chat_id,
-            tr(chat_id, "🔙 Возвращаемся в корзину", "🔙 Back to your cart"),
+            tr(chat_id, "Возвращаемся в корзину.", "Back to your cart."),
             reply_markup=types.ReplyKeyboardRemove()
         )
         send_cart(chat_id)
@@ -1508,7 +2065,7 @@ def handle_address_input(message):
                 "Чтобы выбрать точку:\n📎 → Геопозиция → «Выбрать на карте» → метка → Отправить",
                 "To choose a point:\n📎 → Location → Choose on map → place the pin → Send",
             ),
-            reply_markup=text_entry_back_keyboard(chat_id)
+            reply_markup=text_entry_back_keyboard(chat_id, back_destination)
         )
         return
 
@@ -1527,7 +2084,7 @@ def handle_address_input(message):
         bot.send_message(
             chat_id,
             t(chat_id, "enter_address"),
-            reply_markup=text_entry_back_keyboard(chat_id),
+            reply_markup=text_entry_back_keyboard(chat_id, back_destination),
         )
         return
 
@@ -1535,7 +2092,11 @@ def handle_address_input(message):
         address = message.text.strip()
 
     else:
-        bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=address_keyboard(chat_id))
+        bot.send_message(
+            chat_id,
+            t(chat_id, "error_invalid"),
+            reply_markup=address_keyboard(chat_id, back_destination),
+        )
         return
 
     # --- Сохраняем адрес ---
@@ -1552,7 +2113,16 @@ def handle_address_input(message):
 
     # --- Переходим к контакту ---
     kb = contact_keyboard(chat_id)
-    bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=kb)
+    bot.send_message(
+        chat_id,
+        tr(
+            chat_id,
+            "<b>2/4 · Доставка</b>\n\nУкажите телефон или Telegram для связи:",
+            "<b>2/4 · Delivery</b>\n\nEnter a phone number or Telegram username:",
+        ),
+        parse_mode="HTML",
+        reply_markup=kb,
+    )
 
 
 
@@ -1568,7 +2138,8 @@ def handle_contact_input(message):
     text = message.text or ""
 
     # --- Назад ---
-    if text == t(chat_id, "back"):
+    back_destination = "review" if data.get("return_to_review_after_contact") else "address"
+    if is_navigation_text(chat_id, text, back_destination):
         if data.pop("return_to_review_after_contact", False):
             data['wait_for_contact'] = False
             user_data[chat_id] = data
@@ -1579,7 +2150,16 @@ def handle_contact_input(message):
         data['wait_for_address'] = True
         data['wait_for_contact'] = False
         kb = address_keyboard(chat_id)
-        bot.send_message(chat_id, t(chat_id, "enter_address"), reply_markup=kb)
+        bot.send_message(
+            chat_id,
+            tr(
+                chat_id,
+                "<b>2/4 · Доставка</b>\n\nУкажите адрес доставки:",
+                "<b>2/4 · Delivery</b>\n\nEnter the delivery address:",
+            ),
+            parse_mode="HTML",
+            reply_markup=kb,
+        )
         user_data[chat_id] = data
         return
 
@@ -1588,7 +2168,7 @@ def handle_contact_input(message):
         bot.send_message(
             chat_id,
             tr(chat_id, "Введите ваш Telegram-ник (без @):", "Enter your Telegram username (without @):"),
-            reply_markup=text_entry_back_keyboard(chat_id),
+            reply_markup=text_entry_back_keyboard(chat_id, back_destination),
         )
         return
 
@@ -1596,9 +2176,17 @@ def handle_contact_input(message):
     if message.content_type == 'contact' and message.contact:
         contact = message.contact.phone_number
     elif message.content_type == 'text' and message.text:
-        contact = "@" + message.text.strip().lstrip("@")
+        raw_contact = message.text.strip()
+        if re.fullmatch(r"\+?[0-9()\-\s]{7,24}", raw_contact):
+            contact = raw_contact
+        else:
+            contact = "@" + raw_contact.lstrip("@")
     else:
-        bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=contact_keyboard(chat_id))
+        bot.send_message(
+            chat_id,
+            t(chat_id, "enter_contact"),
+            reply_markup=contact_keyboard(chat_id, back_destination),
+        )
         return
 
     data['contact'] = contact
@@ -1609,62 +2197,52 @@ def handle_contact_input(message):
                          reply_markup=types.ReplyKeyboardRemove())
         show_order_review(chat_id)
         return
-    data['wait_for_comment'] = True
-
-    # --- расчёт суммы с учётом pending баллов ---
-    cart = data.get("cart", [])
-    total_try = sum(i['price'] for i in cart)
-    pending_points = data.get("pending_points_spent", 0)
-    total_after = total_try - pending_points
-
-    # --- inline-кнопки ---
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        types.InlineKeyboardButton(
-            text=tr(chat_id, "✅ Проверить заказ", "✅ Review order"),
-            callback_data="review_order"
-        ),
-        types.InlineKeyboardButton(
-            text=t(chat_id, "back"),
-            callback_data="back_to_contact"
-        )
-    )
-
-    # убираем reply-клавиатуру
+    data['wait_for_comment'] = False
+    user_data[chat_id] = data
     bot.send_message(
         chat_id,
         tr(chat_id, "Контакт сохранён.", "Contact saved."),
         reply_markup=types.ReplyKeyboardRemove()
     )
-
-    # показываем inline-кнопки
-    bot.send_message(
-        chat_id,
-        tr(
-            chat_id,
-            "💬 Напишите комментарий или просто отправьте заказ",
-            "💬 Write a comment or simply send the order",
-        ),
-        reply_markup=kb
-    )
-
-    user_data[chat_id] = data
+    show_comment_choice(chat_id)
 
 
-def show_order_review(chat_id: int) -> None:
+def show_order_review(chat_id: int, call=None) -> None:
     """Показывает все данные заказа до его окончательной отправки."""
     data = user_data.get(chat_id, {})
     cart = data.get("cart", [])
     if not cart:
-        bot.send_message(chat_id, t(chat_id, "cart_empty"), reply_markup=get_inline_main_menu(chat_id))
+        send_cart(chat_id, call)
         return
     if not data.get("address"):
         data["wait_for_address"] = True
-        bot.send_message(chat_id, t(chat_id, "enter_address"), reply_markup=address_keyboard(chat_id))
+        if call is not None:
+            disable_inline_keyboard(call)
+        bot.send_message(
+            chat_id,
+            tr(
+                chat_id,
+                "<b>2/4 · Доставка</b>\n\nУкажите адрес доставки:",
+                "<b>2/4 · Delivery</b>\n\nEnter the delivery address:",
+            ),
+            parse_mode="HTML",
+            reply_markup=address_keyboard(chat_id),
+        )
         return
     if not data.get("contact"):
         data["wait_for_contact"] = True
-        bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=contact_keyboard(chat_id))
+        if call is not None:
+            disable_inline_keyboard(call)
+        bot.send_message(
+            chat_id,
+            tr(
+                chat_id,
+                "<b>2/4 · Доставка</b>\n\nУкажите контакт для связи:",
+                "<b>2/4 · Delivery</b>\n\nEnter your contact details:",
+            ),
+            parse_mode="HTML",
+            reply_markup=contact_keyboard(chat_id),
+        )
         return
 
     total_before = sum(int(item["price"]) for item in cart)
@@ -1703,6 +2281,10 @@ def show_order_review(chat_id: int) -> None:
         text=tr(chat_id, "✅ Подтвердить заказ", "✅ Confirm order"),
         callback_data="confirm_order",
     ))
+    kb.add(types.InlineKeyboardButton(
+        text=tr(chat_id, "🛒 Изменить корзину", "🛒 Edit cart"),
+        callback_data="back_to_cart",
+    ))
     kb.add(
         types.InlineKeyboardButton(
             text=tr(chat_id, "📍 Изменить адрес", "📍 Edit address"),
@@ -1718,10 +2300,16 @@ def show_order_review(chat_id: int) -> None:
         callback_data="edit_order_comment",
     ))
     kb.add(types.InlineKeyboardButton(
-        text=t(chat_id, "back"),
+        text=tr(chat_id, "⬅️ К комментарию", "⬅️ Back to comment"),
         callback_data="back_to_comment",
     ))
-    bot.send_message(chat_id, review_text, parse_mode="HTML", reply_markup=kb)
+    render_inline_screen(
+        chat_id,
+        review_text,
+        kb,
+        call,
+        allow_media_edit=False,
+    )
 
 
 @ensure_user
@@ -1730,9 +2318,7 @@ def handle_review_order(call):
     chat_id = call.from_user.id
     bot.answer_callback_query(call.id)
     user_data[chat_id]["wait_for_comment"] = False
-    bot.send_message(chat_id, tr(chat_id, "Проверяем данные заказа.", "Reviewing your order."),
-                     reply_markup=types.ReplyKeyboardRemove())
-    show_order_review(chat_id)
+    show_order_review(chat_id, call)
 
 
 @ensure_user
@@ -1743,8 +2329,12 @@ def handle_edit_order_address(call):
     data = user_data[chat_id]
     data.update({"wait_for_address": True, "wait_for_contact": False, "wait_for_comment": False})
     data["return_to_review_after_address"] = True
-    bot.send_message(chat_id, tr(chat_id, "Введите новый адрес:", "Enter a new address:"),
-                     reply_markup=address_keyboard(chat_id))
+    disable_inline_keyboard(call)
+    bot.send_message(
+        chat_id,
+        tr(chat_id, "Введите новый адрес:", "Enter a new address:"),
+        reply_markup=address_keyboard(chat_id, "review"),
+    )
 
 
 @ensure_user
@@ -1755,7 +2345,12 @@ def handle_edit_order_contact(call):
     data = user_data[chat_id]
     data.update({"wait_for_address": False, "wait_for_contact": True, "wait_for_comment": False})
     data["return_to_review_after_contact"] = True
-    bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=contact_keyboard(chat_id))
+    disable_inline_keyboard(call)
+    bot.send_message(
+        chat_id,
+        t(chat_id, "enter_contact"),
+        reply_markup=contact_keyboard(chat_id, "review"),
+    )
 
 
 @ensure_user
@@ -1766,10 +2361,15 @@ def handle_edit_order_comment(call):
     data = user_data[chat_id]
     data.update({"wait_for_address": False, "wait_for_contact": False, "wait_for_comment": True})
     data["return_to_review_after_comment"] = True
+    disable_inline_keyboard(call)
     bot.send_message(
         chat_id,
         tr(chat_id, "Введите новый комментарий:", "Enter a new comment:"),
-        reply_markup=text_entry_back_keyboard(chat_id),
+        reply_markup=text_entry_back_keyboard(
+            chat_id,
+            "review",
+            include_no_comment=True,
+        ),
     )
 
 
@@ -1779,23 +2379,8 @@ def handle_back_to_comment(call):
     chat_id = call.from_user.id
     bot.answer_callback_query(call.id)
     data = user_data[chat_id]
-    data["wait_for_comment"] = True
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        types.InlineKeyboardButton(
-            text=tr(chat_id, "✅ Проверить заказ", "✅ Review order"),
-            callback_data="review_order",
-        ),
-        types.InlineKeyboardButton(
-            text=t(chat_id, "back"),
-            callback_data="back_to_contact",
-        ),
-    )
-    bot.send_message(
-        chat_id,
-        tr(chat_id, "💬 Измените комментарий или продолжите.", "💬 Edit the comment or continue."),
-        reply_markup=kb,
-    )
+    data["wait_for_comment"] = False
+    show_comment_choice(chat_id, call)
 
 
 @ensure_user
@@ -1807,8 +2392,10 @@ def handle_comment_input(message):
     chat_id = message.chat.id
     data = user_data.get(chat_id, {})
     text = message.text.strip()
+    editing_review = bool(data.get("return_to_review_after_comment"))
+    back_destination = "review" if editing_review else "contact"
 
-    if text == t(chat_id, "back"):
+    if is_navigation_text(chat_id, text, back_destination):
         if data.pop("return_to_review_after_comment", False):
             data["wait_for_comment"] = False
             bot.send_message(
@@ -1824,7 +2411,9 @@ def handle_comment_input(message):
         return
 
     # --- сохраняем комментарий ---
-    if text:
+    if text == no_comment_text(chat_id):
+        data["comment"] = "—"
+    elif text:
         data["comment"] = text
     else:
         data["comment"] = "—"
@@ -1881,6 +2470,7 @@ def finalize_order(call):
         )
         return
     data["order_processing"] = True
+    disable_inline_keyboard(call)
 
     # итого к оплате
     total_after = max(total_try - pending_points, 0)
@@ -1956,6 +2546,19 @@ def finalize_order(call):
                 "UPDATE users SET points = points - ? + ?, last_address = ?, last_contact = ? "
                 "WHERE chat_id = ?",
                 (pending_points, pts_earned, address, contact, chat_id),
+            )
+            # Заказ и очистка сохранённой корзины фиксируются одной транзакцией.
+            # Если Railway перезапустится сразу после commit, оформленный заказ
+            # уже не появится в корзине повторно.
+            cursor_local.execute(
+                """
+                INSERT INTO user_carts (chat_id, items_json, updated_at)
+                VALUES (?, '[]', ?)
+                ON CONFLICT(chat_id) DO UPDATE SET
+                    items_json = excluded.items_json,
+                    updated_at = excluded.updated_at
+                """,
+                (chat_id, now),
             )
             if inviter:
                 cursor_local.execute(
@@ -2035,6 +2638,7 @@ def finalize_order(call):
     data.pop("return_to_review_after_contact", None)
     data.pop("return_to_review_after_comment", None)
     user_data[chat_id] = data
+    save_user_cart(chat_id)
 
     if inviter:
         try:
@@ -2051,17 +2655,25 @@ def finalize_order(call):
             print(f"Referral notification failed for {inviter}: {exc}")
 
     # --- уведомления ---
+    grouped_summary = {}
+    for item in cart:
+        key = (item["category"], item["flavor"], item["price"])
+        grouped_summary[key] = grouped_summary.get(key, 0) + 1
     summary = "\n".join(
-        f"{html.escape(str(i['category']))}: {html.escape(str(i['flavor']))} — {i['price']}₺"
-        for i in cart
+        f"{html.escape(str(category))}: {html.escape(str(flavor))} × {qty} — "
+        f"{format_money(float(price) * qty)}₺"
+        for (category, flavor, price), qty in grouped_summary.items()
     )
 
     rates = fetch_rates()
-    rub = round(total_after * rates.get("RUB", 0) + 500 * len(cart), 2)
-    usd = round(total_after * rates.get("USD", 0) + 2 * len(cart), 2)
-    eur = round(total_after * rates.get("EUR", 0) + 2 * len(cart), 2)
-    uah = round(total_after * rates.get("UAH", 0) + 350 * len(cart), 2)
-    conv = f"({rub}₽, ${usd}, €{eur}, ₴{uah})"
+    if all(rates.get(code, 0) for code in ("RUB", "USD", "EUR", "UAH")):
+        rub = round(total_after * rates["RUB"] + 500 * len(cart), 2)
+        usd = round(total_after * rates["USD"] + 2 * len(cart), 2)
+        eur = round(total_after * rates["EUR"] + 2 * len(cart), 2)
+        uah = round(total_after * rates["UAH"] + 350 * len(cart), 2)
+        conversion_suffix = f" (≈ {rub}₽, ${usd}, €{eur}, ₴{uah})"
+    else:
+        conversion_suffix = ""
 
     username = getattr(call.from_user, "username", None)
     first_name = getattr(call.from_user, "first_name", None)
@@ -2075,7 +2687,7 @@ def finalize_order(call):
     full_rus = (
         f"📥 Новый заказ №{order_id} от {safe_customer}:\n\n"
         f"{summary}\n\n"
-        f"Итог: {total_after}₺ {conv}\n"
+        f"Итог: {format_money(total_after)}₺{conversion_suffix}\n"
         f"📍 Адрес: {safe_address}\n"
         f"📱 Контакт: {safe_contact}\n"
         f"💬 Комментарий: {safe_comment}"
@@ -2089,7 +2701,7 @@ def finalize_order(call):
     full_en = (
         f"📥 New order #{order_id} from {safe_customer}:\n\n"
         f"{summary}\n\n"
-        f"Total: {total_after}₺ {conv}\n"
+        f"Total: {format_money(total_after)}₺{conversion_suffix}\n"
         f"📍 Address: {safe_address}\n"
         f"📱 Contact: {safe_contact}\n"
         f"💬 Comment: {translated_comment}"
@@ -2125,7 +2737,7 @@ def finalize_order(call):
         user_order_summary = (
             f"📋 Your order #{order_id}:\n\n"
             f"{summary}\n\n"
-            f"Total: {total_after}₺ {conv}\n"
+            f"Total: {format_money(total_after)}₺{conversion_suffix}\n"
             f"📍 Address: {safe_address}\n"
             f"📱 Contact: {safe_contact}\n"
             f"💬 Comment: {safe_comment}"
@@ -2134,7 +2746,7 @@ def finalize_order(call):
         user_order_summary = (
             f"📋 Ваш заказ №{order_id}:\n\n"
             f"{summary}\n\n"
-            f"Итог: {total_after}₺ {conv}\n"
+            f"Итог: {format_money(total_after)}₺{conversion_suffix}\n"
             f"📍 Адрес: {safe_address}\n"
             f"📱 Контакт: {safe_contact}\n"
             f"💬 Комментарий: {safe_comment}"
@@ -2291,34 +2903,270 @@ def cmd_stock(message: types.Message):
     )
 
 
+def profile_back_keyboard(chat_id: int) -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton(
+        text=tr(chat_id, "⬅️ Назад в профиль", "⬅️ Back to profile"),
+        callback_data="profile",
+    ))
+    return kb
 
-# ------------------------------------------------------------------------
-#   30. Хендлер /points
-# ------------------------------------------------------------------------
-@ensure_user
-@bot.message_handler(commands=['points'])
-def cmd_points(message):
-    chat_id = message.chat.id
+
+def show_profile(chat_id: int, call=None) -> None:
+    init_user(chat_id)
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    cursor_local.execute("SELECT points FROM users WHERE chat_id = ?", (chat_id,))
+    row = cursor_local.fetchone()
+    points = int(row[0]) if row else 0
+    cursor_local.execute("SELECT COUNT(*) FROM orders WHERE chat_id = ?", (chat_id,))
+    order_count = int(cursor_local.fetchone()[0])
+    cursor_local.close()
+    conn_local.close()
+
+    text = tr(
+        chat_id,
+        "<b>👤 Профиль</b>\n\n"
+        f"🎁 Баллы: <b>{points}</b>\n"
+        f"📦 Заказы: <b>{order_count}</b>",
+        "<b>👤 Profile</b>\n\n"
+        f"🎁 Points: <b>{points}</b>\n"
+        f"📦 Orders: <b>{order_count}</b>",
+    )
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton(
+            text=tr(chat_id, "🎁 Мои баллы", "🎁 My points"),
+            callback_data="profile_points",
+        ),
+        types.InlineKeyboardButton(
+            text=tr(chat_id, "📦 Мои заказы", "📦 My orders"),
+            callback_data="profile_history",
+        ),
+    )
+    kb.add(
+        types.InlineKeyboardButton(
+            text=tr(chat_id, "💳 Оплата", "💳 Payment"),
+            callback_data="profile_payment",
+        ),
+        types.InlineKeyboardButton(
+            text=tr(chat_id, "🌐 Язык", "🌐 Language"),
+            callback_data="profile_language",
+        ),
+    )
+    kb.add(types.InlineKeyboardButton(
+        text=tr(chat_id, "ℹ️ Помощь", "ℹ️ Help"),
+        callback_data="profile_help",
+    ))
+    kb.add(types.InlineKeyboardButton(
+        text=nav_text(chat_id, "menu"),
+        callback_data="go_back_to_categories",
+    ))
+    render_inline_screen(
+        chat_id,
+        text,
+        kb,
+        call,
+        allow_media_edit=False,
+    )
+
+
+def show_points_info(chat_id: int, call=None) -> None:
     conn_local = get_db_connection()
     cursor_local = conn_local.cursor()
     cursor_local.execute("SELECT points FROM users WHERE chat_id = ?", (chat_id,))
     row = cursor_local.fetchone()
     cursor_local.close()
     conn_local.close()
-
-    if row is None or row[0] == 0:
-        bot.send_message(
+    points = int(row[0]) if row else 0
+    render_inline_screen(
+        chat_id,
+        tr(
             chat_id,
-            t(chat_id, "points_info").format(points=0, points_try=0),
-            reply_markup=back_to_main_keyboard(chat_id),
+            f"<b>🎁 Бонусные баллы</b>\n\nУ вас <b>{points}</b> баллов.\n1 балл = 1₺ скидки.",
+            f"<b>🎁 Bonus points</b>\n\nYou have <b>{points}</b> points.\n1 point = 1₺ discount.",
+        ),
+        profile_back_keyboard(chat_id),
+        call,
+        allow_media_edit=False,
+    )
+
+
+def show_order_history(chat_id: int, call=None) -> None:
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    cursor_local.execute(
+        "SELECT order_id, items_json, total, timestamp FROM orders "
+        "WHERE chat_id = ? ORDER BY timestamp DESC LIMIT 10",
+        (chat_id,),
+    )
+    rows = cursor_local.fetchall()
+    cursor_local.close()
+    conn_local.close()
+
+    if not rows:
+        text = tr(
+            chat_id,
+            "<b>📦 Мои заказы</b>\n\nУ вас пока нет заказов.",
+            "<b>📦 My orders</b>\n\nYou do not have any orders yet.",
         )
     else:
-        points = row[0]
-        bot.send_message(
+        blocks = [tr(chat_id, "<b>📦 Последние заказы</b>", "<b>📦 Recent orders</b>")]
+        for order_id, items_json, total, timestamp in rows:
+            try:
+                items = json.loads(items_json)
+            except (json.JSONDecodeError, TypeError):
+                items = []
+            grouped = {}
+            for item in items:
+                flavor = str(item.get("flavor", "—"))
+                grouped[flavor] = grouped.get(flavor, 0) + 1
+            summary = ", ".join(
+                f"{html.escape(flavor)} × {qty}" for flavor, qty in grouped.items()
+            ) or "—"
+            date = str(timestamp).split("T")[0]
+            blocks.append(
+                f"<b>#{order_id} · {html.escape(date)}</b>\n"
+                f"{summary}\n"
+                f"{tr(chat_id, 'Итого', 'Total')}: {format_money(total)}₺"
+            )
+        text = "\n\n".join(blocks)
+
+    render_inline_screen(
+        chat_id,
+        text,
+        profile_back_keyboard(chat_id),
+        call,
+        allow_media_edit=False,
+    )
+
+
+def show_payment_info(chat_id: int, call=None) -> None:
+    text = tr(
+        chat_id,
+        "<b>💳 Реквизиты для оплаты</b>\n\n"
+        "<b>TRY · IBAN</b>\n<code>TR59 0013 4000 0111 1321 7000 01</code>\n"
+        "Получатель: Artur Yuldashev\n\n"
+        "<b>USDT · Tron (TRC-20)</b>\n"
+        "<code>TUnMJ7oCtSDCHZiQSMrFjShkUPv18SVFDc</code>\n\n"
+        "<b>UAH</b>\n<code>4441111157718424</code>\nПолучатель: Grivne Vlad\n\n"
+        "<b>RUB · T BANK</b>\n<code>2200701785613040</code>\nПолучатель: Артур М.\n\n"
+        "Контакт: <code>+90 553 006 52 04</code>",
+        "<b>💳 Payment details</b>\n\n"
+        "<b>TRY · IBAN</b>\n<code>TR59 0013 4000 0111 1321 7000 01</code>\n"
+        "Recipient: Artur Yuldashev\n\n"
+        "<b>USDT · Tron (TRC-20)</b>\n"
+        "<code>TUnMJ7oCtSDCHZiQSMrFjShkUPv18SVFDc</code>\n\n"
+        "<b>UAH</b>\n<code>4441111157718424</code>\nRecipient: Grivne Vlad\n\n"
+        "<b>RUB · T BANK</b>\n<code>2200701785613040</code>\nRecipient: Artur M.\n\n"
+        "Contact: <code>+90 553 006 52 04</code>",
+    )
+    render_inline_screen(
+        chat_id,
+        text,
+        profile_back_keyboard(chat_id),
+        call,
+        allow_media_edit=False,
+    )
+
+
+def show_help_info(chat_id: int, call=None) -> None:
+    text = tr(
+        chat_id,
+        "<b>ℹ️ Как сделать заказ</b>\n\n"
+        "1. Выберите модель и вкус.\n"
+        "2. Добавьте нужное количество в корзину.\n"
+        "3. Откройте корзину и нажмите «Оформить».\n"
+        "4. Укажите доставку и подтвердите заказ.\n\n"
+        "Если что-то пошло не так, используйте кнопки «Назад» — корзина сохранится.",
+        "<b>ℹ️ How to order</b>\n\n"
+        "1. Choose a model and flavor.\n"
+        "2. Add the required quantity to your cart.\n"
+        "3. Open the cart and tap “Checkout”.\n"
+        "4. Enter delivery details and confirm the order.\n\n"
+        "If something goes wrong, use the Back buttons — your cart will be preserved.",
+    )
+    render_inline_screen(
+        chat_id,
+        text,
+        profile_back_keyboard(chat_id),
+        call,
+        allow_media_edit=False,
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "profile")
+def handle_profile(call):
+    init_user(call.from_user.id)
+    bot.answer_callback_query(call.id)
+    show_profile(call.from_user.id, call)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "profile_points")
+def handle_profile_points(call):
+    init_user(call.from_user.id)
+    bot.answer_callback_query(call.id)
+    show_points_info(call.from_user.id, call)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "profile_history")
+def handle_profile_history(call):
+    init_user(call.from_user.id)
+    bot.answer_callback_query(call.id)
+    show_order_history(call.from_user.id, call)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "profile_payment")
+def handle_profile_payment(call):
+    init_user(call.from_user.id)
+    bot.answer_callback_query(call.id)
+    show_payment_info(call.from_user.id, call)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "profile_help")
+def handle_profile_help(call):
+    init_user(call.from_user.id)
+    bot.answer_callback_query(call.id)
+    show_help_info(call.from_user.id, call)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "profile_language")
+def handle_profile_language(call):
+    chat_id = call.from_user.id
+    init_user(chat_id)
+    user_data[chat_id]["changing_language"] = True
+    user_data[chat_id]["language_return"] = "profile"
+    bot.answer_callback_query(call.id)
+    render_inline_screen(
+        chat_id,
+        "<b>🌐 Выберите язык / Choose your language</b>",
+        get_inline_language_buttons(
             chat_id,
-            t(chat_id, "points_info").format(points=points, points_try=points),
-            reply_markup=back_to_main_keyboard(chat_id),
-        )
+            include_back=True,
+            back_callback="profile",
+        ),
+        call,
+        allow_media_edit=False,
+    )
+
+
+# ------------------------------------------------------------------------
+#   30. Пользовательские команды
+# ------------------------------------------------------------------------
+@ensure_user
+@bot.message_handler(commands=['points'])
+def cmd_points(message):
+    chat_id = message.chat.id
+    init_user(chat_id)
+    show_points_info(chat_id)
+
+
+@ensure_user
+@bot.message_handler(commands=['history'])
+def cmd_history(message):
+    chat_id = message.chat.id
+    init_user(chat_id)
+    show_order_history(chat_id)
 
 
 # ------------------------------------------------------------------------
@@ -2465,24 +3313,8 @@ def cmd_stocknow(message: types.Message):
 @bot.message_handler(commands=['payment'])
 def cmd_payment(message):
     chat_id = message.chat.id
-    # 1) Номер IBAN
-    bot.send_message(chat_id, "TR59 0013 4000 0111 1321 7000 01")
-    # 2) Имя получателя
-    bot.send_message(chat_id, "Artur Yuldashev")
-    # 3) Адрес кошелька
-    bot.send_message(chat_id, "TUnMJ7oCtSDCHZiQSMrFjShkUPv18SVFDc")
-    # 4) Сеть
-    bot.send_message(chat_id, "Tron (TRC-20)")
-    # 5) Карта
-    bot.send_message(chat_id, "4441111157718424")
-    # 6) Валюта
-    bot.send_message(chat_id, "Grivne Vlad")
-    # 7) Контакт
-    bot.send_message(chat_id, "+90 553 006 52 04")
-    # Дополнительно Тинькофф в рублях
-    bot.send_message(chat_id, "Артур М. (T BANK RUB)")
-    bot.send_message(chat_id, "Or by RUB Card number")
-    bot.send_message(chat_id, "2200701785613040", reply_markup=back_to_main_keyboard(chat_id))
+    init_user(chat_id)
+    show_payment_info(chat_id)
 
 # в самом верху вашего файла, сразу после импорта и констант:
 
@@ -2688,33 +3520,7 @@ def cmd_help(message: types.Message):
         bot.send_message(message.chat.id, help_text, parse_mode="HTML")
     else:
         init_user(message.chat.id)
-        help_text = tr(
-            message.chat.id,
-            "<b>Доступные команды:</b>\n\n"
-            "<pre>"
-            "/start          — Перезапустить бота / регистрация\n"
-            "/language       — Сменить язык\n"
-            "/points         — Проверить баланс бонусных баллов\n"
-            "/convert [N]    — Курсы и конвертация TRY → RUB/USD/UAH\n"
-            "/history        — История заказов\n"
-            "/help           — Это сообщение помощи\n"
-            "</pre>",
-            "<b>Available commands:</b>\n\n"
-            "<pre>"
-            "/start          — Restart the bot / registration\n"
-            "/language       — Change language\n"
-            "/points         — Check your bonus points\n"
-            "/convert [N]    — TRY exchange rates and conversion\n"
-            "/history        — Order history\n"
-            "/help           — Show this help message\n"
-            "</pre>",
-        )
-        bot.send_message(
-            message.chat.id,
-            help_text,
-            parse_mode="HTML",
-            reply_markup=back_to_main_keyboard(message.chat.id),
-        )
+        show_help_info(message.chat.id)
 
 
 # ------------------------------------------------------------------------
@@ -2977,8 +3783,7 @@ def universal_handler(message):
                 "price": 1300,
                 "flavors": []
             }
-            with open(MENU_PATH, "w", encoding="utf-8") as f:
-                json.dump(menu, f, ensure_ascii=False, indent=2)
+            save_menu_safely()
 
             data['edit_phase'] = 'choose_action'
             bot.send_message(chat_id, f"Category '{new_cat}' added.", reply_markup=edit_action_keyboard())
@@ -3046,8 +3851,7 @@ def universal_handler(message):
             if cat0 and new_url:
                 if isinstance(menu.get(cat0), dict):
                     menu[cat0]['photo_url'] = new_url
-                    with open(MENU_PATH, "w", encoding="utf-8") as f:
-                        json.dump(menu, f, ensure_ascii=False, indent=2)
+                    save_menu_safely()
                     bot.send_message(chat_id, f"Picture for category '{cat0}' updated.",
                                      reply_markup=edit_action_keyboard())
                 else:
@@ -3087,8 +3891,7 @@ def universal_handler(message):
                 cat0 = text
                 for itm in menu[cat0]["flavors"]:
                     itm["stock"] = 0
-                with open(MENU_PATH, "w", encoding="utf-8") as f:
-                    json.dump(menu, f, ensure_ascii=False, indent=2)
+                save_menu_safely()
                 bot.send_message(chat_id, f"All flavors in category '{cat0}' set to 0 stock.",
                                  reply_markup=edit_action_keyboard())
                 data.pop('edit_cat', None)
@@ -3123,8 +3926,7 @@ def universal_handler(message):
 
             if text in menu:
                 del menu[text]
-                with open(MENU_PATH, "w", encoding="utf-8") as f:
-                    json.dump(menu, f, ensure_ascii=False, indent=2)
+                save_menu_safely()
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, f"Category '{text}' removed.", reply_markup=edit_action_keyboard())
                 user_data[chat_id] = data
@@ -3186,8 +3988,7 @@ def universal_handler(message):
                 return
             # Переименование
             menu[new_name] = menu.pop(old_name)
-            with open(MENU_PATH, "w", encoding="utf-8") as f:
-                json.dump(menu, f, ensure_ascii=False, indent=2)
+            save_menu_safely()
             bot.send_message(chat_id, f"Category “{old_name}” renamed to “{new_name}”.",
                              reply_markup=edit_action_keyboard())
             data['edit_phase'] = 'choose_action'
@@ -3260,8 +4061,7 @@ def universal_handler(message):
                 return
 
             menu[cat0]["price"] = int(new_price)
-            with open(MENU_PATH, "w", encoding="utf-8") as f:
-                json.dump(menu, f, ensure_ascii=False, indent=2)
+            save_menu_safely()
 
             bot.send_message(chat_id, f"Price for category '{cat0}' set to {int(new_price)}₺.",
                              reply_markup=edit_action_keyboard())
@@ -3360,8 +4160,7 @@ def universal_handler(message):
                     "photo_url": ""
                 })
             menu[cat0]["flavors"] = new_flavors
-            with open(MENU_PATH, "w", encoding="utf-8") as f:
-                json.dump(menu, f, ensure_ascii=False, indent=2)
+            save_menu_safely()
 
             bot.send_message(chat_id, f"Full flavor list for '{cat0}' replaced.", reply_markup=edit_action_keyboard())
             data.pop('edit_cat', None)
@@ -3532,8 +4331,7 @@ def universal_handler(message):
                                  reply_markup=edit_action_keyboard())
             else:
                 # Сохраняем JSON на диск
-                with open(MENU_PATH, "w", encoding="utf-8") as f:
-                    json.dump(menu, f, ensure_ascii=False, indent=2)
+                save_menu_safely()
 
                 bot.send_message(
                     chat_id,
@@ -3555,566 +4353,67 @@ def universal_handler(message):
         return
     # ────────────────────────────────────────────────────────────────────────────────
 
-    # Остальной universal_handler (cart-функции, /history, /stats, /help и т.д.)
-    # ... (тот же код, что и ранее, без изменений) ...
-
-    # ——— Режим редактирования корзины — (оставляем без изменений) ———
-    if data.get('edit_cart_phase'):
-        if data['edit_cart_phase'] == 'choose_action':
-            if text == t(chat_id, "back"):
-                data['edit_cart_phase'] = None
-                data['edit_index'] = None
-                bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
-                user_data[chat_id] = data
-                return
-
-            if text.startswith(f"{t(chat_id, 'remove_item')} "):
-                try:
-                    idx = int(text.split()[1]) - 1
-                except:
-                    bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=get_inline_main_menu(chat_id))
-                    data['edit_cart_phase'] = None
-                    data['edit_index'] = None
-                    user_data[chat_id] = data
-                    return
-
-                grouped = {}
-                for item in data['cart']:
-                    key = (item['category'], item['flavor'], item['price'])
-                    grouped[key] = grouped.get(key, 0) + 1
-                items_list = list(grouped.items())
-                if idx < 0 or idx >= len(items_list):
-                    bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=get_inline_main_menu(chat_id))
-                    data['edit_cart_phase'] = None
-                    data['edit_index'] = None
-                    user_data[chat_id] = data
-                    return
-
-                key_to_remove, _ = items_list[idx]
-                new_cart = [it for it in data['cart'] if not (
-                            it['category'] == key_to_remove[0] and it['flavor'] == key_to_remove[1] and it['price'] ==
-                            key_to_remove[2])]
-                data['cart'] = new_cart
-                data['edit_cart_phase'] = None
-                data['edit_index'] = None
-                bot.send_message(chat_id, t(chat_id, "item_removed").format(flavor=key_to_remove[1]),
-                                 reply_markup=get_inline_main_menu(chat_id))
-                user_data[chat_id] = data
-                return
-
-            if text.startswith(f"{t(chat_id, 'edit_item')} "):
-                try:
-                    idx = int(text.split()[1]) - 1
-                except:
-                    bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=get_inline_main_menu(chat_id))
-                    data['edit_cart_phase'] = None
-                    user_data[chat_id] = data
-                    return
-
-                grouped = {}
-                for item in data['cart']:
-                    key = (item['category'], item['flavor'], item['price'])
-                    grouped[key] = grouped.get(key, 0) + 1
-                items_list = list(grouped.items())
-                if idx < 0 or idx >= len(items_list):
-                    bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=get_inline_main_menu(chat_id))
-                    data['edit_cart_phase'] = None
-                    user_data[chat_id] = data
-                    return
-
-                data['edit_index'] = idx
-                data['edit_cart_phase'] = 'enter_qty'
-                key_chosen, count = items_list[idx]
-                cat0, flavor0, price0 = key_chosen
-                bot.send_message(
-                    chat_id,
-                    f"Current item: {cat0} — {flavor0} — {price0}₺ (in cart {count} pcs).\n{t(chat_id, 'enter_new_qty')}"
-                )
-                user_data[chat_id] = data
-                return
-
-        if data['edit_cart_phase'] == 'enter_qty':
-            if text == t(chat_id, "back"):
-                data['edit_cart_phase'] = None
-                data['edit_index'] = None
-                bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
-                user_data[chat_id] = data
-                return
-            if not text.isdigit():
-                bot.send_message(chat_id, t(chat_id, "error_invalid"))
-                return
-            new_qty = int(text)
-            grouped = {}
-            for item in data['cart']:
-                key = (item['category'], item['flavor'], item['price'])
-                grouped[key] = grouped.get(key, 0) + 1
-            items_list = list(grouped.items())
-            idx = data['edit_index']
-            if idx < 0 or idx >= len(items_list):
-                bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=get_inline_main_menu(chat_id))
-                data['edit_cart_phase'] = None
-                data['edit_index'] = None
-                user_data[chat_id] = data
-                return
-            key_chosen, old_count = items_list[idx]
-            cat0, flavor0, price0 = key_chosen
-
-            data['cart'] = [it for it in data['cart'] if
-                            not (it['category'] == cat0 and it['flavor'] == flavor0 and it['price'] == price0)]
-            for _ in range(new_qty):
-                data['cart'].append({'category': cat0, 'flavor': flavor0, 'price': price0})
-
-            data['edit_cart_phase'] = None
-            data['edit_index'] = None
-            if new_qty == 0:
-                bot.send_message(chat_id, t(chat_id, "item_removed").format(flavor=flavor0),
-                                 reply_markup=get_inline_main_menu(chat_id))
-            else:
-                bot.send_message(chat_id, t(chat_id, "qty_changed").format(flavor=flavor0, qty=new_qty),
-                                 reply_markup=get_inline_main_menu(chat_id))
-            user_data[chat_id] = data
-            return
-
-    # ——— «Корзина» через Reply-кнопку ———
-    if text.startswith(f"{t(chat_id, 'remove_item')} "):
-        try:
-            idx = int(text.split()[1]) - 1
-        except:
-            bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=get_inline_main_menu(chat_id))
-            data['edit_cart_phase'] = None
-            data['edit_index'] = None
-            user_data[chat_id] = data
-            return
-
-        grouped = {}
-        for item in data['cart']:
-            key = (item['category'], item['flavor'], item['price'])
-            grouped[key] = grouped.get(key, 0) + 1
-        items_list = list(grouped.items())
-        if idx < 0 or idx >= len(items_list):
-            bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=get_inline_main_menu(chat_id))
-            data['edit_cart_phase'] = None
-            user_data[chat_id] = data
-            return
-
-        (cat0, flavor0, price0), _ = items_list[idx]
-        removed = False
-        new_cart = []
-        for it in data["cart"]:
-            if not removed and it["category"] == cat0 and it["flavor"] == flavor0 and it["price"] == price0:
-                removed = True
-                continue
-            new_cart.append(it)
-        data['cart'] = new_cart
-        data['edit_cart_phase'] = None
-        data['edit_index'] = None
-        bot.send_message(chat_id, t(chat_id, "item_removed").format(flavor=flavor0),
-                         reply_markup=get_inline_main_menu(chat_id))
-        user_data[chat_id] = data
+    # Пользовательский интерфейс работает через inline-кнопки и отдельные
+    # state-handlers выше. Этот fallback не дублирует checkout и не может
+    # случайно создать второй заказ.
+    known_navigation = {
+        nav_text(chat_id, "cart"),
+        nav_text(chat_id, "address"),
+        nav_text(chat_id, "contact"),
+        nav_text(chat_id, "points"),
+        nav_text(chat_id, "review"),
+        nav_text(chat_id, "menu"),
+        t(chat_id, "back"),
+    }
+    if text == nav_text(chat_id, "cart"):
+        data.update({
+            "wait_for_points": False,
+            "wait_for_address": False,
+            "wait_for_contact": False,
+            "wait_for_comment": False,
+            "pending_discount": 0,
+            "pending_points_spent": 0,
+        })
+        bot.send_message(
+            chat_id,
+            tr(chat_id, "Возвращаемся в корзину.", "Back to your cart."),
+            reply_markup=types.ReplyKeyboardRemove(),
+        )
+        send_cart(chat_id)
         return
 
-    # ——— Если ожидаем ввод адреса ———
-    if data.get('wait_for_address'):
-        if text == t(chat_id, "back"):
-            data['wait_for_address'] = False
-            data['current_category'] = None
-            bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
-            user_data[chat_id] = data
-            return
-
-        if text == t(chat_id, "choose_on_map"):
-            bot.send_message(
-                chat_id,
-                tr(
-                    chat_id,
-                    "Чтобы выбрать точку:\n📎 → Геопозиция → «Выбрать на карте» → метка → Отправить",
-                    "To choose a point:\n📎 → Location → Choose on map → place the pin → Send",
-                ),
-                reply_markup=types.ReplyKeyboardRemove()
-            )
-            return
-
-        if message.content_type == 'venue' and message.venue:
-            v = message.venue
-            address = f"{v.title}, {v.address}\n🌍 https://maps.google.com/?q={v.location.latitude},{v.location.longitude}"
-        elif message.content_type == 'location' and message.location:
-            lat, lon = message.location.latitude, message.location.longitude
-            address = f"🌍 https://maps.google.com/?q={lat},{lon}"
-        elif text == t(chat_id, "enter_address_text"):
-            bot.send_message(chat_id, t(chat_id, "enter_address"), reply_markup=types.ReplyKeyboardRemove())
-            return
-        elif message.content_type == 'text' and message.text:
-            address = message.text.strip()
-        else:
-            bot.send_message(chat_id, t(chat_id, "error_invalid"), reply_markup=address_keyboard(chat_id))
-            return
-
-        data['address'] = address
-        data['wait_for_address'] = False
-        data['wait_for_contact'] = True
-        kb = contact_keyboard(chat_id)
-        bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=kb)
-        user_data[chat_id] = data
-        return
-
-    # ——— Если ожидаем ввод контакта ———
-    if data.get('wait_for_contact'):
-        if text == t(chat_id, "back"):
-            data['wait_for_address'] = True
-            data['wait_for_contact'] = False
-            bot.send_message(chat_id, t(chat_id, "enter_address"), reply_markup=address_keyboard())
-            user_data[chat_id] = data
-            return
-
-        if text == t(chat_id, "enter_nickname"):
-            bot.send_message(
-                chat_id,
-                tr(chat_id, "Введите ваш Telegram-ник (без @):", "Enter your Telegram username (without @):"),
-                reply_markup=types.ReplyKeyboardRemove(),
-            )
-            return
-
-        if message.content_type == 'contact' and message.contact:
-            contact = message.contact.phone_number
-        elif message.content_type == 'text' and message.text:
-            contact = "@" + message.text.strip().lstrip("@")
-        else:
-            bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=contact_keyboard())
-            return
-
-        data['contact'] = contact
-        data['wait_for_contact'] = False
-        data['wait_for_comment'] = True
-        kb = comment_keyboard(chat_id)
-        bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=kb)
-        user_data[chat_id] = data
-        return
-
-    # ——— Если ожидаем ввод комментария ———
-    if data.get('wait_for_comment'):
-        if text == t(chat_id, "back"):
-            data['wait_for_contact'] = True
-            data['wait_for_comment'] = False
-            bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=contact_keyboard())
-            user_data[chat_id] = data
-            return
-
-        if text == t(chat_id, "enter_comment"):
-            bot.send_message(chat_id, t(chat_id, "enter_comment"), reply_markup=types.ReplyKeyboardRemove())
-            return
-
-        if message.content_type == 'text' and text != t(chat_id, "send_order"):
-            data['comment'] = text.strip()
-            bot.send_message(chat_id, t(chat_id, "comment_saved"), reply_markup=comment_keyboard(chat_id))
-
-            user_data[chat_id] = data
-            return
-
-        if text == t(chat_id, "send_order"):
-            cart = data.get('cart', [])
-            if not cart:
-                bot.send_message(chat_id, t(chat_id, "cart_empty"))
-                return
-
-            total_try = sum(i['price'] for i in cart)
-            discount = data.pop("pending_discount", 0)
-            total_after = max(total_try - discount, 0)
-
-            needed = {}
-            for it in cart:
-                key = (it["category"], it["flavor"])
-                needed[key] = needed.get(key, 0) + 1
-
-            for (cat0, flavor0), qty_needed in needed.items():
-                item_obj = next((i for i in menu[cat0]["flavors"] if i["flavor"] == flavor0), None)
-                if not item_obj or item_obj.get("stock", 0) < qty_needed:
-                    bot.send_message(
-                        chat_id,
-                        tr(
-                            chat_id,
-                            f"😕 К сожалению, «{flavor0}» больше не доступен в нужном количестве.",
-                            f"😕 Unfortunately, “{flavor0}” is no longer available in the requested quantity.",
-                        ),
-                    )
-                    return
-
-            for (cat0, flavor0), qty_needed in needed.items():
-                for itm in menu[cat0]["flavors"]:
-                    if itm["flavor"] == flavor0:
-                        itm["stock"] -= qty_needed
-                        break
-            with open(MENU_PATH, "w", encoding="utf-8") as f:
-                json.dump(menu, f, ensure_ascii=False, indent=2)
-
-            items_json = json.dumps(cart, ensure_ascii=False)
-            now = datetime.datetime.utcnow().isoformat()
-            conn_local = get_db_connection()
-            cursor_local = conn_local.cursor()
-            cursor_local.execute(
-                "INSERT INTO orders (chat_id, items_json, total, timestamp) VALUES (?, ?, ?, ?)",
-                (chat_id, items_json, total_after, now)
-            )
-            conn_local.commit()
-            order_id = cursor_local.lastrowid
-
-            earned = total_after // 30
-            if earned > 0:
-                cursor_local.execute("UPDATE users SET points = points + ? WHERE chat_id = ?", (earned, chat_id))
-                conn_local.commit()
-                bot.send_message(
-                    chat_id,
-                    tr(
-                        chat_id,
-                        f"👍 Вы получили {earned} бонусных баллов за этот заказ.",
-                        f"👍 You earned {earned} bonus points for this order.",
-                    ),
-                )
-
-            cursor_local.execute("SELECT referred_by FROM users WHERE chat_id = ?", (chat_id,))
-            row = cursor_local.fetchone()
-            if row and row[0]:
-                inviter = row[0]
-                cursor_local.execute("UPDATE users SET points = points + 200 WHERE chat_id = ?", (inviter,))
-                conn_local.commit()
-                init_user(inviter)
-                bot.send_message(
-                    inviter,
-                    tr(
-                        inviter,
-                        "🎉 Вам начислено 200 бонусных баллов за приглашение нового клиента!",
-                        "🎉 You received 200 bonus points for inviting a new customer!",
-                    ),
-                )
-                cursor_local.execute("UPDATE users SET referred_by = NULL WHERE chat_id = ?", (chat_id,))
-                conn_local.commit()
-
-            cursor_local.close()
-            conn_local.close()
-
-            summary = "\n".join(f"{i['category']}: {i['flavor']} — {i['price']}₺" for i in cart)
-            rates = fetch_rates()
-            rub = round(total_after * rates.get("RUB", 0) + 500, 2)
-            usd = round(total_after * rates.get("USD", 0) + 2, 2)
-            uah = round(total_after * rates.get("UAH", 0) + 200, 2)
-            eur = round(total_after * rates.get("EUR", 0) + 2, 2)  # новая строка
-            conv = f"({rub}₽, ${usd}, €{eur}, ₴{uah})"
-
-            full_rus = (
-                f"📥 Новый заказ от @{message.from_user.username or message.from_user.first_name}:\n\n"
-                f"{summary}\n\n"
-                f"Итог: {total_after}₺ {conv}\n"
-                f"📍 Адрес: {data.get('address', '—')}\n"
-                f"📱 Контакт: {data.get('contact', '—')}\n"
-                f"💬 Комментарий: {data.get('comment', '—')}"
-            )
-            bot.send_message(PERSONAL_CHAT_ID, full_rus)
-
-            comment_ru = data.get('comment', '')
-            comment_en = translate_to_en(comment_ru) if comment_ru else "—"
-            full_en = (
-                f"📥 New order from @{message.from_user.username or message.from_user.first_name}:\n\n"
-                f"{summary}\n\n"
-                f"Total: {total_after}₺ {conv}\n"
-                f"📍 Address: {data.get('address', '—')}\n"
-                f"📱 Contact: {data.get('contact', '—')}\n"
-                f"💬 Comment: {comment_en}"
-            )
-            chat_id = message.from_user.id
-            # вместо:
-            # bot.send_message(GROUP_CHAT_ID, full_en)
-
-            # создаём клавиатуру
-            kb = types.InlineKeyboardMarkup(row_width=3)
-            kb.add(
-                types.InlineKeyboardButton(
-                    text="❌ Cancel Order",
-                    callback_data=f"cancel_order|{order_id}|{chat_id}"
-                ),
-                types.InlineKeyboardButton(
-                    text="✅ Delivered",
-                    callback_data=f"order_delivered|{order_id}|{chat_id}"
-                ),
-                types.InlineKeyboardButton(
-                    text="🚗 OMW",
-                    callback_data=f"courier_on_way|{order_id}|{chat_id}"
-                )
-            )
-
-            bot.send_message(
-                GROUP_CHAT_ID,
-                full_en,
-                reply_markup=kb
-            )
-
-    # ────────────────────────────────────────────────────────────────────────────────
-
-    # ——— «Back» во всём остальном ———
-    if text == t(chat_id, "back"):
+    if text in known_navigation:
         data.update({
             "current_category": None,
             "wait_for_points": False,
             "wait_for_address": False,
             "wait_for_contact": False,
-            "wait_for_comment": False
+            "wait_for_comment": False,
+            "pending_discount": 0,
+            "pending_points_spent": 0,
         })
-        bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
-        user_data[chat_id] = data
-        return
-
-    # ——— Очистка корзины (Reply-кнопка) ———
-    if text == f"🗑️ {t(chat_id, 'clear_cart')}":
-        data["cart"] = []
-        data["current_category"] = None
-        data["wait_for_points"] = False
-        data["wait_for_address"] = False
-        data["wait_for_contact"] = False
-        data["wait_for_comment"] = False
-        bot.send_message(chat_id, t(chat_id, "cart_cleared"), reply_markup=get_inline_main_menu(chat_id))
-        user_data[chat_id] = data
-        return
-
-    # ——— «Add more» ———
-    if text == f"➕ {t(chat_id, 'add_more')}":
-        data["current_category"] = None
-        bot.send_message(chat_id, t(chat_id, "choose_category"), reply_markup=get_inline_main_menu(chat_id))
-        user_data[chat_id] = data
-        return
-
-    # ——— Завершить заказ по Reply-кнопке ———
-    if text == f"✅ {t(chat_id, 'finish_order')}":
-        cart = data.get("cart", [])
-        if not cart:
-            bot.send_message(chat_id, t(chat_id, "cart_empty"))
-            return
-        total_try = sum(i['price'] for i in cart)
-
-        conn_local = get_db_connection()
-        cursor_local = conn_local.cursor()
-        cursor_local.execute("SELECT points FROM users WHERE chat_id = ?", (chat_id,))
-        row = cursor_local.fetchone()
-        cursor_local.close()
-        conn_local.close()
-
-        user_points = row[0] if row else 0
-
-        if user_points > 0:
-            max_points = min(user_points, total_try)
-            points_try = user_points * 1
-            msg = (
-                    t(chat_id, "points_info").format(points=user_points, points_try=points_try)
-                    + "\n"
-                    + t(chat_id, "enter_points").format(max_points=max_points)
-            )
-            bot.send_message(chat_id, msg, reply_markup=types.ReplyKeyboardRemove())
-            data["wait_for_points"] = True
-            data["temp_total_try"] = total_try
-            data["temp_user_points"] = user_points
-            user_data[chat_id] = data
-        else:
-            kb = address_keyboard(chat_id)
-
-            bot.send_message(
-                chat_id,
-                f"🛒 {t(chat_id, 'view_cart')}:\n\n" +
-                "\n".join(f"{i['category']}: {i['flavor']} — {i['price']}₺" for i in data['cart']) +
-                f"\n\n{t(chat_id, 'enter_address')}",
-                reply_markup=kb
-            )
-            data["wait_for_address"] = True
-            user_data[chat_id] = data
-        return
-
-    # ——— Выбор категории (Reply-клавиатура fallback) ———
-    if text in menu:
-        data['current_category'] = text
-        bot.send_message(chat_id, f"{t(chat_id, 'choose_flavor')} «{text}»",
-                         reply_markup=get_inline_flavors(chat_id, text))
-        user_data[chat_id] = data
-        return
-
-    # ——— Выбор вкуса (Reply-клавиатура fallback) ———
-    cat0 = data.get('current_category')
-    if cat0:
-        price = menu[cat0]["price"]
-        for it in menu[cat0]["flavors"]:
-            if it.get("stock", 0) > 0:
-                emoji = it.get("emoji", "")
-                flavor0 = it["flavor"]
-                label = f"{emoji} {flavor}{rating_str} · {stock}шт"
-
-                if text == label:
-                    data['cart'].append({'category': cat0, 'flavor': flavor0, 'price': price})
-                    template = t(chat_id, "added_to_cart")
-                    suffix = template.split("»", 1)[1].strip()
-                    count = len(data['cart'])
-                    bot.send_message(
-                        chat_id,
-                        f"«{cat0} — {flavor0}» {suffix.format(flavor=flavor0, count=count)}",
-                        reply_markup=get_inline_main_menu(chat_id)
-                    )
-                    user_data[chat_id] = data
-                    return
-
-        # если ввод не соответствует ни одному вкусу, показать только кнопку «Назад к категориям»
-        kb = types.InlineKeyboardMarkup()
-        kb.add(types.InlineKeyboardButton(
-            text=f"⬅️ {t(chat_id, 'back_to_categories')}",
-            callback_data="go_back_to_categories"
-        ))
         bot.send_message(
             chat_id,
-            t(chat_id, "error_invalid"),
-            reply_markup=kb
+            tr(chat_id, "Возвращаемся в меню.", "Back to the menu."),
+            reply_markup=types.ReplyKeyboardRemove(),
         )
+        show_main_menu(chat_id)
         return
 
-    # ——— /history ———
-    if text == "/history":
-        conn_local = get_db_connection()
-        cursor_local = conn_local.cursor()
-        cursor_local.execute(
-            "SELECT order_id, items_json, total, timestamp FROM orders WHERE chat_id = ? ORDER BY timestamp DESC",
-            (chat_id,)
-        )
-        rows = cursor_local.fetchall()
-        cursor_local.close()
-        conn_local.close()
-
-        if not rows:
-            bot.send_message(
-                chat_id,
-                tr(
-                    chat_id,
-                    "У вас пока нет сохранённых заказов.",
-                    "You do not have any saved orders yet.",
-                ),
-                reply_markup=back_to_main_keyboard(chat_id),
-            )
-            return
-        texts = []
-        for order_id, items_json, total, timestamp in rows[:10]:
-            items = json.loads(items_json)
-            summary = "\n".join(f"{i['flavor']} — {i['price']}₺" for i in items)
-            date = timestamp.split("T")[0]
-            texts.append(
-                tr(
-                    chat_id,
-                    f"Заказ #{order_id} ({date}):\n{summary}\nИтого: {total}₺",
-                    f"Order #{order_id} ({date}):\n{summary}\nTotal: {total}₺",
-                )
-            )
-        bot.send_message(chat_id, "\n\n".join(texts), reply_markup=back_to_main_keyboard(chat_id))
-        return
+    show_main_menu(chat_id)
 
 @ensure_user
 @bot.callback_query_handler(func=lambda call: call.data == "no_points")
 def callback_no_points(call):
     chat_id = call.from_user.id
+    init_user(chat_id)
     bot.answer_callback_query(call.id)
 
     data = user_data.get(chat_id, {})
-    cart = data.get("cart", [])
-    total_try = data.get("temp_total_try", 0)
+    total_try = int(
+        data.get("temp_total_try", 0)
+        or sum(float(item.get("price", 0)) for item in data.get("cart", []))
+    )
 
     # выключаем режим ввода баллов
     data["wait_for_points"] = False
@@ -4123,7 +4422,7 @@ def callback_no_points(call):
 
     user_data[chat_id] = data
 
-    ask_saved_or_new_delivery_data(chat_id, total_try, 0)
+    ask_saved_or_new_delivery_data(chat_id, total_try, 0, call)
 
 
 
@@ -4180,8 +4479,7 @@ def handle_cancel_order(call):
             })
 
     # сохраняем menu.json
-    with open(MENU_PATH, "w", encoding="utf-8") as f:
-        json.dump(menu, f, ensure_ascii=False, indent=2)
+    save_menu_safely()
 
     # 2) Возвращаем списанные баллы пользователю
     if pts_spent:
@@ -4473,4 +4771,3 @@ if __name__ == "__main__":
     # 5) Запускаем бота
     bot.delete_webhook()
     bot.infinity_polling(timeout=10, long_polling_timeout=5)
-
