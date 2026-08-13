@@ -437,7 +437,7 @@ def get_inline_language_buttons(chat_id: int) -> types.InlineKeyboardMarkup:
 # ------------------------------------------------------------------------
 #   9. Inline-кнопки для главного меню
 # ------------------------------------------------------------------------
-def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
+def get_inline_main_menu(chat_id: int, show_language: bool = False) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=2)
 
     # Категории для пользователя:
@@ -473,10 +473,11 @@ def get_inline_main_menu(chat_id: int) -> types.InlineKeyboardMarkup:
             callback_data="finish_order"
         ))
 
-    kb.add(types.InlineKeyboardButton(
-        text=tr(chat_id, "🌐 Сменить язык", "🌐 Change language"),
-        callback_data="change_language"
-    ))
+    if show_language:
+        kb.add(types.InlineKeyboardButton(
+            text=tr(chat_id, "🌐 Сменить язык", "🌐 Change language"),
+            callback_data="change_language"
+        ))
 
     return kb
 def skip_points_keyboard(chat_id: int):
@@ -669,7 +670,7 @@ def cmd_start(message):
     bot.send_message(
         chat_id,
         t(chat_id, "choose_category"),
-        reply_markup=get_inline_main_menu(chat_id)
+        reply_markup=get_inline_main_menu(chat_id, show_language=True)
     )
 
 # ------------------------------------------------------------------------
