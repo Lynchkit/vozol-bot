@@ -2944,16 +2944,10 @@ def show_profile(chat_id: int, call=None) -> None:
             callback_data="profile_history",
         ),
     )
-    kb.add(
-        types.InlineKeyboardButton(
-            text=tr(chat_id, "💳 Оплата", "💳 Payment"),
-            callback_data="profile_payment",
-        ),
-        types.InlineKeyboardButton(
-            text=tr(chat_id, "🌐 Язык", "🌐 Language"),
-            callback_data="profile_language",
-        ),
-    )
+    kb.add(types.InlineKeyboardButton(
+        text=tr(chat_id, "🌐 Язык", "🌐 Language"),
+        callback_data="profile_language",
+    ))
     kb.add(types.InlineKeyboardButton(
         text=tr(chat_id, "ℹ️ Помощь", "ℹ️ Help"),
         callback_data="profile_help",
@@ -3044,22 +3038,10 @@ def show_order_history(chat_id: int, call=None) -> None:
 def show_payment_info(chat_id: int, call=None) -> None:
     text = tr(
         chat_id,
-        "<b>💳 Реквизиты для оплаты</b>\n\n"
-        "<b>TRY · IBAN</b>\n<code>TR59 0013 4000 0111 1321 7000 01</code>\n"
-        "Получатель: Artur Yuldashev\n\n"
-        "<b>USDT · Tron (TRC-20)</b>\n"
-        "<code>TUnMJ7oCtSDCHZiQSMrFjShkUPv18SVFDc</code>\n\n"
-        "<b>UAH</b>\n<code>4441111157718424</code>\nПолучатель: Grivne Vlad\n\n"
-        "<b>RUB · T BANK</b>\n<code>2200701785613040</code>\nПолучатель: Артур М.\n\n"
-        "Контакт: <code>+90 553 006 52 04</code>",
-        "<b>💳 Payment details</b>\n\n"
-        "<b>TRY · IBAN</b>\n<code>TR59 0013 4000 0111 1321 7000 01</code>\n"
-        "Recipient: Artur Yuldashev\n\n"
-        "<b>USDT · Tron (TRC-20)</b>\n"
-        "<code>TUnMJ7oCtSDCHZiQSMrFjShkUPv18SVFDc</code>\n\n"
-        "<b>UAH</b>\n<code>4441111157718424</code>\nRecipient: Grivne Vlad\n\n"
-        "<b>RUB · T BANK</b>\n<code>2200701785613040</code>\nRecipient: Artur M.\n\n"
-        "Contact: <code>+90 553 006 52 04</code>",
+        "<b>💳 Оплата</b>\n\n"
+        "Реквизиты не публикуются в боте. Продавец отправит их лично после подтверждения заказа.",
+        "<b>💳 Payment</b>\n\n"
+        "Payment details are not published in the bot. The seller will send them privately after confirming the order.",
     )
     render_inline_screen(
         chat_id,
@@ -3513,7 +3495,6 @@ def cmd_help(message: types.Message):
           "/change     — Enter menu-edit mode (ADMIN only)\n"
           "/stock &lt;N&gt;  — Set overall delivered count & clear log\n"
           "/sold       — Today's deliveries report (MSK-based)\n"
-          "/payment    — Payment details\n"
           "/total      — Show stock levels for all flavors\n"
           "/help       — This help message"
         )
