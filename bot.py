@@ -14,6 +14,7 @@ import pytz
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from telebot import TeleBot, types
+from telebot.handler_backends import ContinueHandling
 
 def _normalize(text: str) -> str:
     """
@@ -53,7 +54,7 @@ PAYMENT_METHODS = {
     "uah": ("🇺🇦 Гривны", "🇺🇦 Hryvnia", "PAYMENT_UAH"),
 }
 
-BOT_VERSION = "2026.08.14-payment-copy-buttons-v12"
+BOT_VERSION = "2026.08.14-active-users-v14"
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
 print("BOT_VERSION =", BOT_VERSION, flush=True)
@@ -123,7 +124,15 @@ cursor_init.execute("""
         referred_by    INTEGER,
         last_address   TEXT,
         last_contact   TEXT,
-        language       TEXT
+        language       TEXT,
+        username       TEXT,
+        first_name     TEXT,
+        last_name      TEXT,
+        registered_at  TEXT,
+        last_seen_at   TEXT,
+        is_active      INTEGER,
+        inactive_reason TEXT,
+        status_updated_at TEXT
     )
 """)
 # Миграция существующей БД Railway: каждый отсутствующий столбец добавляется
@@ -134,9 +143,24 @@ for column_name, column_type in (
     ("last_address", "TEXT"),
     ("last_contact", "TEXT"),
     ("language", "TEXT"),
+    ("username", "TEXT"),
+    ("first_name", "TEXT"),
+    ("last_name", "TEXT"),
+    ("registered_at", "TEXT"),
+    ("last_seen_at", "TEXT"),
+    # NULL у старых записей означает: Telegram ещё не подтвердил доступность.
+    ("is_active", "INTEGER"),
+    ("inactive_reason", "TEXT"),
+    ("status_updated_at", "TEXT"),
 ):
     if column_name not in user_columns:
         cursor_init.execute(f"ALTER TABLE users ADD COLUMN {column_name} {column_type}")
+cursor_init.execute(
+    "CREATE INDEX IF NOT EXISTS idx_users_registered_at ON users(registered_at)"
+)
+cursor_init.execute(
+    "CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active)"
+)
 conn_init.commit()
 
 # Создание таблицы orders (с новыми полями уже учтёнными через ALTER)
@@ -542,6 +566,118 @@ def is_owner(user_id: int) -> bool:
     return user_id == ADMIN_ID
 
 
+def utc_now_iso() -> str:
+    """Единый UTC timestamp для регистрации и статуса пользователя."""
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def telegram_profile_values(profile) -> tuple[str | None, str | None, str | None]:
+    """Возвращает username, имя и фамилию из User либо приватного Chat."""
+    return (
+        getattr(profile, "username", None),
+        getattr(profile, "first_name", None),
+        getattr(profile, "last_name", None),
+    )
+
+
+def mark_user_active(profile) -> None:
+    """Подтверждает доступность пользователя по входящему сообщению."""
+    chat_id = getattr(profile, "id", None)
+    if chat_id is None:
+        return
+
+    username, first_name, last_name = telegram_profile_values(profile)
+    now = utc_now_iso()
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    try:
+        # Не создаём запись здесь: новая регистрация и referral обрабатываются
+        # только в /start. Для существующей записи обновляем профиль и статус.
+        cursor_local.execute(
+            """
+            UPDATE users
+               SET username = ?,
+                   first_name = ?,
+                   last_name = ?,
+                   last_seen_at = ?,
+                   is_active = 1,
+                   inactive_reason = NULL,
+                   status_updated_at = ?
+             WHERE chat_id = ?
+            """,
+            (username, first_name, last_name, now, now, int(chat_id)),
+        )
+        conn_local.commit()
+    except sqlite3.Error as exc:
+        print(f"Could not update user activity for {chat_id}: {exc}", flush=True)
+    finally:
+        cursor_local.close()
+        conn_local.close()
+
+
+def mark_user_inactive(profile, reason: str) -> None:
+    """Помечает существующего пользователя недоступным для рассылок."""
+    chat_id = getattr(profile, "id", None)
+    if chat_id is None:
+        return
+
+    username, first_name, last_name = telegram_profile_values(profile)
+    now = utc_now_iso()
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    try:
+        cursor_local.execute(
+            """
+            UPDATE users
+               SET username = COALESCE(?, username),
+                   first_name = COALESCE(?, first_name),
+                   last_name = COALESCE(?, last_name),
+                   is_active = 0,
+                   inactive_reason = ?,
+                   status_updated_at = ?
+             WHERE chat_id = ?
+            """,
+            (username, first_name, last_name, reason, now, int(chat_id)),
+        )
+        conn_local.commit()
+    except sqlite3.Error as exc:
+        print(f"Could not update user status for {chat_id}: {exc}", flush=True)
+    finally:
+        cursor_local.close()
+        conn_local.close()
+
+
+def track_private_message_activity(messages) -> None:
+    """Сохраняет имя и доступность при любом сообщении пользователя боту."""
+    for message in messages:
+        if getattr(getattr(message, "chat", None), "type", None) == "private":
+            mark_user_active(message.from_user)
+
+
+bot.set_update_listener(track_private_message_activity)
+
+
+@bot.my_chat_member_handler(
+    func=lambda update: getattr(getattr(update, "chat", None), "type", None) == "private"
+)
+def track_private_bot_membership(update):
+    """Telegram присылает это событие, когда пользователь блокирует/разблокирует бота."""
+    status = getattr(update.new_chat_member, "status", "")
+    if status in {"kicked", "left"}:
+        mark_user_inactive(update.chat, "blocked")
+    elif status in {"member", "administrator"}:
+        mark_user_active(update.chat)
+
+
+@bot.callback_query_handler(func=lambda call: True)
+def track_private_callback_activity(call):
+    """Обновляет статус при нажатии любой кнопки и продолжает цепочку хендлеров."""
+    if getattr(getattr(call, "message", None), "chat", None) is not None:
+        if call.message.chat.type == "private":
+            mark_user_active(call.from_user)
+    return ContinueHandling()
+
+
 def payment_detail(method_key: str) -> str:
     """Читает один реквизит из Railway, не записывая его в БД или код."""
     method = PAYMENT_METHODS.get(method_key)
@@ -700,9 +836,16 @@ def save_user_language(chat_id: int, lang_code: str) -> None:
             if cursor_local.fetchone() is None:
                 break
             referral_code = generate_ref_code()
+        now = utc_now_iso()
         cursor_local.execute(
-            "INSERT INTO users (chat_id, points, referral_code, language) VALUES (?, 0, ?, ?)",
-            (chat_id, referral_code, lang_code),
+            """
+            INSERT INTO users (
+                chat_id, points, referral_code, language,
+                registered_at, last_seen_at, is_active, status_updated_at
+            )
+            VALUES (?, 0, ?, ?, ?, ?, 1, ?)
+            """,
+            (chat_id, referral_code, lang_code, now, now, now),
         )
     conn_local.commit()
     cursor_local.close()
@@ -728,17 +871,53 @@ def send_referral_info(chat_id: int, referral_code: str) -> None:
     bot.send_message(chat_id, text, parse_mode="HTML")
 
 
+def is_permanent_delivery_error(exc: Exception) -> bool:
+    """Отличает блокировку/удалённый чат от временной ошибки Telegram."""
+    if getattr(exc, "error_code", None) == 403:
+        return True
+    description = str(exc).casefold()
+    return any(
+        marker in description
+        for marker in (
+            "bot was blocked by the user",
+            "blocked by the user",
+            "user is deactivated",
+            "chat not found",
+            "bot was kicked",
+            "bot can't initiate conversation",
+        )
+    )
+
+
 def broadcast_message_to_users(source_chat_id: int, source_message_id: int) -> tuple[int, int]:
-    """Копирует исходное сообщение всем зарегистрированным пользователям."""
+    """Копирует сообщение всем пользователям, кроме подтверждённо недоступных."""
     conn_local = get_db_connection()
     cursor_local = conn_local.cursor()
-    cursor_local.execute("SELECT chat_id FROM users")
+    cursor_local.execute(
+        "SELECT chat_id FROM users WHERE is_active IS NULL OR is_active = 1"
+    )
     recipients = [row[0] for row in cursor_local.fetchall()]
-    cursor_local.close()
-    conn_local.close()
 
     sent = 0
     failed = 0
+    status_updates: list[tuple[int, str | None, str, int]] = []
+
+    def flush_status_updates() -> None:
+        if not status_updates:
+            return
+        cursor_local.executemany(
+            """
+            UPDATE users
+               SET is_active = ?,
+                   inactive_reason = ?,
+                   status_updated_at = ?
+             WHERE chat_id = ?
+            """,
+            status_updates,
+        )
+        conn_local.commit()
+        status_updates.clear()
+
     for recipient_id in recipients:
         try:
             bot.copy_message(
@@ -747,12 +926,23 @@ def broadcast_message_to_users(source_chat_id: int, source_message_id: int) -> t
                 message_id=source_message_id,
             )
             sent += 1
+            status_updates.append((1, None, utc_now_iso(), recipient_id))
         except Exception as exc:
             failed += 1
             print(f"Broadcast failed for {recipient_id}: {exc}")
+            if is_permanent_delivery_error(exc):
+                status_updates.append(
+                    (0, "blocked_or_unavailable", utc_now_iso(), recipient_id)
+                )
+
+        if len(status_updates) >= 25:
+            flush_status_updates()
         # Не превышаем безопасный темп массовых отправок Telegram.
         time.sleep(0.05)
 
+    flush_status_updates()
+    cursor_local.close()
+    conn_local.close()
     return sent, failed
 
 
@@ -1253,6 +1443,8 @@ def cmd_start(message):
     )
     row = cur.fetchone()
     is_new_user = row is None
+    username, first_name, last_name = telegram_profile_values(message.from_user)
+    now = utc_now_iso()
 
     if is_new_user:
         referred_by = None
@@ -1275,14 +1467,40 @@ def cmd_start(message):
             new_code = generate_ref_code()
 
         cur.execute(
-            "INSERT INTO users (chat_id, points, referral_code, referred_by) VALUES (?, ?, ?, ?)",
-            (chat_id, 0, new_code, referred_by)
+            """
+            INSERT INTO users (
+                chat_id, points, referral_code, referred_by,
+                username, first_name, last_name,
+                registered_at, last_seen_at, is_active, status_updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+            """,
+            (
+                chat_id, 0, new_code, referred_by,
+                username, first_name, last_name,
+                now, now, now,
+            ),
         )
         conn.commit()
 
         referral_code = new_code
     else:
         referral_code = row[0]  # уже существующий
+        cur.execute(
+            """
+            UPDATE users
+               SET username = ?,
+                   first_name = ?,
+                   last_name = ?,
+                   last_seen_at = ?,
+                   is_active = 1,
+                   inactive_reason = NULL,
+                   status_updated_at = ?
+             WHERE chat_id = ?
+            """,
+            (username, first_name, last_name, now, now, chat_id),
+        )
+        conn.commit()
         if row[2] in ("ru", "en"):
             user_data[chat_id]["lang"] = row[2]
 
@@ -4365,22 +4583,94 @@ def cmd_users(message):
     conn = get_db_connection()
     cur = conn.cursor()
 
-    # Общее количество пользователей
-    cur.execute("SELECT COUNT(*) FROM users")
-    total_users = cur.fetchone()[0]
+    cur.execute(
+        """
+        SELECT
+            COUNT(*),
+            COALESCE(SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN is_active = 0 THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN is_active IS NULL THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN registered_at IS NULL THEN 1 ELSE 0 END), 0)
+        FROM users
+        """
+    )
+    total_users, active_users, inactive_users, unknown_users, legacy_users = cur.fetchone()
 
-    # Последние 10 зарегистрированных
-    cur.execute("SELECT chat_id, referral_code FROM users ORDER BY rowid DESC LIMIT 10")
+    # Начиная с этой версии регистрация имеет собственный timestamp. Раньше
+    # chat_id был INTEGER PRIMARY KEY и одновременно rowid, поэтому сортировка
+    # по rowid фактически сортировала номера Telegram, а не время регистрации.
+    cur.execute(
+        """
+        SELECT chat_id, username, first_name, last_name, registered_at, is_active
+          FROM users
+         WHERE registered_at IS NOT NULL
+         ORDER BY registered_at DESC
+         LIMIT 10
+        """
+    )
     recent = cur.fetchall()
 
     cur.close()
     conn.close()
 
-    lines = [f"Всего пользователей: {total_users}", "", "Последние 10 зарегистрированных:"]
-    for uid, ref in recent:
-        lines.append(f"• {uid} (ref: {ref})")
+    lines = [
+        "<b>👥 Пользователи бота</b>",
+        "",
+        f"✅ Доступны (подтверждено): <b>{active_users}</b>",
+        f"🚫 Заблокировали / недоступны: <b>{inactive_users}</b>",
+        f"❓ Ещё не проверены: <b>{unknown_users}</b>",
+        f"📚 Всего записей в базе: <b>{total_users}</b>",
+        "",
+        "<b>Последние 10 регистраций:</b>",
+    ]
 
-    bot.send_message(message.chat.id, "\n".join(lines))
+    istanbul_tz = pytz.timezone("Europe/Istanbul")
+    for position, (uid, username, first_name, last_name, registered_at, status) in enumerate(
+        recent,
+        start=1,
+    ):
+        full_name = " ".join(
+            part.strip() for part in (first_name, last_name) if part and part.strip()
+        )
+        username_text = f"@{username.lstrip('@')}" if username else ""
+        if full_name and username_text:
+            identity = f"{full_name} · {username_text}"
+        else:
+            identity = full_name or username_text or "Без имени и username"
+
+        try:
+            registered_dt = datetime.datetime.fromisoformat(registered_at)
+            if registered_dt.tzinfo is None:
+                registered_dt = registered_dt.replace(tzinfo=datetime.timezone.utc)
+            registered_text = registered_dt.astimezone(istanbul_tz).strftime("%d.%m.%Y %H:%M")
+        except (TypeError, ValueError):
+            registered_text = "дата неизвестна"
+
+        status_icon = "✅" if status == 1 else "🚫" if status == 0 else "❓"
+        lines.append(
+            f"{position}. {status_icon} {html.escape(identity)}\n"
+            f"   <code>{uid}</code> · {registered_text}"
+        )
+
+    if not recent:
+        lines.append("Пока нет новых регистраций после обновления.")
+
+    if legacy_users:
+        lines.extend([
+            "",
+            f"ℹ️ У старых записей без даты: <b>{legacy_users}</b>. "
+            "Их точный порядок регистрации восстановить нельзя; новые уже "
+            "сохраняются с именем, username и временем.",
+        ])
+
+    if unknown_users:
+        lines.extend([
+            "",
+            "ℹ️ Непроверенные получат точный статус при следующей рассылке "
+            "или когда снова откроют бота.",
+        ])
+
+    bot.send_message(message.chat.id, "\n".join(lines), parse_mode="HTML")
 
 
 @ensure_user
@@ -5950,4 +6240,8 @@ if __name__ == "__main__":
 
     # 5) Запускаем бота
     bot.delete_webhook()
-    bot.infinity_polling(timeout=10, long_polling_timeout=5)
+    bot.infinity_polling(
+        timeout=10,
+        long_polling_timeout=5,
+        allowed_updates=["message", "callback_query", "my_chat_member"],
+    )
