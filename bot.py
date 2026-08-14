@@ -54,7 +54,13 @@ PAYMENT_METHODS = {
     "uah": ("🇺🇦 Гривны", "🇺🇦 Hryvnia", "PAYMENT_UAH"),
 }
 
-BOT_VERSION = "2026.08.14-active-users-v14"
+# После доставки подтверждение нужно для переводов и онлайн-оплаты.
+# Для наличных и бесплатного заказа пользователь ничего не отправляет.
+PROOF_REQUIRED_DELIVERY_METHODS = {
+    "rub", "dollar", "euro", "uah", "iban", "crypto",
+}
+
+BOT_VERSION = "2026.08.14-delivery-payment-proof-v15"
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
 print("BOT_VERSION =", BOT_VERSION, flush=True)
@@ -174,7 +180,10 @@ cursor_init.execute("""
         points_spent   INTEGER DEFAULT 0,
         points_earned  INTEGER DEFAULT 0,
         promo_code     TEXT,
-        promo_discount INTEGER DEFAULT 0
+        promo_discount INTEGER DEFAULT 0,
+        delivery_currency TEXT,
+        delivered_at   TEXT,
+        payment_status TEXT
     )
 """)
 
@@ -187,6 +196,9 @@ for column_name, column_type in (
     ("points_earned", "INTEGER DEFAULT 0"),
     ("promo_code", "TEXT"),
     ("promo_discount", "INTEGER DEFAULT 0"),
+    ("delivery_currency", "TEXT"),
+    ("delivered_at", "TEXT"),
+    ("payment_status", "TEXT"),
 ):
     if column_name not in order_columns:
         cursor_init.execute(
@@ -202,6 +214,28 @@ cursor_init.execute("""
         updated_at  TEXT NOT NULL
     )
 """)
+
+# Пользователь отправляет подтверждение оплаты только после доставки.
+# В SQLite сохраняются идентификаторы Telegram-сообщений и статус проверки;
+# сами фотографии и документы бот не скачивает на Railway.
+cursor_init.execute("""
+    CREATE TABLE IF NOT EXISTS payment_proofs (
+        proof_id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id                INTEGER NOT NULL,
+        chat_id                 INTEGER NOT NULL,
+        user_message_id         INTEGER NOT NULL,
+        admin_message_id        INTEGER,
+        message_type            TEXT NOT NULL,
+        status                  TEXT NOT NULL DEFAULT 'uploading',
+        created_at              TEXT NOT NULL,
+        reviewed_at             TEXT,
+        UNIQUE(chat_id, user_message_id)
+    )
+""")
+cursor_init.execute(
+    "CREATE INDEX IF NOT EXISTS idx_payment_proofs_order "
+    "ON payment_proofs(order_id, created_at)"
+)
 
 # Промокод хранит общий лимит кампании. Отдельная таблица использований
 # гарантирует, что один пользователь применит конкретную кампанию только раз.
@@ -4387,12 +4421,14 @@ def handle_payment_send(call):
         f"Способ: <b>{method_name}</b>\n"
         f"{detail_html}\n\n"
         f"{copy_hint}\n"
-        "После оплаты отправьте продавцу подтверждение платежа.",
+        "После доставки бот предложит загрузить подтверждение оплаты. "
+        "При оплате наличными чек не требуется.",
         f"<b>💳 Payment details for order #{order_id}</b>\n\n"
         f"Method: <b>{method_name}</b>\n"
         f"{detail_html}\n\n"
         f"{copy_hint}\n"
-        "After payment, send the seller your payment confirmation.",
+        "After delivery, the bot will offer to upload your payment confirmation. "
+        "No receipt is required for cash payments.",
     )
     try:
         bot.send_message(
@@ -4414,6 +4450,550 @@ def handle_payment_send(call):
         reply_markup=admin_order_keyboard(order_id, customer_chat_id, method_key),
     )
     bot.answer_callback_query(call.id, f"Отправлено: {method[0]}", show_alert=True)
+
+
+def delivered_payment_keyboard(
+    chat_id: int,
+    order_id: int,
+    proof_required: bool,
+) -> types.InlineKeyboardMarkup:
+    """Кнопки под сообщением о доставке."""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    if proof_required:
+        kb.add(types.InlineKeyboardButton(
+            text=tr(chat_id, "📎 Отправить чек", "📎 Upload payment proof"),
+            callback_data=f"upload_proof|{order_id}",
+        ))
+    kb.add(types.InlineKeyboardButton(
+        text=nav_text(chat_id, "menu"),
+        callback_data="go_back_to_categories",
+    ))
+    return kb
+
+
+def payment_proof_review_keyboard(proof_id: int) -> types.InlineKeyboardMarkup:
+    """Действия владельца над присланным подтверждением оплаты."""
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton(
+            text="✅ Подтвердить оплату",
+            callback_data=f"proof_accept|{proof_id}",
+        ),
+        types.InlineKeyboardButton(
+            text="🔄 Попросить другой чек",
+            callback_data=f"proof_retry|{proof_id}",
+        ),
+    )
+    return kb
+
+
+def send_delivered_customer_message(
+    chat_id: int,
+    order_id: int,
+    proof_required: bool,
+) -> None:
+    """Сообщает о доставке и, при онлайн-оплате, предлагает прислать чек."""
+    init_user(chat_id)
+    if proof_required:
+        user_data[chat_id]["awaiting_payment_proof_order_id"] = order_id
+    else:
+        user_data[chat_id].pop("awaiting_payment_proof_order_id", None)
+
+    text = tr(
+        chat_id,
+        f"<b>✅ Ваш заказ №{order_id} доставлен!</b>\n\n"
+        "Спасибо, что выбрали нас ❤️\n\n"
+        "💵 Если вы оплатили наличными — просто проигнорируйте это сообщение.\n"
+        "💳 Если оплата была переводом, через банк или криптовалютой — "
+        "отправьте сюда фотографию чека или файл подтверждения.\n\n"
+        "Бот автоматически привяжет его к вашему заказу.",
+        f"<b>✅ Your order #{order_id} has been delivered!</b>\n\n"
+        "Thank you for choosing us ❤️\n\n"
+        "💵 If you paid in cash, simply ignore this message.\n"
+        "💳 If you paid by bank transfer, online, or with cryptocurrency, "
+        "send a photo or a file confirming the payment here.\n\n"
+        "The bot will automatically attach it to your order.",
+    )
+    bot.send_message(
+        chat_id,
+        text,
+        reply_markup=delivered_payment_keyboard(chat_id, order_id, proof_required),
+    )
+
+
+def pending_payment_proof_order(
+    chat_id: int,
+    preferred_order_id: int | None = None,
+) -> tuple[int, int, str | None] | None:
+    """Возвращает доставленный заказ, который ожидает подтверждение оплаты."""
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    try:
+        if preferred_order_id is not None:
+            cursor_local.execute(
+                """
+                SELECT order_id, total, delivery_currency
+                  FROM orders
+                 WHERE order_id = ?
+                   AND chat_id = ?
+                   AND payment_status = 'awaiting_proof'
+                """,
+                (preferred_order_id, chat_id),
+            )
+            row = cursor_local.fetchone()
+            if row:
+                return int(row[0]), int(row[1] or 0), row[2]
+
+        cursor_local.execute(
+            """
+            SELECT order_id, total, delivery_currency
+              FROM orders
+             WHERE chat_id = ?
+               AND payment_status = 'awaiting_proof'
+             ORDER BY delivered_at DESC, order_id DESC
+             LIMIT 1
+            """,
+            (chat_id,),
+        )
+        row = cursor_local.fetchone()
+        if not row:
+            return None
+        return int(row[0]), int(row[1] or 0), row[2]
+    finally:
+        cursor_local.close()
+        conn_local.close()
+
+
+def has_pending_payment_proof(message) -> bool:
+    """Фильтр: фото/файл пришёл от клиента с ожидающим оплату заказом."""
+    if getattr(getattr(message, "chat", None), "type", None) != "private":
+        return False
+    chat_id = message.chat.id
+    preferred = user_data.get(chat_id, {}).get("awaiting_payment_proof_order_id")
+    try:
+        preferred_id = int(preferred) if preferred is not None else None
+    except (TypeError, ValueError):
+        preferred_id = None
+    try:
+        return pending_payment_proof_order(chat_id, preferred_id) is not None
+    except sqlite3.Error as exc:
+        print(f"Payment proof lookup failed for {chat_id}: {exc}", flush=True)
+        return False
+
+
+def valid_payment_proof_document(message) -> bool:
+    """Разрешает изображения и PDF, но не произвольные исполняемые файлы."""
+    if message.content_type == "photo":
+        return True
+    document = getattr(message, "document", None)
+    if document is None:
+        return False
+    mime_type = str(getattr(document, "mime_type", "") or "").casefold()
+    file_name = str(getattr(document, "file_name", "") or "").casefold()
+    return (
+        mime_type.startswith("image/")
+        or mime_type == "application/pdf"
+        or file_name.endswith((".jpg", ".jpeg", ".png", ".webp", ".heic", ".pdf"))
+    )
+
+
+@bot.callback_query_handler(
+    func=lambda call: call.data and call.data.startswith("upload_proof|")
+)
+def handle_upload_proof_prompt(call):
+    chat_id = call.from_user.id
+    if call.message.chat.type != "private":
+        return bot.answer_callback_query(call.id, "Откройте личный чат с ботом.", show_alert=True)
+    try:
+        order_id = int(call.data.split("|", 1)[1])
+    except (ValueError, IndexError):
+        return bot.answer_callback_query(call.id, "Некорректный заказ.", show_alert=True)
+
+    order_row = pending_payment_proof_order(chat_id, order_id)
+    if not order_row or order_row[0] != order_id:
+        return bot.answer_callback_query(
+            call.id,
+            tr(
+                chat_id,
+                "Для этого заказа чек уже получен или не требуется.",
+                "Payment proof has already been received or is not required.",
+            ),
+            show_alert=True,
+        )
+
+    init_user(chat_id)
+    user_data[chat_id]["awaiting_payment_proof_order_id"] = order_id
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        chat_id,
+        tr(
+            chat_id,
+            f"📎 Отправьте одним сообщением фотографию чека или PDF/изображение "
+            f"для заказа №{order_id}.",
+            f"📎 Send one photo, PDF, or image confirming payment for order #{order_id}.",
+        ),
+        reply_markup=back_to_main_keyboard(chat_id),
+    )
+
+
+@bot.message_handler(
+    content_types=["photo", "document"],
+    func=has_pending_payment_proof,
+)
+def handle_payment_proof_upload(message):
+    chat_id = message.chat.id
+    init_user(chat_id)
+
+    if not valid_payment_proof_document(message):
+        return bot.send_message(
+            chat_id,
+            tr(
+                chat_id,
+                "Пожалуйста, отправьте фотографию, изображение или PDF-файл.",
+                "Please send a photo, image, or PDF file.",
+            ),
+            reply_markup=back_to_main_keyboard(chat_id),
+        )
+
+    preferred = user_data[chat_id].get("awaiting_payment_proof_order_id")
+    try:
+        preferred_id = int(preferred) if preferred is not None else None
+    except (TypeError, ValueError):
+        preferred_id = None
+    order_row = pending_payment_proof_order(chat_id, preferred_id)
+    if not order_row:
+        return bot.send_message(
+            chat_id,
+            tr(
+                chat_id,
+                "Нет доставленного заказа, ожидающего чек.",
+                "There is no delivered order waiting for payment proof.",
+            ),
+            reply_markup=back_to_main_keyboard(chat_id),
+        )
+
+    order_id, order_total, delivery_currency = order_row
+    now = utc_now_iso()
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    try:
+        cursor_local.execute("BEGIN IMMEDIATE")
+        cursor_local.execute(
+            """
+            UPDATE orders
+               SET payment_status = 'proof_received'
+             WHERE order_id = ?
+               AND chat_id = ?
+               AND payment_status = 'awaiting_proof'
+            """,
+            (order_id, chat_id),
+        )
+        if cursor_local.rowcount != 1:
+            conn_local.rollback()
+            return bot.send_message(
+                chat_id,
+                tr(chat_id, "Чек уже был отправлен.", "Payment proof was already sent."),
+            )
+        cursor_local.execute(
+            """
+            INSERT INTO payment_proofs (
+                order_id, chat_id, user_message_id, message_type, status, created_at
+            )
+            VALUES (?, ?, ?, ?, 'uploading', ?)
+            """,
+            (order_id, chat_id, message.message_id, message.content_type, now),
+        )
+        proof_id = int(cursor_local.lastrowid)
+        conn_local.commit()
+    except Exception as exc:
+        conn_local.rollback()
+        print(f"Payment proof DB save failed for order {order_id}: {exc}", flush=True)
+        return bot.send_message(
+            chat_id,
+            tr(
+                chat_id,
+                "Не удалось сохранить чек. Пожалуйста, попробуйте ещё раз.",
+                "Could not save the payment proof. Please try again.",
+            ),
+        )
+    finally:
+        cursor_local.close()
+        conn_local.close()
+
+    username, first_name, last_name = telegram_profile_values(message.from_user)
+    full_name = " ".join(
+        part.strip() for part in (first_name, last_name) if part and part.strip()
+    )
+    username_text = f"@{username.lstrip('@')}" if username else ""
+    customer_name = " · ".join(part for part in (full_name, username_text) if part)
+    customer_name = customer_name or "Без имени и username"
+    method_text = str(delivery_currency or "online").upper()
+    admin_caption = (
+        "<b>🧾 Подтверждение оплаты</b>\n\n"
+        f"Заказ: <b>№{order_id}</b>\n"
+        f"Пользователь: {html.escape(customer_name)}\n"
+        f"ID: <code>{chat_id}</code>\n"
+        f"Сумма заказа: <b>{format_money(order_total)}₺</b>\n"
+        f"Способ при доставке: <b>{html.escape(method_text)}</b>\n\n"
+        "Статус: ⏳ Ожидает проверки"
+    )
+
+    try:
+        copied_message = bot.copy_message(
+            chat_id=GROUP_CHAT_ID,
+            from_chat_id=chat_id,
+            message_id=message.message_id,
+            caption=admin_caption,
+            parse_mode="HTML",
+            reply_markup=payment_proof_review_keyboard(proof_id),
+        )
+        admin_message_id = int(copied_message.message_id)
+    except Exception as exc:
+        print(f"Payment proof delivery failed for order {order_id}: {exc}", flush=True)
+        conn_local = get_db_connection()
+        cursor_local = conn_local.cursor()
+        try:
+            cursor_local.execute("BEGIN IMMEDIATE")
+            cursor_local.execute(
+                "UPDATE payment_proofs SET status = 'delivery_failed' WHERE proof_id = ?",
+                (proof_id,),
+            )
+            cursor_local.execute(
+                "UPDATE orders SET payment_status = 'awaiting_proof' WHERE order_id = ?",
+                (order_id,),
+            )
+            conn_local.commit()
+        except sqlite3.Error as db_exc:
+            conn_local.rollback()
+            print(
+                f"Payment proof rollback failed for order {order_id}: {db_exc}",
+                flush=True,
+            )
+        finally:
+            cursor_local.close()
+            conn_local.close()
+        return bot.send_message(
+            chat_id,
+            tr(
+                chat_id,
+                "Не удалось передать чек продавцу. Попробуйте отправить его ещё раз.",
+                "Could not deliver the payment proof. Please send it again.",
+            ),
+            reply_markup=back_to_main_keyboard(chat_id),
+        )
+
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    try:
+        cursor_local.execute(
+            "UPDATE payment_proofs SET status = 'pending', admin_message_id = ? "
+            "WHERE proof_id = ?",
+            (admin_message_id, proof_id),
+        )
+        conn_local.commit()
+    except sqlite3.Error as exc:
+        conn_local.rollback()
+        # Сам чек уже находится в админской группе. Статус uploading также
+        # допускается кнопками проверки, поэтому не просим клиента дублировать файл.
+        print(
+            f"Payment proof final DB update failed for order {order_id}: {exc}",
+            flush=True,
+        )
+    finally:
+        cursor_local.close()
+        conn_local.close()
+
+    user_data[chat_id].pop("awaiting_payment_proof_order_id", None)
+    bot.send_message(
+        chat_id,
+        tr(
+            chat_id,
+            f"✅ Подтверждение оплаты заказа №{order_id} отправлено продавцу.",
+            f"✅ Payment confirmation for order #{order_id} was sent to the seller.",
+        ),
+        reply_markup=back_to_main_keyboard(chat_id),
+    )
+
+
+def reject_payment_proof_callback(call) -> bool:
+    if not is_owner(call.from_user.id):
+        bot.answer_callback_query(call.id, "Нет доступа.", show_alert=True)
+        return True
+    if call.message.chat.id != GROUP_CHAT_ID:
+        bot.answer_callback_query(
+            call.id,
+            "Кнопка доступна только в админ-группе.",
+            show_alert=True,
+        )
+        return True
+    return False
+
+
+@bot.callback_query_handler(
+    func=lambda call: call.data and call.data.startswith("proof_accept|")
+)
+def handle_payment_proof_accept(call):
+    if reject_payment_proof_callback(call):
+        return
+    try:
+        proof_id = int(call.data.split("|", 1)[1])
+    except (ValueError, IndexError):
+        return bot.answer_callback_query(call.id, "Некорректный чек.", show_alert=True)
+
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    cursor_local.execute("BEGIN IMMEDIATE")
+    cursor_local.execute(
+        "SELECT order_id, chat_id, status FROM payment_proofs WHERE proof_id = ?",
+        (proof_id,),
+    )
+    row = cursor_local.fetchone()
+    if not row or row[2] not in {"pending", "uploading"}:
+        conn_local.rollback()
+        cursor_local.close()
+        conn_local.close()
+        return bot.answer_callback_query(
+            call.id,
+            "Этот чек уже обработан.",
+            show_alert=True,
+        )
+
+    order_id, customer_chat_id, _status = int(row[0]), int(row[1]), row[2]
+    reviewed_at = utc_now_iso()
+    cursor_local.execute(
+        "UPDATE payment_proofs SET status = 'confirmed', reviewed_at = ? "
+        "WHERE proof_id = ?",
+        (reviewed_at, proof_id),
+    )
+    cursor_local.execute(
+        "UPDATE orders SET payment_status = 'confirmed' WHERE order_id = ?",
+        (order_id,),
+    )
+    conn_local.commit()
+    cursor_local.close()
+    conn_local.close()
+
+    caption = (call.message.caption or "").replace(
+        "Статус: ⏳ Ожидает проверки",
+        "Статус: ✅ Оплата подтверждена",
+    )
+    try:
+        bot.edit_message_caption(
+            caption=caption,
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            parse_mode="HTML",
+            reply_markup=None,
+        )
+    except Exception as exc:
+        print(f"Payment proof caption update failed for {proof_id}: {exc}", flush=True)
+
+    notification_sent = True
+    try:
+        init_user(customer_chat_id)
+        bot.send_message(
+            customer_chat_id,
+            tr(
+                customer_chat_id,
+                f"✅ Оплата заказа №{order_id} подтверждена. Спасибо!",
+                f"✅ Payment for order #{order_id} has been confirmed. Thank you!",
+            ),
+            reply_markup=back_to_main_keyboard(customer_chat_id),
+        )
+    except Exception as exc:
+        notification_sent = False
+        print(f"Payment confirmation delivery failed for order {order_id}: {exc}", flush=True)
+
+    bot.answer_callback_query(
+        call.id,
+        "Оплата подтверждена" if notification_sent else "Подтверждено; клиент не получил сообщение",
+        show_alert=not notification_sent,
+    )
+
+
+@bot.callback_query_handler(
+    func=lambda call: call.data and call.data.startswith("proof_retry|")
+)
+def handle_payment_proof_retry(call):
+    if reject_payment_proof_callback(call):
+        return
+    try:
+        proof_id = int(call.data.split("|", 1)[1])
+    except (ValueError, IndexError):
+        return bot.answer_callback_query(call.id, "Некорректный чек.", show_alert=True)
+
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    cursor_local.execute("BEGIN IMMEDIATE")
+    cursor_local.execute(
+        "SELECT order_id, chat_id, status FROM payment_proofs WHERE proof_id = ?",
+        (proof_id,),
+    )
+    row = cursor_local.fetchone()
+    if not row or row[2] not in {"pending", "uploading"}:
+        conn_local.rollback()
+        cursor_local.close()
+        conn_local.close()
+        return bot.answer_callback_query(
+            call.id,
+            "Этот чек уже обработан.",
+            show_alert=True,
+        )
+
+    order_id, customer_chat_id, _status = int(row[0]), int(row[1]), row[2]
+    reviewed_at = utc_now_iso()
+    cursor_local.execute(
+        "UPDATE payment_proofs SET status = 'rejected', reviewed_at = ? "
+        "WHERE proof_id = ?",
+        (reviewed_at, proof_id),
+    )
+    cursor_local.execute(
+        "UPDATE orders SET payment_status = 'awaiting_proof' WHERE order_id = ?",
+        (order_id,),
+    )
+    conn_local.commit()
+    cursor_local.close()
+    conn_local.close()
+
+    caption = (call.message.caption or "").replace(
+        "Статус: ⏳ Ожидает проверки",
+        "Статус: 🔄 Запрошен другой чек",
+    )
+    try:
+        bot.edit_message_caption(
+            caption=caption,
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            parse_mode="HTML",
+            reply_markup=None,
+        )
+    except Exception as exc:
+        print(f"Payment proof retry caption failed for {proof_id}: {exc}", flush=True)
+
+    notification_sent = True
+    try:
+        init_user(customer_chat_id)
+        user_data[customer_chat_id]["awaiting_payment_proof_order_id"] = order_id
+        bot.send_message(
+            customer_chat_id,
+            tr(
+                customer_chat_id,
+                f"🔄 Для заказа №{order_id} нужен другой чек. "
+                "Отправьте новую фотографию или PDF/изображение.",
+                f"🔄 Another payment proof is needed for order #{order_id}. "
+                "Send a new photo, PDF, or image.",
+            ),
+            reply_markup=back_to_main_keyboard(customer_chat_id),
+        )
+    except Exception as exc:
+        notification_sent = False
+        print(f"Payment proof retry delivery failed for order {order_id}: {exc}", flush=True)
+
+    bot.answer_callback_query(
+        call.id,
+        "Запрошен другой чек" if notification_sent else "Статус изменён; клиент не получил сообщение",
+        show_alert=not notification_sent,
+    )
 
 # в самом верху вашего файла, сразу после импорта и констант:
 
@@ -6065,55 +6645,102 @@ def handle_deliver_currency(call: types.CallbackQuery):
     if call.message.chat.id != GROUP_CHAT_ID:
         return bot.answer_callback_query(call.id, "Нажали не в том чате", show_alert=True)
 
-    bot.answer_callback_query(call.id)
+    try:
+        _, oid, currency = call.data.split("|", 2)
+        order_id = int(oid)
+    except (ValueError, IndexError):
+        return bot.answer_callback_query(call.id, "Data error", show_alert=True)
 
-    _, oid, currency = call.data.split("|", 2)
-    order_id = int(oid)
+    currency = currency.casefold()
+    allowed_currencies = {
+        "cash", "rub", "dollar", "euro", "uah", "iban", "crypto", "free",
+    }
+    if currency not in allowed_currencies:
+        return bot.answer_callback_query(call.id, "Unknown payment method", show_alert=True)
+
+    proof_required = currency in PROOF_REQUIRED_DELIVERY_METHODS
+    if proof_required:
+        payment_status = "awaiting_proof"
+    elif currency == "cash":
+        payment_status = "cash"
+    else:
+        payment_status = "not_required"
 
     conn = get_db_connection()
     cur = conn.cursor()
+    try:
+        # Счётчик, журнал доставки и состояние заказа фиксируются одной
+        # транзакцией. Повторное нажатие не увеличит статистику второй раз.
+        cur.execute("BEGIN IMMEDIATE")
+        cur.execute(
+            "SELECT 1 FROM delivered_log WHERE order_id = ? LIMIT 1",
+            (order_id,),
+        )
+        if cur.fetchone():
+            conn.rollback()
+            return bot.answer_callback_query(
+                call.id,
+                "This order has already been marked delivered.",
+                show_alert=True,
+            )
 
-    # Проверяем, не отмечен ли уже заказ
-    cur.execute("SELECT 1 FROM delivered_log WHERE order_id = ? LIMIT 1", (order_id,))
-    if cur.fetchone():
+        cur.execute(
+            "SELECT chat_id, items_json, total FROM orders WHERE order_id = ?",
+            (order_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            conn.rollback()
+            return bot.answer_callback_query(call.id, "Order not found", show_alert=True)
+
+        customer_chat_id = int(row[0])
+        items = json.loads(row[1] or "[]")
+        if not isinstance(items, list):
+            raise ValueError("items_json is not a list")
+        qty = len(items)
+        now = utc_now_iso()
+
+        cur.execute(
+            """
+            INSERT INTO delivered_counts(currency, count)
+            VALUES (?, ?)
+            ON CONFLICT(currency) DO UPDATE
+            SET count = delivered_counts.count + excluded.count
+            """,
+            (currency, qty),
+        )
+        cur.execute(
+            "INSERT INTO delivered_log(order_id, currency, qty, timestamp) "
+            "VALUES (?, ?, ?, ?)",
+            (order_id, currency, qty, now),
+        )
+        cur.execute(
+            """
+            UPDATE orders
+               SET delivery_currency = ?,
+                   delivered_at = ?,
+                   payment_status = ?
+             WHERE order_id = ?
+            """,
+            (currency, now, payment_status, order_id),
+        )
+        cur.execute("SELECT SUM(count) FROM delivered_counts")
+        overall_total = cur.fetchone()[0] or 0
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        print(f"Deliver order {order_id} failed: {type(exc).__name__}: {exc}", flush=True)
+        return bot.answer_callback_query(
+            call.id,
+            "Не удалось отметить заказ доставленным. Ошибка записана в Railway Logs.",
+            show_alert=True,
+        )
+    finally:
         cur.close()
         conn.close()
-        return bot.answer_callback_query(call.id, "This order has already been marked delivered.", show_alert=True)
-
-    cur.execute("SELECT items_json FROM orders WHERE order_id = ?", (order_id,))
-    row = cur.fetchone()
-
-    if not row:
-        cur.close()
-        conn.close()
-        return bot.answer_callback_query(call.id, "Order not found", show_alert=True)
-
-    items = json.loads(row[0])
-    qty = len(items)
-
-    cur.execute("""
-        INSERT INTO delivered_counts(currency, count)
-        VALUES (?, ?)
-        ON CONFLICT(currency) DO UPDATE
-        SET count = delivered_counts.count + excluded.count
-    """, (currency, qty))
-    conn.commit()
-
-    now = datetime.datetime.utcnow().isoformat()
-    cur.execute(
-        "INSERT INTO delivered_log(order_id, currency, qty, timestamp) VALUES (?, ?, ?, ?)",
-        (order_id, currency, qty, now)
-    )
-    conn.commit()
-
-    cur.execute("SELECT SUM(count) FROM delivered_counts")
-    overall_total = cur.fetchone()[0] or 0
-
-    cur.close()
-    conn.close()
 
     # Обновляем текст и убираем старые статусы
-    text = call.message.text
+    text = call.message.text or ""
     text = text.replace("🚗 In Delivery", "")
     text = text.replace("❌ Cancelled", "")
     text = text.replace("✅ Delivered", "")
@@ -6126,13 +6753,40 @@ def handle_deliver_currency(call: types.CallbackQuery):
         f"✅ Delivered"
     )
 
-    # Финально убираем ВСЕ кнопки
-    bot.edit_message_text(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        text=new_text,
-        parse_mode="HTML",
-        reply_markup=None
+    admin_message_updated = True
+    try:
+        # Финально убираем ВСЕ кнопки
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=new_text,
+            parse_mode="HTML",
+            reply_markup=None,
+        )
+    except Exception as exc:
+        admin_message_updated = False
+        print(f"Delivered order card update failed for {order_id}: {exc}", flush=True)
+
+    customer_notified = True
+    try:
+        send_delivered_customer_message(
+            customer_chat_id,
+            order_id,
+            proof_required,
+        )
+    except Exception as exc:
+        customer_notified = False
+        print(f"Delivered customer notification failed for order {order_id}: {exc}", flush=True)
+
+    callback_text = "Order delivered"
+    if not customer_notified:
+        callback_text += "; customer was not notified"
+    if not admin_message_updated:
+        callback_text += "; card was not updated"
+    bot.answer_callback_query(
+        call.id,
+        callback_text,
+        show_alert=not customer_notified or not admin_message_updated,
     )
 
 
