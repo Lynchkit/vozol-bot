@@ -807,10 +807,6 @@ def points_choice_keyboard(chat_id: int, max_points: int):
         callback_data="points_custom",
     ))
     kb.add(types.InlineKeyboardButton(
-        text=tr(chat_id, "❌ Не списывать баллы", "❌ Do not use points"),
-        callback_data="no_points"
-    ))
-    kb.add(types.InlineKeyboardButton(
         text=nav_text(chat_id, "review"),
         callback_data="review_order",
     ))
@@ -1787,25 +1783,18 @@ def checkout_conversion_text(chat_id: int, total_after: int | float, qty: int) -
     if not all(rates.get(code, 0) for code in ("RUB", "USD", "EUR", "UAH")):
         return tr(
             chat_id,
-            "\n≈ ₽— · $— · €— · ₴—\n"
-            "⚠️ Курсы валют временно недоступны.",
-            "\n≈ ₽— · $— · €— · ₴—\n"
-            "⚠️ Exchange rates are temporarily unavailable.",
+            " (≈ ₽—, €—, $—, ₴—; курсы временно недоступны)",
+            " (≈ ₽—, €—, $—, ₴—; rates temporarily unavailable)",
         )
     rub = round(total_after * rates["RUB"] + 500 * qty, 2)
     usd = round(total_after * rates["USD"] + 2 * qty, 2)
     eur = round(total_after * rates["EUR"] + 2 * qty, 2)
     uah = round(total_after * rates["UAH"] + 350 * qty, 2)
-    values = (
-        f"≈ {format_money(rub)}₽\n"
-        f"≈ ${format_money(usd)}\n"
-        f"≈ €{format_money(eur)}\n"
-        f"≈ ₴{format_money(uah)}"
-    )
-    return tr(
-        chat_id,
-        f"\nОриентировочно в других валютах:\n{values}",
-        f"\nEstimated in other currencies:\n{values}",
+    return (
+        f" (≈ {format_money(rub)}₽, "
+        f"€{format_money(eur)}, "
+        f"${format_money(usd)}, "
+        f"₴{format_money(uah)})"
     )
 
 
