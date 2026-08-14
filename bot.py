@@ -44,6 +44,15 @@ REFERRAL_BONUS_POINTS = 200
 GROUP_CHAT_ID    = int(os.getenv("GROUP_CHAT_ID",    "-1002414380144"))
 PERSONAL_CHAT_ID = int(os.getenv("PERSONAL_CHAT_ID", "0"))
 
+# Сами платёжные данные задаются только в закрытых Railway Variables.
+# В исходном коде и пользовательском профиле реквизиты не хранятся.
+PAYMENT_METHODS = {
+    "rub": ("🇷🇺 Рубли", "🇷🇺 Rubles", "PAYMENT_RUB"),
+    "iban": ("🇹🇷 IBAN", "🇹🇷 IBAN", "PAYMENT_IBAN"),
+    "crypto": ("₿ Крипта", "₿ Crypto", "PAYMENT_CRYPTO"),
+    "uah": ("🇺🇦 Гривны", "🇺🇦 Hryvnia", "PAYMENT_UAH"),
+}
+
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID)
 
 bot = TeleBot(TOKEN, parse_mode="HTML")
@@ -520,6 +529,78 @@ def render_inline_screen(
 def is_owner(user_id: int) -> bool:
     """Единственный владелец бота задаётся переменной Railway ADMIN_ID."""
     return user_id == ADMIN_ID
+
+
+def payment_detail(method_key: str) -> str:
+    """Читает один реквизит из Railway, не записывая его в БД или код."""
+    method = PAYMENT_METHODS.get(method_key)
+    if not method:
+        return ""
+    return os.getenv(method[2], "").strip().replace("\\n", "\n")
+
+
+def payment_order_target(order_id: int):
+    """Возвращает покупателя и сумму существующего заказа."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    cursor.execute(
+        "SELECT chat_id, total FROM orders WHERE order_id = ?",
+        (order_id,),
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    connection.close()
+    return row
+
+
+def admin_order_keyboard(
+    order_id: int,
+    customer_chat_id: int,
+    sent_method: str | None = None,
+) -> types.InlineKeyboardMarkup:
+    """Все действия над заказом в одном сообщении админ-группы."""
+    kb = types.InlineKeyboardMarkup(row_width=3)
+    kb.add(
+        types.InlineKeyboardButton(
+            text="❌ Cancel Order",
+            callback_data=f"cancel_order|{order_id}|{customer_chat_id}",
+        ),
+        types.InlineKeyboardButton(
+            text="✅ Delivered",
+            callback_data=f"order_delivered|{order_id}|{customer_chat_id}",
+        ),
+        types.InlineKeyboardButton(
+            text="🚗 OMW",
+            callback_data=f"courier_on_way|{order_id}|{customer_chat_id}",
+        ),
+    )
+    if sent_method in PAYMENT_METHODS:
+        label = PAYMENT_METHODS[sent_method][0]
+        text = f"✅ Реквизиты отправлены: {label} · отправить другие"
+    else:
+        text = "💳 Выслать реквизиты"
+    kb.add(types.InlineKeyboardButton(
+        text=text,
+        callback_data=f"payment_menu|{order_id}",
+    ))
+    return kb
+
+
+def payment_methods_keyboard(order_id: int) -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    buttons = [
+        types.InlineKeyboardButton(
+            text=method[0],
+            callback_data=f"payment_send|{order_id}|{method_key}",
+        )
+        for method_key, method in PAYMENT_METHODS.items()
+    ]
+    kb.add(*buttons)
+    kb.add(types.InlineKeyboardButton(
+        text="⬅️ Назад к управлению заказом",
+        callback_data=f"payment_back|{order_id}",
+    ))
+    return kb
 
 
 def save_user_language(chat_id: int, lang_code: str) -> None:
@@ -3237,15 +3318,7 @@ def finalize_order(call):
         for (category, flavor, price), qty in grouped_summary.items()
     )
 
-    rates = fetch_rates()
-    if all(rates.get(code, 0) for code in ("RUB", "USD", "EUR", "UAH")):
-        rub = round(total_after * rates["RUB"] + 500 * len(cart), 2)
-        usd = round(total_after * rates["USD"] + 2 * len(cart), 2)
-        eur = round(total_after * rates["EUR"] + 2 * len(cart), 2)
-        uah = round(total_after * rates["UAH"] + 350 * len(cart), 2)
-        conversion_suffix = f" (≈ {rub}₽, ${usd}, €{eur}, ₴{uah})"
-    else:
-        conversion_suffix = ""
+    conversion_suffix = checkout_conversion_text(chat_id, total_after, len(cart))
 
     username = getattr(call.from_user, "username", None)
     first_name = getattr(call.from_user, "first_name", None)
@@ -3289,21 +3362,7 @@ def finalize_order(call):
         f"📱 Contact: {safe_contact}\n"
         f"💬 Comment: {translated_comment}"
     )
-    kb_admin = types.InlineKeyboardMarkup(row_width=3)
-    kb_admin.add(
-        types.InlineKeyboardButton(
-            text="❌ Cancel Order",
-            callback_data=f"cancel_order|{order_id}|{chat_id}"
-        ),
-        types.InlineKeyboardButton(
-            text="✅ Delivered",
-            callback_data=f"order_delivered|{order_id}|{chat_id}"
-        ),
-        types.InlineKeyboardButton(
-            text="🚗 OMW",
-            callback_data=f"courier_on_way|{order_id}|{chat_id}"
-        )
-    )
+    kb_admin = admin_order_keyboard(order_id, chat_id)
 
     try:
         bot.send_message(GROUP_CHAT_ID, full_en, reply_markup=kb_admin)
@@ -3632,17 +3691,25 @@ def show_order_history(chat_id: int, call=None) -> None:
 
 
 def show_payment_info(chat_id: int, call=None) -> None:
-    text = tr(
-        chat_id,
-        "<b>💳 Оплата</b>\n\n"
-        "Реквизиты не публикуются в боте. Продавец отправит их лично после подтверждения заказа.",
-        "<b>💳 Payment</b>\n\n"
-        "Payment details are not published in the bot. The seller will send them privately after confirming the order.",
+    """Показывает владельцу его закрытые Railway-реквизиты."""
+    blocks = ["<b>💳 Мои платёжные реквизиты</b>"]
+    for method_key, (label_ru, _label_en, env_name) in PAYMENT_METHODS.items():
+        detail = payment_detail(method_key)
+        if detail:
+            blocks.append(f"<b>{label_ru}</b>\n<pre>{html.escape(detail)}</pre>")
+        else:
+            blocks.append(
+                f"<b>{label_ru}</b>\n"
+                f"⚠️ Не настроено: <code>{env_name}</code>"
+            )
+    blocks.append(
+        "Эту страницу и команду /payment может открыть только владелец бота."
     )
+    text = "\n\n".join(blocks)
     render_inline_screen(
         chat_id,
         text,
-        profile_back_keyboard(chat_id),
+        back_to_main_keyboard(chat_id),
         call,
         allow_media_edit=False,
     )
@@ -3696,6 +3763,12 @@ def handle_profile_history(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == "profile_payment")
 def handle_profile_payment(call):
+    if not is_owner(call.from_user.id) or call.message.chat.id != ADMIN_ID:
+        return bot.answer_callback_query(
+            call.id,
+            "У вас нет доступа.",
+            show_alert=True,
+        )
     init_user(call.from_user.id)
     bot.answer_callback_query(call.id)
     show_payment_info(call.from_user.id, call)
@@ -3891,8 +3964,122 @@ def cmd_stocknow(message: types.Message):
 @bot.message_handler(commands=['payment'])
 def cmd_payment(message):
     chat_id = message.chat.id
+    if not is_owner(message.from_user.id) or message.chat.type != "private":
+        bot.send_message(chat_id, "У вас нет доступа к этой команде.")
+        return
     init_user(chat_id)
     show_payment_info(chat_id)
+
+
+def reject_payment_callback(call) -> bool:
+    """Разрешает платёжные кнопки только владельцу в админ-группе."""
+    if is_owner(call.from_user.id) and call.message.chat.id == GROUP_CHAT_ID:
+        return False
+    bot.answer_callback_query(
+        call.id,
+        "У вас нет доступа.",
+        show_alert=True,
+    )
+    return True
+
+
+@bot.callback_query_handler(
+    func=lambda call: call.data and call.data.startswith("payment_menu|")
+)
+def handle_payment_menu(call):
+    if reject_payment_callback(call):
+        return
+    try:
+        order_id = int(call.data.split("|", 1)[1])
+    except (ValueError, IndexError):
+        return bot.answer_callback_query(call.id, "Некорректный заказ.", show_alert=True)
+    if not payment_order_target(order_id):
+        return bot.answer_callback_query(call.id, "Заказ не найден или отменён.", show_alert=True)
+    bot.edit_message_reply_markup(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=payment_methods_keyboard(order_id),
+    )
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(
+    func=lambda call: call.data and call.data.startswith("payment_back|")
+)
+def handle_payment_back(call):
+    if reject_payment_callback(call):
+        return
+    try:
+        order_id = int(call.data.split("|", 1)[1])
+    except (ValueError, IndexError):
+        return bot.answer_callback_query(call.id, "Некорректный заказ.", show_alert=True)
+    order_row = payment_order_target(order_id)
+    if not order_row:
+        return bot.answer_callback_query(call.id, "Заказ не найден или отменён.", show_alert=True)
+    bot.edit_message_reply_markup(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=admin_order_keyboard(order_id, int(order_row[0])),
+    )
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(
+    func=lambda call: call.data and call.data.startswith("payment_send|")
+)
+def handle_payment_send(call):
+    if reject_payment_callback(call):
+        return
+    try:
+        _, order_id_raw, method_key = call.data.split("|", 2)
+        order_id = int(order_id_raw)
+    except (ValueError, IndexError):
+        return bot.answer_callback_query(call.id, "Некорректные данные.", show_alert=True)
+
+    method = PAYMENT_METHODS.get(method_key)
+    if not method:
+        return bot.answer_callback_query(call.id, "Неизвестный способ оплаты.", show_alert=True)
+    detail = payment_detail(method_key)
+    if not detail:
+        return bot.answer_callback_query(
+            call.id,
+            f"Сначала настройте {method[2]} в Railway Variables.",
+            show_alert=True,
+        )
+    order_row = payment_order_target(order_id)
+    if not order_row:
+        return bot.answer_callback_query(call.id, "Заказ не найден или отменён.", show_alert=True)
+
+    customer_chat_id = int(order_row[0])
+    init_user(customer_chat_id)
+    method_name = tr(customer_chat_id, method[0], method[1])
+    message_text = tr(
+        customer_chat_id,
+        f"<b>💳 Реквизиты для оплаты заказа №{order_id}</b>\n\n"
+        f"Способ: <b>{method_name}</b>\n"
+        f"<pre>{html.escape(detail)}</pre>\n"
+        "После оплаты отправьте продавцу подтверждение платежа.",
+        f"<b>💳 Payment details for order #{order_id}</b>\n\n"
+        f"Method: <b>{method_name}</b>\n"
+        f"<pre>{html.escape(detail)}</pre>\n"
+        "After payment, send the seller your payment confirmation.",
+    )
+    try:
+        bot.send_message(customer_chat_id, message_text)
+    except Exception as exc:
+        print(f"Payment details delivery failed for order {order_id}: {exc}")
+        return bot.answer_callback_query(
+            call.id,
+            "Не удалось отправить пользователю. Возможно, он заблокировал бота.",
+            show_alert=True,
+        )
+
+    bot.edit_message_reply_markup(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=admin_order_keyboard(order_id, customer_chat_id, method_key),
+    )
+    bot.answer_callback_query(call.id, f"Отправлено: {method[0]}", show_alert=True)
 
 # в самом верху вашего файла, сразу после импорта и констант:
 
@@ -5461,12 +5648,10 @@ def handle_back_to_options(call: types.CallbackQuery):
     # сразу прекращаем крутилку
     bot.answer_callback_query(call.id)
     order_id = int(call.data.split("|", 1)[1])
-
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        types.InlineKeyboardButton(text="❌ Cancel",   callback_data=f"cancel_order|{order_id}"),
-        types.InlineKeyboardButton(text="✅ Order Delivered", callback_data=f"order_delivered|{order_id}")
-    )
+    order_row = payment_order_target(order_id)
+    if not order_row:
+        return bot.answer_callback_query(call.id, "Order not found", show_alert=True)
+    kb = admin_order_keyboard(order_id, int(order_row[0]))
 
     bot.edit_message_reply_markup(
         chat_id=call.message.chat.id,
@@ -5483,18 +5668,10 @@ def handle_back_to_group(call: types.CallbackQuery):
     bot.answer_callback_query(call.id)
     _, oid = call.data.split("|", 1)
     order_id = int(oid)
-
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        types.InlineKeyboardButton(
-            text="❌ Cancel",
-            callback_data=f"cancel_order|{order_id}"
-        ),
-        types.InlineKeyboardButton(
-            text="✅ Order Delivered",
-            callback_data=f"order_delivered|{order_id}"
-        )
-    )
+    order_row = payment_order_target(order_id)
+    if not order_row:
+        return bot.answer_callback_query(call.id, "Order not found", show_alert=True)
+    kb = admin_order_keyboard(order_id, int(order_row[0]))
     bot.edit_message_reply_markup(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
