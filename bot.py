@@ -37,6 +37,10 @@ if not TOKEN:
 
 ADMIN_ID = int(os.getenv("ADMIN_ID", "424751188"))
 
+# Баллы начисляются вдвое медленнее, чем раньше.
+PURCHASE_POINTS_DIVISOR = 60
+REFERRAL_BONUS_POINTS = 200
+
 GROUP_CHAT_ID    = int(os.getenv("GROUP_CHAT_ID",    "-1002414380144"))
 PERSONAL_CHAT_ID = int(os.getenv("PERSONAL_CHAT_ID", "0"))
 
@@ -124,7 +128,9 @@ cursor_init.execute("""
         total          INTEGER,
         timestamp      TEXT,
         points_spent   INTEGER DEFAULT 0,
-        points_earned  INTEGER DEFAULT 0
+        points_earned  INTEGER DEFAULT 0,
+        promo_code     TEXT,
+        promo_discount INTEGER DEFAULT 0
     )
 """)
 
@@ -132,10 +138,15 @@ cursor_init.execute("""
 # отдельно: наличие одного поля больше не мешает добавить второе.
 cursor_init.execute("PRAGMA table_info(orders)")
 order_columns = {row[1] for row in cursor_init.fetchall()}
-for column_name in ("points_spent", "points_earned"):
+for column_name, column_type in (
+    ("points_spent", "INTEGER DEFAULT 0"),
+    ("points_earned", "INTEGER DEFAULT 0"),
+    ("promo_code", "TEXT"),
+    ("promo_discount", "INTEGER DEFAULT 0"),
+):
     if column_name not in order_columns:
         cursor_init.execute(
-            f"ALTER TABLE orders ADD COLUMN {column_name} INTEGER DEFAULT 0"
+            f"ALTER TABLE orders ADD COLUMN {column_name} {column_type}"
         )
 
 # Незавершённая корзина хранится отдельно от оперативного состояния бота.
@@ -147,6 +158,34 @@ cursor_init.execute("""
         updated_at  TEXT NOT NULL
     )
 """)
+
+# Промокод хранит общий лимит кампании. Отдельная таблица использований
+# гарантирует, что один пользователь применит конкретную кампанию только раз.
+cursor_init.execute("""
+    CREATE TABLE IF NOT EXISTS promo_codes (
+        promo_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        code             TEXT NOT NULL UNIQUE,
+        discount_amount  INTEGER NOT NULL,
+        usage_limit      INTEGER NOT NULL,
+        used_count       INTEGER NOT NULL DEFAULT 0,
+        active           INTEGER NOT NULL DEFAULT 1,
+        created_at       TEXT NOT NULL
+    )
+""")
+cursor_init.execute("""
+    CREATE TABLE IF NOT EXISTS promo_redemptions (
+        promo_id         INTEGER NOT NULL,
+        chat_id          INTEGER NOT NULL,
+        order_id         INTEGER NOT NULL,
+        discount_amount  INTEGER NOT NULL,
+        redeemed_at      TEXT NOT NULL,
+        PRIMARY KEY (promo_id, chat_id)
+    )
+""")
+cursor_init.execute(
+    "CREATE INDEX IF NOT EXISTS idx_promo_redemptions_order "
+    "ON promo_redemptions(order_id)"
+)
 
 # Создание таблицы reviews
 cursor_init.execute("""
@@ -234,11 +273,14 @@ def init_user(chat_id: int):
             "wait_for_address": False,
             "wait_for_contact": False,
             "wait_for_comment": False,
+            "wait_for_promo": False,
             "address": "",
             "contact": "",
             "comment": "",
             "pending_discount": 0,
             "pending_points_spent": 0,
+            "promo_code": "",
+            "promo_discount": 0,
             "temp_total_try": 0,
             "temp_user_points": 0,
             "edit_phase": None,
@@ -342,6 +384,29 @@ def format_money(value) -> str:
     """Форматирует сумму без лишнего .0."""
     number = float(value)
     return str(int(number)) if number.is_integer() else f"{number:.2f}"
+
+
+def normalize_promo_code(value: str) -> str:
+    """Промокоды нечувствительны к регистру и не содержат пробелов по краям."""
+    return str(value or "").strip().upper()
+
+
+def is_valid_promo_code(value: str) -> bool:
+    """Разрешает удобные короткие коды на русском или английском языке."""
+    return bool(re.fullmatch(r"[0-9A-ZА-ЯЁ_-]{2,32}", value))
+
+
+def clear_promo_state(data: dict) -> None:
+    data.update({
+        "wait_for_promo": False,
+        "promo_code": "",
+        "promo_discount": 0,
+    })
+    data.pop("points_before_promo", None)
+
+
+class PromoCodeError(Exception):
+    """Ожидаемая ошибка повторного либо недоступного промокода."""
 
 
 def _stable_token(*parts: str) -> str:
@@ -479,13 +544,13 @@ def send_referral_info(chat_id: int, referral_code: str) -> None:
     invite_link = f"https://t.me/{bot_username}?start=ref={referral_code}"
     if user_data.get(chat_id, {}).get("lang") == "en":
         text = (
-            "🎁 <b>Get 200 points for inviting a friend!</b>\n\n"
+            f"🎁 <b>Get {REFERRAL_BONUS_POINTS} points for inviting a friend!</b>\n\n"
             f"<b>Referral code:</b> <code>{referral_code}</code>\n"
             f"<b>Invitation link:</b>\n{invite_link}"
         )
     else:
         text = (
-            "🎁 <b>200 баллов за приглашение друга!</b>\n\n"
+            f"🎁 <b>{REFERRAL_BONUS_POINTS} баллов за приглашение друга!</b>\n\n"
             f"<b>Реферальный код:</b> <code>{referral_code}</code>\n"
             f"<b>Ссылка для приглашения:</b>\n{invite_link}"
         )
@@ -869,6 +934,7 @@ def edit_action_keyboard() -> types.ReplyKeyboardMarkup:
     kb.add("💲 Fix Price", "ALL IN", "🔄 Actual Flavor")
     kb.add("🖼️ Add Category Picture", "Set Category Flavor to 0")
     kb.add("📦 New Supply", "MESSAGE")
+    kb.add("PROMO CREATE")
     kb.add("⬅️ Back", "❌ Cancel")
     return kb
 
@@ -892,11 +958,14 @@ def cmd_start(message):
         "wait_for_address": False,
         "wait_for_contact": False,
         "wait_for_comment": False,
+        "wait_for_promo": False,
         "address": "",
         "contact": "",
         "comment": "",
         "pending_discount": 0,
         "pending_points_spent": 0,
+        "promo_code": "",
+        "promo_discount": 0,
         "temp_total_try": 0,
         "temp_user_points": 0,
         "edit_phase": None,
@@ -1105,6 +1174,7 @@ def handle_go_back_to_categories(call):
         "pending_discount": 0,
         "pending_points_spent": 0,
     })
+    clear_promo_state(data)
     data.pop("return_to_review_after_address", None)
     data.pop("return_to_review_after_contact", None)
     data.pop("return_to_review_after_comment", None)
@@ -1236,6 +1306,7 @@ def handle_add_to_cart(call):
         "wait_for_contact": False,
         "wait_for_comment": False,
     })
+    clear_promo_state(data)
     existing_item = next(
         (
             cart_item for cart_item in cart
@@ -1431,6 +1502,7 @@ def handle_back_to_cart(call):
         "pending_discount": 0,
         "pending_points_spent": 0,
     })
+    clear_promo_state(data)
     data.pop("return_to_review_after_address", None)
     data.pop("return_to_review_after_contact", None)
     data.pop("return_to_review_after_comment", None)
@@ -1511,6 +1583,7 @@ def handle_cart_action(call):
         "wait_for_contact": False,
         "wait_for_comment": False,
     })
+    clear_promo_state(data)
     save_user_cart(chat_id)
     send_cart(chat_id, call)
 
@@ -1563,6 +1636,7 @@ def handle_clear_cart_confirm(call):
         "wait_for_contact": False,
         "wait_for_comment": False,
     })
+    clear_promo_state(user_data[chat_id])
     save_user_cart(chat_id)
     bot.answer_callback_query(call.id, tr(chat_id, "Корзина очищена", "Cart cleared"))
     send_cart(chat_id, call)
@@ -1713,6 +1787,7 @@ def show_points_choice(chat_id: int, user_points: int, total_try: int, call=None
         "pending_discount": 0,
         "pending_points_spent": 0,
     })
+    clear_promo_state(data)
     text = tr(
         chat_id,
         "<b>1/4 · Бонусные баллы</b>\n\n"
@@ -1743,6 +1818,8 @@ def handle_finish_order(call):
     if not cart:
         send_cart(chat_id, call)
         return
+
+    clear_promo_state(data)
 
     total_try = sum(i['price'] for i in cart)
     # --- достаём баллы ---
@@ -2245,9 +2322,22 @@ def show_order_review(chat_id: int, call=None) -> None:
         )
         return
 
+    data["wait_for_promo"] = False
     total_before = sum(int(item["price"]) for item in cart)
-    points_spent = int(data.get("pending_points_spent", 0) or 0)
-    total_after = max(total_before - points_spent, 0)
+    promo_code = normalize_promo_code(data.get("promo_code", ""))
+    promo_discount = min(
+        int(data.get("promo_discount", 0) or 0),
+        total_before,
+    ) if promo_code else 0
+    # Промокод имеет приоритет, поэтому при заказе на всю сумму лишние
+    # выбранные баллы сохраняются на балансе пользователя.
+    points_spent = min(
+        int(data.get("pending_points_spent", 0) or 0),
+        max(total_before - promo_discount, 0),
+    )
+    data["pending_points_spent"] = points_spent
+    data["pending_discount"] = points_spent
+    total_after = max(total_before - promo_discount - points_spent, 0)
     item_lines = []
     for (cat, flavor, price), qty in get_grouped_cart(chat_id):
         item_lines.append(
@@ -2258,25 +2348,51 @@ def show_order_review(chat_id: int, call=None) -> None:
     contact = html.escape(str(data.get("contact") or "—"))
     comment = html.escape(str(data.get("comment") or "—"))
     if user_data.get(chat_id, {}).get("lang") == "en":
+        promo_line = (
+            f"Promo code {html.escape(promo_code)}: −{format_money(promo_discount)}₺\n"
+            if promo_code else ""
+        )
         review_text = (
             "<b>4/4 · Check your order</b>\n\n"
             + "\n".join(item_lines)
-            + f"\n\nSubtotal: {total_before}₺\n"
+            + f"\n\nSubtotal: {format_money(total_before)}₺\n"
             + f"Points: −{points_spent}\n"
-            + f"<b>Amount due: {total_after}₺</b>\n\n"
+            + promo_line
+            + f"<b>Amount due: {format_money(total_after)}₺</b>\n\n"
             + f"📍 Address: {address}\n📱 Contact: {contact}\n💬 Comment: {comment}"
         )
     else:
+        promo_line = (
+            f"Промокод {html.escape(promo_code)}: −{format_money(promo_discount)}₺\n"
+            if promo_code else ""
+        )
         review_text = (
             "<b>4/4 · Проверьте заказ</b>\n\n"
             + "\n".join(item_lines)
-            + f"\n\nТовары: {total_before}₺\n"
+            + f"\n\nТовары: {format_money(total_before)}₺\n"
             + f"Баллы: −{points_spent}\n"
-            + f"<b>К оплате: {total_after}₺</b>\n\n"
+            + promo_line
+            + f"<b>К оплате: {format_money(total_after)}₺</b>\n\n"
             + f"📍 Адрес: {address}\n📱 Контакт: {contact}\n💬 Комментарий: {comment}"
         )
 
     kb = types.InlineKeyboardMarkup(row_width=2)
+    if promo_code:
+        kb.add(
+            types.InlineKeyboardButton(
+                text=tr(chat_id, "🎟 Изменить промокод", "🎟 Change promo code"),
+                callback_data="enter_promo",
+            ),
+            types.InlineKeyboardButton(
+                text=tr(chat_id, "❌ Убрать промокод", "❌ Remove promo code"),
+                callback_data="remove_promo",
+            ),
+        )
+    else:
+        kb.add(types.InlineKeyboardButton(
+            text=tr(chat_id, "🎟 Промокод", "🎟 Promo code"),
+            callback_data="enter_promo",
+        ))
     kb.add(types.InlineKeyboardButton(
         text=tr(chat_id, "✅ Подтвердить заказ", "✅ Confirm order"),
         callback_data="confirm_order",
@@ -2310,6 +2426,150 @@ def show_order_review(chat_id: int, call=None) -> None:
         call,
         allow_media_edit=False,
     )
+
+
+def promo_input_keyboard(chat_id: int) -> types.ReplyKeyboardMarkup:
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    kb.add(nav_text(chat_id, "review"))
+    return kb
+
+
+@ensure_user
+@bot.callback_query_handler(func=lambda call: call.data == "enter_promo")
+def handle_enter_promo(call):
+    chat_id = call.from_user.id
+    data = user_data[chat_id]
+    if not data.get("promo_code") and "points_before_promo" not in data:
+        data["points_before_promo"] = int(data.get("pending_points_spent", 0) or 0)
+    data["wait_for_promo"] = True
+    data.update({
+        "wait_for_points": False,
+        "wait_for_address": False,
+        "wait_for_contact": False,
+        "wait_for_comment": False,
+    })
+    bot.answer_callback_query(call.id)
+    disable_inline_keyboard(call)
+    bot.send_message(
+        chat_id,
+        tr(
+            chat_id,
+            "Введите промокод, чтобы получить скидку на заказ:",
+            "Enter a promo code to receive a discount on your order:",
+        ),
+        reply_markup=promo_input_keyboard(chat_id),
+    )
+
+
+@ensure_user
+@bot.callback_query_handler(func=lambda call: call.data == "remove_promo")
+def handle_remove_promo(call):
+    chat_id = call.from_user.id
+    data = user_data[chat_id]
+    points_to_restore = int(
+        data.get("points_before_promo", data.get("pending_points_spent", 0)) or 0
+    )
+    cart_total = int(sum(float(item.get("price", 0)) for item in data.get("cart", [])))
+    clear_promo_state(data)
+    data["pending_points_spent"] = min(points_to_restore, cart_total)
+    data["pending_discount"] = data["pending_points_spent"]
+    bot.answer_callback_query(
+        call.id,
+        tr(chat_id, "Промокод убран", "Promo code removed"),
+    )
+    show_order_review(chat_id, call)
+
+
+@ensure_user
+@bot.message_handler(
+    func=lambda message: user_data.get(message.chat.id, {}).get("wait_for_promo"),
+    content_types=['text'],
+)
+def handle_promo_input(message):
+    chat_id = message.chat.id
+    data = user_data[chat_id]
+    text = (message.text or "").strip()
+    if is_navigation_text(chat_id, text, "review"):
+        data["wait_for_promo"] = False
+        bot.send_message(
+            chat_id,
+            tr(chat_id, "Возвращаемся к заказу.", "Back to your order."),
+            reply_markup=types.ReplyKeyboardRemove(),
+        )
+        show_order_review(chat_id)
+        return
+
+    code = normalize_promo_code(text)
+    if not is_valid_promo_code(code):
+        bot.send_message(
+            chat_id,
+            tr(
+                chat_id,
+                "Промокод может содержать 2–32 буквы, цифры, дефис или подчёркивание.",
+                "A promo code may contain 2–32 letters, numbers, hyphens, or underscores.",
+            ),
+            reply_markup=promo_input_keyboard(chat_id),
+        )
+        return
+
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    cursor.execute(
+        "SELECT promo_id, discount_amount, usage_limit, used_count, active "
+        "FROM promo_codes WHERE code = ?",
+        (code,),
+    )
+    promo_row = cursor.fetchone()
+    already_used = False
+    if promo_row:
+        cursor.execute(
+            "SELECT 1 FROM promo_redemptions WHERE promo_id = ? AND chat_id = ?",
+            (promo_row[0], chat_id),
+        )
+        already_used = cursor.fetchone() is not None
+    cursor.close()
+    connection.close()
+
+    if not promo_row or not int(promo_row[4]) or int(promo_row[3]) >= int(promo_row[2]):
+        error_text = tr(
+            chat_id,
+            "Такой промокод не найден или его лимит уже закончился.",
+            "This promo code was not found or has reached its usage limit.",
+        )
+    elif already_used:
+        error_text = tr(
+            chat_id,
+            "Вы уже использовали этот промокод.",
+            "You have already used this promo code.",
+        )
+    else:
+        error_text = ""
+
+    if error_text:
+        bot.send_message(
+            chat_id,
+            error_text,
+            reply_markup=promo_input_keyboard(chat_id),
+        )
+        return
+
+    cart_total = sum(float(item.get("price", 0)) for item in data.get("cart", []))
+    discount = min(int(promo_row[1]), int(cart_total))
+    data.update({
+        "wait_for_promo": False,
+        "promo_code": code,
+        "promo_discount": discount,
+    })
+    bot.send_message(
+        chat_id,
+        tr(
+            chat_id,
+            f"✅ Промокод применён. Скидка: {format_money(discount)}₺.",
+            f"✅ Promo code applied. Discount: {format_money(discount)}₺.",
+        ),
+        reply_markup=types.ReplyKeyboardRemove(),
+    )
+    show_order_review(chat_id)
 
 
 @ensure_user
@@ -2447,6 +2707,9 @@ def finalize_order(call):
     # --- СЧИТАЕМ ИТОГИ ---
     total_try = sum(i['price'] for i in cart)
     pending_points = int(data.get("pending_points_spent", 0) or 0)
+    requested_promo_code = normalize_promo_code(data.get("promo_code", ""))
+    promo_code = ""
+    promo_discount = 0
     comment = data.get("comment", "") or "—"
     address = data.get("address", "")
     contact = data.get("contact", "")
@@ -2472,7 +2735,8 @@ def finalize_order(call):
     data["order_processing"] = True
     disable_inline_keyboard(call)
 
-    # итого к оплате
+    # Окончательная сумма пересчитывается внутри транзакции после повторной
+    # проверки промокода. Здесь задаём безопасные значения по умолчанию.
     total_after = max(total_try - pending_points, 0)
 
     # --- проверяем склад ---
@@ -2481,7 +2745,7 @@ def finalize_order(call):
         key = (it["category"], it["flavor"])
         needed[key] = needed.get(key, 0) + 1
 
-    pts_earned = total_after // 30
+    pts_earned = total_after // PURCHASE_POINTS_DIVISOR
     items_json = json.dumps(cart, ensure_ascii=False)
     now = datetime.datetime.utcnow().isoformat()
     inviter = None
@@ -2527,8 +2791,36 @@ def finalize_order(call):
             user_row = cursor_local.fetchone()
             current_points = int(user_row[0]) if user_row else 0
             inviter = user_row[1] if user_row else None
-            if pending_points < 0 or pending_points > min(current_points, total_try):
+
+            promo_id = None
+            if requested_promo_code:
+                cursor_local.execute(
+                    "SELECT promo_id, discount_amount, usage_limit, used_count, active "
+                    "FROM promo_codes WHERE code = ?",
+                    (requested_promo_code,),
+                )
+                promo_row = cursor_local.fetchone()
+                if (
+                    not promo_row
+                    or not int(promo_row[4])
+                    or int(promo_row[3]) >= int(promo_row[2])
+                ):
+                    raise PromoCodeError("promo_unavailable")
+                promo_id = int(promo_row[0])
+                cursor_local.execute(
+                    "SELECT 1 FROM promo_redemptions WHERE promo_id = ? AND chat_id = ?",
+                    (promo_id, chat_id),
+                )
+                if cursor_local.fetchone():
+                    raise PromoCodeError("promo_already_used")
+                promo_code = requested_promo_code
+                promo_discount = min(int(promo_row[1]), int(total_try))
+
+            max_points_for_order = max(int(total_try) - promo_discount, 0)
+            if pending_points < 0 or pending_points > min(current_points, max_points_for_order):
                 raise ValueError("invalid_points_balance")
+            total_after = max(total_try - promo_discount - pending_points, 0)
+            pts_earned = int(total_after) // PURCHASE_POINTS_DIVISOR
 
             for item_obj, qty_needed in selected_stock_items:
                 old_stock = int(item_obj.get("stock", 0))
@@ -2537,11 +2829,42 @@ def finalize_order(call):
             save_menu_safely()
 
             cursor_local.execute(
-                "INSERT INTO orders (chat_id, items_json, total, timestamp, points_spent, points_earned) "
-                "VALUES (?,?,?,?,?,?)",
-                (chat_id, items_json, total_after, now, pending_points, pts_earned),
+                "INSERT INTO orders "
+                "(chat_id, items_json, total, timestamp, points_spent, points_earned, "
+                "promo_code, promo_discount) VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    chat_id,
+                    items_json,
+                    total_after,
+                    now,
+                    pending_points,
+                    pts_earned,
+                    promo_code or None,
+                    promo_discount,
+                ),
             )
             order_id = cursor_local.lastrowid
+            if promo_id is not None:
+                cursor_local.execute(
+                    """
+                    UPDATE promo_codes
+                    SET used_count = used_count + 1,
+                        active = CASE
+                            WHEN used_count + 1 >= usage_limit THEN 0
+                            ELSE 1
+                        END
+                    WHERE promo_id = ? AND active = 1 AND used_count < usage_limit
+                    """,
+                    (promo_id,),
+                )
+                if cursor_local.rowcount != 1:
+                    raise PromoCodeError("promo_unavailable")
+                cursor_local.execute(
+                    "INSERT INTO promo_redemptions "
+                    "(promo_id, chat_id, order_id, discount_amount, redeemed_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (promo_id, chat_id, order_id, promo_discount, now),
+                )
             cursor_local.execute(
                 "UPDATE users SET points = points - ? + ?, last_address = ?, last_contact = ? "
                 "WHERE chat_id = ?",
@@ -2562,8 +2885,8 @@ def finalize_order(call):
             )
             if inviter:
                 cursor_local.execute(
-                    "UPDATE users SET points = points + 200 WHERE chat_id = ?",
-                    (inviter,),
+                    "UPDATE users SET points = points + ? WHERE chat_id = ?",
+                    (REFERRAL_BONUS_POINTS, inviter),
                 )
                 cursor_local.execute(
                     "UPDATE users SET referred_by = NULL WHERE chat_id = ?",
@@ -2573,6 +2896,36 @@ def finalize_order(call):
             cursor_local.close()
             conn_local.close()
             conn_local = None
+    except PromoCodeError as exc:
+        if conn_local is not None:
+            conn_local.rollback()
+            conn_local.close()
+        with menu_lock:
+            for item_obj, old_stock in stock_changes:
+                item_obj["stock"] = old_stock
+            if stock_changes:
+                save_menu_safely()
+        data["order_processing"] = False
+        points_to_restore = int(
+            data.get("points_before_promo", data.get("pending_points_spent", 0)) or 0
+        )
+        clear_promo_state(data)
+        data["pending_points_spent"] = min(points_to_restore, int(total_try))
+        data["pending_discount"] = data["pending_points_spent"]
+        message_text = tr(
+            chat_id,
+            "Промокод больше недоступен. Он не применён — проверьте сумму заказа.",
+            "The promo code is no longer available. It was removed — please check your order total.",
+        )
+        if str(exc) == "promo_already_used":
+            message_text = tr(
+                chat_id,
+                "Вы уже использовали этот промокод. Он не применён к заказу.",
+                "You have already used this promo code. It was removed from the order.",
+            )
+        bot.send_message(chat_id, message_text)
+        show_order_review(chat_id)
+        return
     except ValueError:
         if conn_local is not None:
             conn_local.rollback()
@@ -2629,11 +2982,15 @@ def finalize_order(call):
         "wait_for_address": False,
         "wait_for_contact": False,
         "wait_for_comment": False,
+        "wait_for_promo": False,
         "pending_discount": 0,
         "pending_points_spent": 0,
+        "promo_code": "",
+        "promo_discount": 0,
         "comment": "",
         "order_processing": False,
     })
+    data.pop("points_before_promo", None)
     data.pop("return_to_review_after_address", None)
     data.pop("return_to_review_after_contact", None)
     data.pop("return_to_review_after_comment", None)
@@ -2647,8 +3004,8 @@ def finalize_order(call):
                 inviter,
                 tr(
                     inviter,
-                    "🎉 Вам начислено 200 бонусных баллов за приглашение нового клиента!",
-                    "🎉 You received 200 bonus points for inviting a new customer!",
+                    f"🎉 Вам начислено {REFERRAL_BONUS_POINTS} бонусных баллов за приглашение нового клиента!",
+                    f"🎉 You received {REFERRAL_BONUS_POINTS} bonus points for inviting a new customer!",
                 ),
             )
         except Exception as exc:
@@ -2683,10 +3040,20 @@ def finalize_order(call):
     safe_contact = html.escape(str(contact))
     safe_comment = html.escape(str(comment))
     translated_comment = html.escape(translate_to_en(str(comment)))
+    safe_promo_code = html.escape(promo_code)
+    promo_line_ru = (
+        f"🎟 Промокод {safe_promo_code}: −{format_money(promo_discount)}₺\n"
+        if promo_code else ""
+    )
+    promo_line_en = (
+        f"🎟 Promo code {safe_promo_code}: −{format_money(promo_discount)}₺\n"
+        if promo_code else ""
+    )
 
     full_rus = (
         f"📥 Новый заказ №{order_id} от {safe_customer}:\n\n"
         f"{summary}\n\n"
+        f"{promo_line_ru}"
         f"Итог: {format_money(total_after)}₺{conversion_suffix}\n"
         f"📍 Адрес: {safe_address}\n"
         f"📱 Контакт: {safe_contact}\n"
@@ -2701,6 +3068,7 @@ def finalize_order(call):
     full_en = (
         f"📥 New order #{order_id} from {safe_customer}:\n\n"
         f"{summary}\n\n"
+        f"{promo_line_en}"
         f"Total: {format_money(total_after)}₺{conversion_suffix}\n"
         f"📍 Address: {safe_address}\n"
         f"📱 Contact: {safe_contact}\n"
@@ -2737,6 +3105,7 @@ def finalize_order(call):
         user_order_summary = (
             f"📋 Your order #{order_id}:\n\n"
             f"{summary}\n\n"
+            f"{promo_line_en}"
             f"Total: {format_money(total_after)}₺{conversion_suffix}\n"
             f"📍 Address: {safe_address}\n"
             f"📱 Contact: {safe_contact}\n"
@@ -2746,6 +3115,7 @@ def finalize_order(call):
         user_order_summary = (
             f"📋 Ваш заказ №{order_id}:\n\n"
             f"{summary}\n\n"
+            f"{promo_line_ru}"
             f"Итог: {format_money(total_after)}₺{conversion_suffix}\n"
             f"📍 Адрес: {safe_address}\n"
             f"📱 Контакт: {safe_contact}\n"
@@ -2803,11 +3173,14 @@ def cmd_change(message):
             "wait_for_address": False,
             "wait_for_contact": False,
             "wait_for_comment": False,
+            "wait_for_promo": False,
             "address": "",
             "contact": "",
             "comment": "",
             "pending_discount": 0,
             "pending_points_spent": 0,
+            "promo_code": "",
+            "promo_discount": 0,
             "temp_total_try": 0,
             "temp_user_points": 0,
             "edit_phase": None,
@@ -2830,6 +3203,7 @@ def cmd_change(message):
         "wait_for_address": False,
         "wait_for_contact": False,
         "wait_for_comment": False,
+        "wait_for_promo": False,
         "edit_phase": "choose_action",
         "edit_cat": None,
         "edit_flavor": None,
@@ -2990,7 +3364,8 @@ def show_order_history(chat_id: int, call=None) -> None:
     conn_local = get_db_connection()
     cursor_local = conn_local.cursor()
     cursor_local.execute(
-        "SELECT order_id, items_json, total, timestamp FROM orders "
+        "SELECT order_id, items_json, total, timestamp, promo_code, promo_discount "
+        "FROM orders "
         "WHERE chat_id = ? ORDER BY timestamp DESC LIMIT 10",
         (chat_id,),
     )
@@ -3006,7 +3381,7 @@ def show_order_history(chat_id: int, call=None) -> None:
         )
     else:
         blocks = [tr(chat_id, "<b>📦 Последние заказы</b>", "<b>📦 Recent orders</b>")]
-        for order_id, items_json, total, timestamp in rows:
+        for order_id, items_json, total, timestamp, promo_code, promo_discount in rows:
             try:
                 items = json.loads(items_json)
             except (json.JSONDecodeError, TypeError):
@@ -3019,9 +3394,15 @@ def show_order_history(chat_id: int, call=None) -> None:
                 f"{html.escape(flavor)} × {qty}" for flavor, qty in grouped.items()
             ) or "—"
             date = str(timestamp).split("T")[0]
+            promo_history_line = (
+                f"🎟 {html.escape(str(promo_code))}: "
+                f"−{format_money(promo_discount or 0)}₺\n"
+                if promo_code else ""
+            )
             blocks.append(
                 f"<b>#{order_id} · {html.escape(date)}</b>\n"
                 f"{summary}\n"
+                f"{promo_history_line}"
                 f"{tr(chat_id, 'Итого', 'Total')}: {format_money(total)}₺"
             )
         text = "\n\n".join(blocks)
@@ -3636,6 +4017,20 @@ def universal_handler(message):
                 user_data[chat_id] = data
                 return
 
+            if text == "PROMO CREATE":
+                data['edit_phase'] = 'promo_create_code'
+                data.pop('promo_create_code', None)
+                data.pop('promo_create_limit', None)
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("⬅️ Back", "❌ Cancel")
+                bot.send_message(
+                    chat_id,
+                    "Enter the promo code name (2–32 letters, numbers, - or _):",
+                    reply_markup=kb,
+                )
+                user_data[chat_id] = data
+                return
+
             if text == "MESSAGE":
                 data['edit_phase'] = 'broadcast_message'
                 data.pop('broadcast_source_message_id', None)
@@ -3650,6 +4045,189 @@ def universal_handler(message):
                 return
 
             bot.send_message(chat_id, "Choose action:", reply_markup=edit_action_keyboard())
+            return
+
+        # Создание промокода: название → общий лимит → фиксированная скидка.
+        if phase == 'promo_create_code':
+            if text == "⬅️ Back":
+                data['edit_phase'] = 'choose_action'
+                bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
+                user_data[chat_id] = data
+                return
+            if text == "❌ Cancel":
+                data['edit_phase'] = None
+                data.pop('promo_create_code', None)
+                data.pop('promo_create_limit', None)
+                bot.send_message(chat_id, "Editing cancelled.", reply_markup=types.ReplyKeyboardRemove())
+                show_main_menu(chat_id)
+                user_data[chat_id] = data
+                return
+
+            promo_code = normalize_promo_code(text)
+            if not is_valid_promo_code(promo_code):
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("⬅️ Back", "❌ Cancel")
+                bot.send_message(
+                    chat_id,
+                    "Invalid code. Use 2–32 letters, numbers, - or _:",
+                    reply_markup=kb,
+                )
+                return
+
+            connection = get_db_connection()
+            cursor = connection.cursor()
+            cursor.execute(
+                "SELECT active, used_count, usage_limit FROM promo_codes WHERE code = ?",
+                (promo_code,),
+            )
+            existing = cursor.fetchone()
+            cursor.close()
+            connection.close()
+            if existing and int(existing[0]) and int(existing[1]) < int(existing[2]):
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("⬅️ Back", "❌ Cancel")
+                bot.send_message(
+                    chat_id,
+                    "This promo code is already active. Enter another name:",
+                    reply_markup=kb,
+                )
+                return
+
+            data['promo_create_code'] = promo_code
+            data['edit_phase'] = 'promo_create_limit'
+            kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+            kb.add("⬅️ Back", "❌ Cancel")
+            bot.send_message(
+                chat_id,
+                "How many different users may use this promo code? Enter a positive integer:",
+                reply_markup=kb,
+            )
+            user_data[chat_id] = data
+            return
+
+        if phase == 'promo_create_limit':
+            if text == "⬅️ Back":
+                data['edit_phase'] = 'promo_create_code'
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("⬅️ Back", "❌ Cancel")
+                bot.send_message(chat_id, "Enter the promo code name:", reply_markup=kb)
+                user_data[chat_id] = data
+                return
+            if text == "❌ Cancel":
+                data['edit_phase'] = None
+                data.pop('promo_create_code', None)
+                data.pop('promo_create_limit', None)
+                bot.send_message(chat_id, "Editing cancelled.", reply_markup=types.ReplyKeyboardRemove())
+                show_main_menu(chat_id)
+                user_data[chat_id] = data
+                return
+            if not text.isdigit() or int(text) <= 0:
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("⬅️ Back", "❌ Cancel")
+                bot.send_message(chat_id, "Enter a positive integer, for example 10:", reply_markup=kb)
+                return
+
+            data['promo_create_limit'] = int(text)
+            data['edit_phase'] = 'promo_create_discount'
+            kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+            kb.add("⬅️ Back", "❌ Cancel")
+            bot.send_message(
+                chat_id,
+                "Enter the fixed discount amount in TRY, for example 100:",
+                reply_markup=kb,
+            )
+            user_data[chat_id] = data
+            return
+
+        if phase == 'promo_create_discount':
+            if text == "⬅️ Back":
+                data['edit_phase'] = 'promo_create_limit'
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("⬅️ Back", "❌ Cancel")
+                bot.send_message(chat_id, "Enter the usage limit:", reply_markup=kb)
+                user_data[chat_id] = data
+                return
+            if text == "❌ Cancel":
+                data['edit_phase'] = None
+                data.pop('promo_create_code', None)
+                data.pop('promo_create_limit', None)
+                bot.send_message(chat_id, "Editing cancelled.", reply_markup=types.ReplyKeyboardRemove())
+                show_main_menu(chat_id)
+                user_data[chat_id] = data
+                return
+            if not text.isdigit() or int(text) <= 0:
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("⬅️ Back", "❌ Cancel")
+                bot.send_message(chat_id, "Enter a positive TRY amount, for example 100:", reply_markup=kb)
+                return
+
+            promo_code = data.get('promo_create_code')
+            usage_limit = int(data.get('promo_create_limit', 0) or 0)
+            discount_amount = int(text)
+            if not promo_code or usage_limit <= 0:
+                data['edit_phase'] = 'promo_create_code'
+                bot.send_message(chat_id, "Promo data was lost. Enter the code again.")
+                user_data[chat_id] = data
+                return
+
+            connection = get_db_connection()
+            cursor = connection.cursor()
+            try:
+                cursor.execute("BEGIN IMMEDIATE")
+                cursor.execute(
+                    "SELECT promo_id, active, used_count, usage_limit "
+                    "FROM promo_codes WHERE code = ?",
+                    (promo_code,),
+                )
+                existing = cursor.fetchone()
+                if existing and int(existing[1]) and int(existing[2]) < int(existing[3]):
+                    raise PromoCodeError("promo_already_active")
+                if existing:
+                    # История старой кампании остаётся в promo_redemptions по
+                    # старому promo_id; новая кампания получает новый ID.
+                    cursor.execute("DELETE FROM promo_codes WHERE promo_id = ?", (existing[0],))
+                cursor.execute(
+                    "INSERT INTO promo_codes "
+                    "(code, discount_amount, usage_limit, used_count, active, created_at) "
+                    "VALUES (?, ?, ?, 0, 1, ?)",
+                    (
+                        promo_code,
+                        discount_amount,
+                        usage_limit,
+                        datetime.datetime.utcnow().isoformat(),
+                    ),
+                )
+                connection.commit()
+            except (PromoCodeError, sqlite3.IntegrityError):
+                connection.rollback()
+                data['edit_phase'] = 'promo_create_code'
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("⬅️ Back", "❌ Cancel")
+                bot.send_message(
+                    chat_id,
+                    "This promo code became active already. Enter another name.",
+                    reply_markup=kb,
+                )
+                user_data[chat_id] = data
+                return
+            finally:
+                if connection:
+                    try:
+                        cursor.close()
+                        connection.close()
+                    except Exception:
+                        pass
+
+            data.pop('promo_create_code', None)
+            data.pop('promo_create_limit', None)
+            data['edit_phase'] = 'choose_action'
+            bot.send_message(
+                chat_id,
+                f"✅ Promo code {promo_code} created: {discount_amount}₺ discount, "
+                f"{usage_limit} different users.",
+                reply_markup=edit_action_keyboard(),
+            )
+            user_data[chat_id] = data
             return
 
         # 1.1) Текст массовой рассылки
@@ -4352,9 +4930,11 @@ def universal_handler(message):
             "wait_for_address": False,
             "wait_for_contact": False,
             "wait_for_comment": False,
+            "wait_for_promo": False,
             "pending_discount": 0,
             "pending_points_spent": 0,
         })
+        clear_promo_state(data)
         bot.send_message(
             chat_id,
             tr(chat_id, "Возвращаемся в корзину.", "Back to your cart."),
@@ -4370,9 +4950,11 @@ def universal_handler(message):
             "wait_for_address": False,
             "wait_for_contact": False,
             "wait_for_comment": False,
+            "wait_for_promo": False,
             "pending_discount": 0,
             "pending_points_spent": 0,
         })
+        clear_promo_state(data)
         bot.send_message(
             chat_id,
             tr(chat_id, "Возвращаемся в меню.", "Back to the menu."),
@@ -4422,6 +5004,7 @@ def handle_cancel_order(call):
 
     conn = get_db_connection()
     cursor = conn.cursor()
+    cursor.execute("BEGIN IMMEDIATE")
     # Теперь вытягиваем как points_spent (списано при заказе), так и points_earned (начислено за заказ)
     cursor.execute(
         "SELECT chat_id, items_json, points_spent, points_earned "
@@ -4436,6 +5019,12 @@ def handle_cancel_order(call):
 
     user_chat_id, items_json, pts_spent, pts_earned = row
     items = json.loads(items_json)
+    cursor.execute(
+        "SELECT promo_id FROM promo_redemptions WHERE order_id = ?",
+        (order_id,),
+    )
+    promo_redemption = cursor.fetchone()
+    promo_restored = False
 
     # 1) Возвращаем товары на склад (как раньше)
     for it in items:
@@ -4468,7 +5057,6 @@ def handle_cancel_order(call):
             "UPDATE users SET points = points + ? WHERE chat_id = ?",
             (pts_spent, user_chat_id)
         )
-        conn.commit()
 
     # 3) Убираем ранее начисленные за этот заказ баллы
     if pts_earned:
@@ -4476,7 +5064,18 @@ def handle_cancel_order(call):
             "UPDATE users SET points = points - ? WHERE chat_id = ?",
             (pts_earned, user_chat_id)
         )
-        conn.commit()
+
+    # Отмена заказа возвращает одно использование в ту же промо-кампанию.
+    if promo_redemption:
+        promo_id = int(promo_redemption[0])
+        cursor.execute("DELETE FROM promo_redemptions WHERE order_id = ?", (order_id,))
+        cursor.execute(
+            "UPDATE promo_codes "
+            "SET used_count = CASE WHEN used_count > 0 THEN used_count - 1 ELSE 0 END, "
+            "active = 1 WHERE promo_id = ?",
+            (promo_id,),
+        )
+        promo_restored = cursor.rowcount == 1
 
     # 4) Удаляем сам заказ из БД
     cursor.execute("DELETE FROM orders WHERE order_id = ?", (order_id,))
@@ -4492,12 +5091,16 @@ def handle_cancel_order(call):
             msg += f" {pts_spent} spent points were returned."
         if pts_earned:
             msg += f" {pts_earned} earned points were removed."
+        if promo_restored:
+            msg += " The promo-code use was restored."
     else:
         msg = f"Ваш заказ #{order_id} отменён."
         if pts_spent:
             msg += f" Возвращено {pts_spent} списанных баллов."
         if pts_earned:
             msg += f" Списано {pts_earned} начисленных баллов."
+        if promo_restored:
+            msg += " Использование промокода восстановлено."
     bot.send_message(user_chat_id, msg)
 
     # 6) Убираем кнопку «Отменить» в админском сообщении
