@@ -53,7 +53,17 @@ PAYMENT_METHODS = {
     "uah": ("🇺🇦 Гривны", "🇺🇦 Hryvnia", "PAYMENT_UAH"),
 }
 
+BOT_VERSION = "2026.08.14-payment-env-check"
+
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID)
+print("BOT_VERSION =", BOT_VERSION)
+print(
+    "PAYMENT_VARIABLES =",
+    {
+        env_name: bool(os.getenv(env_name, "").strip())
+        for _label_ru, _label_en, env_name in PAYMENT_METHODS.values()
+    },
+)
 
 bot = TeleBot(TOKEN, parse_mode="HTML")
 
