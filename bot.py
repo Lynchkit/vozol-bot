@@ -53,16 +53,17 @@ PAYMENT_METHODS = {
     "uah": ("🇺🇦 Гривны", "🇺🇦 Hryvnia", "PAYMENT_UAH"),
 }
 
-BOT_VERSION = "2026.08.14-payment-env-check"
+BOT_VERSION = "2026.08.14-payment-env-cancel-v11"
 
-print("GROUP_CHAT_ID =", GROUP_CHAT_ID)
-print("BOT_VERSION =", BOT_VERSION)
+print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
+print("BOT_VERSION =", BOT_VERSION, flush=True)
 print(
     "PAYMENT_VARIABLES =",
     {
         env_name: bool(os.getenv(env_name, "").strip())
         for _label_ru, _label_en, env_name in PAYMENT_METHODS.values()
     },
+    flush=True,
 )
 
 bot = TeleBot(TOKEN, parse_mode="HTML")
@@ -3981,6 +3982,30 @@ def cmd_payment(message):
     show_payment_info(chat_id)
 
 
+@ensure_user
+@bot.message_handler(commands=['envcheck'])
+def cmd_envcheck(message):
+    """Показывает владельцу версию процесса и наличие секретов без их значений."""
+    chat_id = message.chat.id
+    if not is_owner(message.from_user.id) or message.chat.type != "private":
+        bot.send_message(chat_id, "У вас нет доступа к этой команде.")
+        return
+
+    status_lines = []
+    for _method_key, (_label_ru, _label_en, env_name) in PAYMENT_METHODS.items():
+        configured = bool(os.getenv(env_name, "").strip())
+        status_lines.append(f"{'✅' if configured else '❌'} <code>{env_name}</code>")
+
+    deployment_id = os.getenv("RAILWAY_DEPLOYMENT_ID", "не определён")
+    text = (
+        "<b>🔎 Проверка запущенного процесса</b>\n\n"
+        f"Версия: <code>{html.escape(BOT_VERSION)}</code>\n"
+        f"Deployment: <code>{html.escape(deployment_id)}</code>\n\n"
+        + "\n".join(status_lines)
+    )
+    bot.send_message(chat_id, text)
+
+
 def reject_payment_callback(call) -> bool:
     """Разрешает платёжные кнопки только владельцу в админ-группе."""
     if is_owner(call.from_user.id) and call.message.chat.id == GROUP_CHAT_ID:
@@ -5402,98 +5427,172 @@ def handle_cancel_order(call):
     user_id = call.from_user.id
     if not is_owner(user_id):
         return bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
+    if call.message.chat.id != GROUP_CHAT_ID:
+        return bot.answer_callback_query(
+            call.id,
+            "Кнопка доступна только в админ-группе",
+            show_alert=True,
+        )
 
-    parts = call.data.split("|")
-
-    if len(parts) < 2:
+    try:
+        order_id = int(call.data.split("|", 2)[1])
+    except (ValueError, IndexError):
         return bot.answer_callback_query(call.id, "Data error", show_alert=True)
 
-    order_id = int(parts[1])
-
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("BEGIN IMMEDIATE")
-    # Теперь вытягиваем как points_spent (списано при заказе), так и points_earned (начислено за заказ)
-    cursor.execute(
-        "SELECT chat_id, items_json, points_spent, points_earned "
-        "FROM orders WHERE order_id = ?",
-        (order_id,)
-    )
-    row = cursor.fetchone()
-    if not row:
-        cursor.close()
-        conn.close()
-        return bot.answer_callback_query(call.id, "Заказ не найден", show_alert=True)
-
-    user_chat_id, items_json, pts_spent, pts_earned = row
-    items = json.loads(items_json)
-    cursor.execute(
-        "SELECT promo_id FROM promo_redemptions WHERE order_id = ?",
-        (order_id,),
-    )
-    promo_redemption = cursor.fetchone()
-    promo_restored = False
-
-    # 1) Возвращаем товары на склад (как раньше)
-    for it in items:
-        cat = it["category"]
-        flavor = it["flavor"]
-        found = False
-        for itm in menu[cat]["flavors"]:
-            if itm["flavor"] == flavor:
-                itm["stock"] = itm.get("stock", 0) + 1
-                found = True
-                break
-        if not found:
-            # если вдруг вкус отсутствует — добавим его
-            menu[cat]["flavors"].append({
-                "flavor": flavor,
-                "stock": 1,
-                "emoji": "",
-                "tags": [],
-                "description_ru": "",
-                "description_en": "",
-                "photo_url": ""
-            })
-
-    # сохраняем menu.json
-    save_menu_safely()
-
-    # 2) Возвращаем списанные баллы пользователю
-    if pts_spent:
+    conn = None
+    menu_snapshot = None
+    stock_warnings = []
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("BEGIN IMMEDIATE")
         cursor.execute(
-            "UPDATE users SET points = points + ? WHERE chat_id = ?",
-            (pts_spent, user_chat_id)
+            "SELECT chat_id, items_json, points_spent, points_earned "
+            "FROM orders WHERE order_id = ?",
+            (order_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            conn.rollback()
+            return bot.answer_callback_query(
+                call.id,
+                "Заказ уже отменён или не найден",
+                show_alert=True,
+            )
+
+        user_chat_id, items_json, pts_spent, pts_earned = row
+        items = json.loads(items_json or "[]")
+        if not isinstance(items, list):
+            raise ValueError("items_json is not a list")
+
+        cursor.execute(
+            "SELECT promo_id FROM promo_redemptions WHERE order_id = ?",
+            (order_id,),
+        )
+        promo_redemption = cursor.fetchone()
+        promo_restored = False
+        pts_spent = int(pts_spent or 0)
+        pts_earned = int(pts_earned or 0)
+
+        # Снимок позволяет вернуть каталог в исходное состояние при любой ошибке.
+        menu_snapshot = json.loads(json.dumps(menu, ensure_ascii=False))
+        for item in items:
+            if not isinstance(item, dict):
+                stock_warnings.append("некорректная позиция")
+                continue
+            category = item.get("category")
+            flavor = item.get("flavor")
+            category_data = menu.get(category)
+            if not category_data or not isinstance(category_data.get("flavors"), list):
+                stock_warnings.append(f"категория {category!r} не найдена")
+                continue
+            if not flavor:
+                stock_warnings.append(f"в позиции {category!r} нет вкуса")
+                continue
+            try:
+                quantity = max(int(item.get("quantity", item.get("qty", 1)) or 1), 1)
+            except (TypeError, ValueError):
+                quantity = 1
+
+            found_item = next(
+                (
+                    menu_item
+                    for menu_item in category_data["flavors"]
+                    if menu_item.get("flavor") == flavor
+                ),
+                None,
+            )
+            if found_item is not None:
+                found_item["stock"] = int(found_item.get("stock", 0) or 0) + quantity
+            else:
+                category_data["flavors"].append({
+                    "flavor": flavor,
+                    "stock": quantity,
+                    "emoji": item.get("emoji", ""),
+                    "tags": [],
+                    "description_ru": "",
+                    "description_en": "",
+                    "photo_url": "",
+                })
+
+        save_menu_safely()
+
+        if pts_spent:
+            cursor.execute(
+                "UPDATE users SET points = points + ? WHERE chat_id = ?",
+                (pts_spent, user_chat_id),
+            )
+        if pts_earned:
+            cursor.execute(
+                "UPDATE users SET points = points - ? WHERE chat_id = ?",
+                (pts_earned, user_chat_id),
+            )
+
+        if promo_redemption:
+            promo_id = int(promo_redemption[0])
+            cursor.execute(
+                "DELETE FROM promo_redemptions WHERE order_id = ?",
+                (order_id,),
+            )
+            cursor.execute(
+                "UPDATE promo_codes "
+                "SET used_count = CASE WHEN used_count > 0 THEN used_count - 1 ELSE 0 END, "
+                "active = 1 WHERE promo_id = ?",
+                (promo_id,),
+            )
+            promo_restored = cursor.rowcount == 1
+
+        cursor.execute("DELETE FROM orders WHERE order_id = ?", (order_id,))
+        if cursor.rowcount != 1:
+            raise RuntimeError("order deletion did not affect exactly one row")
+        conn.commit()
+    except Exception as exc:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        if menu_snapshot is not None:
+            menu.clear()
+            menu.update(menu_snapshot)
+            try:
+                save_menu_safely()
+            except Exception as restore_exc:
+                print(
+                    f"Cancel order {order_id}: menu rollback failed: {restore_exc}",
+                    flush=True,
+                )
+        print(
+            f"Cancel order {order_id} failed: {type(exc).__name__}: {exc}",
+            flush=True,
+        )
+        try:
+            bot.answer_callback_query(
+                call.id,
+                "Не удалось отменить заказ. Ошибка записана в Railway Logs.",
+                show_alert=True,
+            )
+        except Exception:
+            pass
+        return
+    finally:
+        if conn is not None:
+            conn.close()
+
+    if stock_warnings:
+        print(
+            f"Cancel order {order_id} stock warnings: {'; '.join(stock_warnings)}",
+            flush=True,
         )
 
-    # 3) Убираем ранее начисленные за этот заказ баллы
-    if pts_earned:
-        cursor.execute(
-            "UPDATE users SET points = points - ? WHERE chat_id = ?",
-            (pts_earned, user_chat_id)
-        )
+    try:
+        init_user(user_chat_id)
+        user_language = user_data.get(user_chat_id, {}).get("lang")
+    except Exception as exc:
+        print(f"Cancel order {order_id}: language lookup failed: {exc}", flush=True)
+        user_language = "ru"
 
-    # Отмена заказа возвращает одно использование в ту же промо-кампанию.
-    if promo_redemption:
-        promo_id = int(promo_redemption[0])
-        cursor.execute("DELETE FROM promo_redemptions WHERE order_id = ?", (order_id,))
-        cursor.execute(
-            "UPDATE promo_codes "
-            "SET used_count = CASE WHEN used_count > 0 THEN used_count - 1 ELSE 0 END, "
-            "active = 1 WHERE promo_id = ?",
-            (promo_id,),
-        )
-        promo_restored = cursor.rowcount == 1
-
-    # 4) Удаляем сам заказ из БД
-    cursor.execute("DELETE FROM orders WHERE order_id = ?", (order_id,))
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-    # 5) Уведомляем пользователя
-    init_user(user_chat_id)
-    if user_data.get(user_chat_id, {}).get("lang") == "en":
+    if user_language == "en":
         msg = f"Your order #{order_id} has been cancelled."
         if pts_spent:
             msg += f" {pts_spent} spent points were returned."
@@ -5509,15 +5608,33 @@ def handle_cancel_order(call):
             msg += f" Списано {pts_earned} начисленных баллов."
         if promo_restored:
             msg += " Использование промокода восстановлено."
-    bot.send_message(user_chat_id, msg)
 
-    # 6) Убираем кнопку «Отменить» в админском сообщении
-    bot.edit_message_reply_markup(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        reply_markup=None
-    )
-    bot.answer_callback_query(call.id, "Заказ отменён")
+    notification_sent = True
+    try:
+        bot.send_message(user_chat_id, msg)
+    except Exception as exc:
+        notification_sent = False
+        print(
+            f"Cancel order {order_id}: customer notification failed: {exc}",
+            flush=True,
+        )
+
+    try:
+        bot.edit_message_reply_markup(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=None,
+        )
+    except Exception as exc:
+        print(f"Cancel order {order_id}: keyboard cleanup failed: {exc}", flush=True)
+
+    callback_text = "Заказ отменён"
+    if not notification_sent:
+        callback_text += "; пользователь не получил уведомление"
+    try:
+        bot.answer_callback_query(call.id, callback_text, show_alert=not notification_sent)
+    except Exception as exc:
+        print(f"Cancel order {order_id}: callback answer failed: {exc}", flush=True)
 
 
 # 1) Обработчик нажатия "Order Delivered"
