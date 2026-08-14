@@ -60,7 +60,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.08.14-delivery-payment-proof-v15"
+BOT_VERSION = "2026.08.14-consistent-navigation-v16"
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
 print("BOT_VERSION =", BOT_VERSION, flush=True)
@@ -1246,7 +1246,7 @@ def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
         ))
 
     kb.add(types.InlineKeyboardButton(
-        text=tr(chat_id, "⬅️ К категориям", "⬅️ To categories"),
+        text=nav_text(chat_id, "models"),
         callback_data="go_back_to_categories"
     ))
     return kb
@@ -1324,6 +1324,8 @@ def recover_catalog_screen(chat_id: int, call=None) -> None:
 # ------------------------------------------------------------------------
 def nav_text(chat_id: int, destination: str) -> str:
     labels = {
+        "models": ("⬅️ Назад к моделям", "⬅️ Back to models"),
+        "flavors": ("⬅️ Назад к вкусам", "⬅️ Back to flavors"),
         "cart": ("⬅️ Назад в корзину", "⬅️ Back to cart"),
         "address": ("⬅️ Назад к адресу", "⬅️ Back to address"),
         "contact": ("⬅️ Назад к контакту", "⬅️ Back to contact"),
@@ -1673,7 +1675,7 @@ def handle_category(call):
     show_category_screen(chat_id, cat, call)
 
 # ------------------------------------------------------------------------
-#   17. Callback: «Назад к категориям»
+#   17. Callback: «Назад к моделям»
 # ------------------------------------------------------------------------
 @ensure_user
 @bot.callback_query_handler(func=lambda call: call.data == "go_back_to_categories")
@@ -1747,7 +1749,7 @@ def handle_flavor(call):
             callback_data=f"cart_add|{token}"
         ),
         types.InlineKeyboardButton(
-            text=tr(chat_id, "⬅️ К вкусам", "⬅️ To flavors"),
+            text=nav_text(chat_id, "flavors"),
             callback_data=f"category|{category_token(cat)}"
         )
     )
@@ -1863,7 +1865,7 @@ def handle_add_to_cart(call):
         callback_data="view_cart",
     ))
     kb.add(types.InlineKeyboardButton(
-        text=tr(chat_id, "⬅️ К моделям", "⬅️ Back to models"),
+        text=nav_text(chat_id, "models"),
         callback_data="go_back_to_categories",
     ))
     render_inline_screen(chat_id, text, kb, call)
