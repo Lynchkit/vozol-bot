@@ -53,7 +53,7 @@ PAYMENT_METHODS = {
     "uah": ("🇺🇦 Гривны", "🇺🇦 Hryvnia", "PAYMENT_UAH"),
 }
 
-BOT_VERSION = "2026.08.14-payment-env-cancel-v11"
+BOT_VERSION = "2026.08.14-payment-copy-buttons-v12"
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
 print("BOT_VERSION =", BOT_VERSION, flush=True)
@@ -548,6 +548,74 @@ def payment_detail(method_key: str) -> str:
     if not method:
         return ""
     return os.getenv(method[2], "").strip().replace("\\n", "\n")
+
+
+def payment_detail_lines(detail: str) -> list[tuple[str, str]]:
+    """Разделяет реквизиты на подпись и значение для удобного копирования."""
+    result = []
+    for raw_line in detail.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = re.match(r"^([^:\n]{1,60}):\s*(.+)$", line)
+        if match:
+            label = match.group(1).strip()
+            value = match.group(2).strip()
+        else:
+            label = ""
+            value = line
+        if value:
+            result.append((label, value))
+    return result
+
+
+def payment_detail_html(detail: str) -> str:
+    """Показывает каждую часть реквизитов отдельной строкой."""
+    blocks = []
+    for label, value in payment_detail_lines(detail):
+        if label:
+            blocks.append(
+                f"<b>{html.escape(label)}:</b>\n"
+                f"<code>{html.escape(value)}</code>"
+            )
+        else:
+            blocks.append(f"<code>{html.escape(value)}</code>")
+    return "\n\n".join(blocks) or f"<pre>{html.escape(detail)}</pre>"
+
+
+def payment_copy_keyboard(chat_id: int, detail: str):
+    """Делает каждое значение отдельной нажимаемой строкой для копирования."""
+    copy_button_type = getattr(types, "CopyTextButton", None)
+    if copy_button_type is None:
+        return None
+
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    buttons = []
+    for position, (label, value) in enumerate(payment_detail_lines(detail), start=1):
+        # Telegram принимает в CopyTextButton не более 256 символов.
+        if not 1 <= len(value) <= 256:
+            continue
+        visible_label = label or tr(
+            chat_id,
+            f"Реквизит {position}",
+            f"Detail {position}",
+        )
+        full_button_text = f"{visible_label} — {value}"
+        button_text = (
+            full_button_text
+            if len(full_button_text) <= 64
+            else full_button_text[:61].rstrip() + "…"
+        )
+        buttons.append(
+            types.InlineKeyboardButton(
+                text=button_text,
+                copy_text=copy_button_type(text=value),
+            )
+        )
+    if not buttons:
+        return None
+    kb.add(*buttons)
+    return kb
 
 
 def payment_order_target(order_id: int):
@@ -4088,19 +4156,32 @@ def handle_payment_send(call):
     customer_chat_id = int(order_row[0])
     init_user(customer_chat_id)
     method_name = tr(customer_chat_id, method[0], method[1])
+    detail_html = payment_detail_html(detail)
+    copy_keyboard = payment_copy_keyboard(customer_chat_id, detail)
+    copy_hint = tr(
+        customer_chat_id,
+        "Нажмите на нужную строку ниже — значение сразу скопируется.",
+        "Tap the required row below to copy its value.",
+    )
     message_text = tr(
         customer_chat_id,
         f"<b>💳 Реквизиты для оплаты заказа №{order_id}</b>\n\n"
         f"Способ: <b>{method_name}</b>\n"
-        f"<pre>{html.escape(detail)}</pre>\n"
+        f"{detail_html}\n\n"
+        f"{copy_hint}\n"
         "После оплаты отправьте продавцу подтверждение платежа.",
         f"<b>💳 Payment details for order #{order_id}</b>\n\n"
         f"Method: <b>{method_name}</b>\n"
-        f"<pre>{html.escape(detail)}</pre>\n"
+        f"{detail_html}\n\n"
+        f"{copy_hint}\n"
         "After payment, send the seller your payment confirmation.",
     )
     try:
-        bot.send_message(customer_chat_id, message_text)
+        bot.send_message(
+            customer_chat_id,
+            message_text,
+            reply_markup=copy_keyboard,
+        )
     except Exception as exc:
         print(f"Payment details delivery failed for order {order_id}: {exc}")
         return bot.answer_callback_query(

@@ -1,4 +1,4 @@
-pyTelegramBotAPI
+pyTelegramBotAPI>=4.24.0
 requests
 apscheduler
 pandas
