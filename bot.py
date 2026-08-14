@@ -187,6 +187,17 @@ cursor_init.execute(
     "ON promo_redemptions(order_id)"
 )
 
+# Последние успешно полученные курсы сохраняются на постоянном диске Railway.
+# Если внешний сервис временно недоступен, итог заказа всё равно можно показать
+# по последнему известному набору курсов, не подставляя выдуманные значения.
+cursor_init.execute("""
+    CREATE TABLE IF NOT EXISTS exchange_rate_cache (
+        currency   TEXT PRIMARY KEY,
+        rate       REAL NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+""")
+
 # Создание таблицы reviews
 cursor_init.execute("""
     CREATE TABLE IF NOT EXISTS reviews (
@@ -596,6 +607,56 @@ _RATE_CACHE: dict[str, float] | None = None
 _RATE_CACHE_TS: float = 0.0
 _RATE_TTL: int = 10 * 60  # 10 минут
 
+
+def valid_exchange_rates(rates: dict[str, float] | None) -> bool:
+    required = ("RUB", "USD", "EUR", "UAH")
+    if not rates:
+        return False
+    try:
+        return all(float(rates.get(code, 0)) > 0 for code in required)
+    except (TypeError, ValueError):
+        return False
+
+
+def save_exchange_rates(rates: dict[str, float]) -> None:
+    """Сохраняет только полный и положительный набор курсов."""
+    if not valid_exchange_rates(rates):
+        return
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    updated_at = datetime.datetime.utcnow().isoformat()
+    for currency in ("RUB", "USD", "EUR", "UAH"):
+        cursor.execute(
+            """
+            INSERT INTO exchange_rate_cache (currency, rate, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(currency) DO UPDATE SET
+                rate = excluded.rate,
+                updated_at = excluded.updated_at
+            """,
+            (currency, float(rates[currency]), updated_at),
+        )
+    connection.commit()
+    cursor.close()
+    connection.close()
+
+
+def load_saved_exchange_rates() -> dict[str, float]:
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT currency, rate FROM exchange_rate_cache "
+            "WHERE currency IN ('RUB', 'USD', 'EUR', 'UAH')"
+        )
+        result = {str(currency): float(rate) for currency, rate in cursor.fetchall()}
+    except sqlite3.Error:
+        result = {}
+    finally:
+        cursor.close()
+        connection.close()
+    return result if valid_exchange_rates(result) else {}
+
 def fetch_rates() -> dict[str, float]:
     """
     Возвращает курсы валют TRY → RUB, USD, UAH, EUR,
@@ -605,7 +666,7 @@ def fetch_rates() -> dict[str, float]:
 
     now = time.time()
     # Если кеш ещё «жив» — отдаём его
-    if _RATE_CACHE is not None and (now - _RATE_CACHE_TS) < _RATE_TTL:
+    if valid_exchange_rates(_RATE_CACHE) and (now - _RATE_CACHE_TS) < _RATE_TTL:
         return _RATE_CACHE
 
     # Иначе запрашиваем из внешних источников
@@ -619,18 +680,31 @@ def fetch_rates() -> dict[str, float]:
             data = r.json()
             rates = data.get("rates") or data.get("conversion_rates")
             if rates:
-                result = {k: rates[k] for k in ("RUB", "USD", "UAH", "EUR") if k in rates}
+                result = {
+                    code: float(rates[code])
+                    for code in ("RUB", "USD", "UAH", "EUR")
+                    if code in rates
+                }
+            else:
+                result = {}
+            if valid_exchange_rates(result):
                 _RATE_CACHE = result
                 _RATE_CACHE_TS = now
+                save_exchange_rates(result)
                 return result
         except Exception:
             continue
 
-    # Фоллбэк при ошибке
-    fallback = {"RUB": 0, "USD": 0, "EUR": 0, "UAH": 0}
-    _RATE_CACHE = fallback
-    _RATE_CACHE_TS = now
-    return fallback
+    # При временной ошибке используем последний успешный набор — сначала из
+    # памяти, затем с постоянного диска Railway.
+    if valid_exchange_rates(_RATE_CACHE):
+        return _RATE_CACHE
+    saved_rates = load_saved_exchange_rates()
+    if saved_rates:
+        _RATE_CACHE = saved_rates
+        _RATE_CACHE_TS = now
+        return saved_rates
+    return {"RUB": 0, "USD": 0, "EUR": 0, "UAH": 0}
 
 def translate_to_en(text: str) -> str:
     """
@@ -733,12 +807,16 @@ def points_choice_keyboard(chat_id: int, max_points: int):
         callback_data="points_custom",
     ))
     kb.add(types.InlineKeyboardButton(
-        text=tr(chat_id, "Без баллов", "Do not use points"),
+        text=tr(chat_id, "❌ Не списывать баллы", "❌ Do not use points"),
         callback_data="no_points"
     ))
     kb.add(types.InlineKeyboardButton(
-        text=tr(chat_id, "⬅️ Назад в корзину", "⬅️ Back to cart"),
-        callback_data="back_to_cart",
+        text=nav_text(chat_id, "review"),
+        callback_data="review_order",
+    ))
+    kb.add(types.InlineKeyboardButton(
+        text=nav_text(chat_id, "menu"),
+        callback_data="go_back_to_categories",
     ))
     return kb
 
@@ -756,7 +834,7 @@ def skip_points_keyboard(chat_id: int):
 def back_to_main_keyboard(chat_id: int) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup()
     kb.add(types.InlineKeyboardButton(
-        text=tr(chat_id, "⬅️ Назад в меню", "⬅️ Back to menu"),
+        text=nav_text(chat_id, "menu"),
         callback_data="go_back_to_categories",
     ))
     return kb
@@ -871,7 +949,7 @@ def nav_text(chat_id: int, destination: str) -> str:
         "contact": ("⬅️ Назад к контакту", "⬅️ Back to contact"),
         "points": ("⬅️ Назад к баллам", "⬅️ Back to points"),
         "review": ("⬅️ Назад к заказу", "⬅️ Back to order"),
-        "menu": ("⬅️ Назад в меню", "⬅️ Back to menu"),
+        "menu": ("🏠 В главное меню", "🏠 Main menu"),
     }
     ru_text, en_text = labels.get(destination, ("⬅️ Назад", "⬅️ Back"))
     return tr(chat_id, ru_text, en_text)
@@ -888,12 +966,42 @@ def no_comment_text(chat_id: int) -> str:
     return tr(chat_id, "Без комментария", "No comment")
 
 
+def leave_checkout_to_main(chat_id: int) -> None:
+    """Закрывает checkout, сохраняя товары пользователя в корзине."""
+    data = user_data.get(chat_id, {})
+    data.update({
+        "current_category": None,
+        "wait_for_points": False,
+        "wait_for_address": False,
+        "wait_for_contact": False,
+        "wait_for_comment": False,
+        "wait_for_promo": False,
+        "pending_discount": 0,
+        "pending_points_spent": 0,
+    })
+    clear_promo_state(data)
+    data.pop("return_to_review_after_address", None)
+    data.pop("return_to_review_after_contact", None)
+    data.pop("return_to_review_after_comment", None)
+    user_data[chat_id] = data
+    bot.send_message(
+        chat_id,
+        tr(
+            chat_id,
+            "Оформление закрыто. Товары остались в корзине.",
+            "Checkout closed. Your items are still in the cart.",
+        ),
+        reply_markup=types.ReplyKeyboardRemove(),
+    )
+    show_main_menu(chat_id)
+
+
 def address_keyboard(chat_id: int, back_destination: str = "cart") -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add(types.KeyboardButton(t(chat_id, "share_location"), request_location=True))
     kb.add(t(chat_id, "choose_on_map"))
     kb.add(t(chat_id, "enter_address_text"))
-    kb.add(nav_text(chat_id, back_destination))
+    kb.add(nav_text(chat_id, back_destination), nav_text(chat_id, "menu"))
     return kb
 
 
@@ -902,7 +1010,7 @@ def contact_keyboard(chat_id: int, back_destination: str = "address") -> types.R
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add(types.KeyboardButton(t(chat_id, "share_contact"), request_contact=True))
     kb.add(t(chat_id, "enter_nickname"))
-    kb.add(nav_text(chat_id, back_destination))
+    kb.add(nav_text(chat_id, back_destination), nav_text(chat_id, "menu"))
     return kb
 
 
@@ -910,7 +1018,7 @@ def contact_keyboard(chat_id: int, back_destination: str = "address") -> types.R
 def comment_keyboard(chat_id: int) -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add(no_comment_text(chat_id))
-    kb.add(nav_text(chat_id, "contact"))
+    kb.add(nav_text(chat_id, "contact"), nav_text(chat_id, "menu"))
     return kb
 
 
@@ -923,7 +1031,7 @@ def text_entry_back_keyboard(
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     if include_no_comment:
         kb.add(no_comment_text(chat_id))
-    kb.add(nav_text(chat_id, destination))
+    kb.add(nav_text(chat_id, destination), nav_text(chat_id, "menu"))
     return kb
 # ------------------------------------------------------------------------
 #   12. Клавиатура редактирования меню (/change) — ВСЁ НА АНГЛИЙСКОМ
@@ -1346,6 +1454,10 @@ def handle_add_to_cart(call):
         ),
         callback_data="view_cart",
     ))
+    kb.add(types.InlineKeyboardButton(
+        text=tr(chat_id, "⬅️ К моделям", "⬅️ Back to models"),
+        callback_data="go_back_to_categories",
+    ))
     render_inline_screen(chat_id, text, kb, call)
 
 
@@ -1673,12 +1785,23 @@ def handle_stale_cart_button(call):
 def checkout_conversion_text(chat_id: int, total_after: int | float, qty: int) -> str:
     rates = fetch_rates()
     if not all(rates.get(code, 0) for code in ("RUB", "USD", "EUR", "UAH")):
-        return ""
+        return tr(
+            chat_id,
+            "\n≈ ₽— · $— · €— · ₴—\n"
+            "⚠️ Курсы валют временно недоступны.",
+            "\n≈ ₽— · $— · €— · ₴—\n"
+            "⚠️ Exchange rates are temporarily unavailable.",
+        )
     rub = round(total_after * rates["RUB"] + 500 * qty, 2)
     usd = round(total_after * rates["USD"] + 2 * qty, 2)
     eur = round(total_after * rates["EUR"] + 2 * qty, 2)
     uah = round(total_after * rates["UAH"] + 350 * qty, 2)
-    values = f"{rub}₽ · $" + f"{usd} · €{eur} · ₴{uah}"
+    values = (
+        f"≈ {format_money(rub)}₽\n"
+        f"≈ ${format_money(usd)}\n"
+        f"≈ €{format_money(eur)}\n"
+        f"≈ ₴{format_money(uah)}"
+    )
     return tr(
         chat_id,
         f"\nОриентировочно в других валютах:\n{values}",
@@ -1692,10 +1815,15 @@ def ask_saved_or_new_delivery_data(
     points_to_spend: int = 0,
     call=None,
 ) -> bool:
-    """Показывает второй шаг checkout: сохранённые либо новые данные."""
+    """Показывает первый шаг checkout: сохранённые либо новые данные."""
     data = user_data.get(chat_id, {})
     cart = data.get("cart", [])
-    total_after = max(total_try - points_to_spend, 0)
+    promo_discount = (
+        min(int(data.get("promo_discount", 0) or 0), int(total_try))
+        if normalize_promo_code(data.get("promo_code", ""))
+        else 0
+    )
+    total_after = max(total_try - promo_discount - points_to_spend, 0)
 
     conn_check = get_db_connection()
     cur_check = conn_check.cursor()
@@ -1731,14 +1859,18 @@ def ask_saved_or_new_delivery_data(
             text=nav_text(chat_id, "cart"),
             callback_data="back_to_cart",
         ))
+        kb.add(types.InlineKeyboardButton(
+            text=nav_text(chat_id, "menu"),
+            callback_data="go_back_to_categories",
+        ))
         saved_data_text = tr(
             chat_id,
-            "<b>2/4 · Доставка</b>\n\n"
+            "<b>1/3 · Доставка</b>\n\n"
             "Использовать сохранённые данные?\n\n"
             f"📍 {html.escape(str(last_address))}\n"
             f"📱 {html.escape(str(last_contact))}\n\n"
             f"<b>К оплате: {format_money(total_after)}₺</b>{conversion}",
-            "<b>2/4 · Delivery</b>\n\n"
+            "<b>1/3 · Delivery</b>\n\n"
             "Use your saved details?\n\n"
             f"📍 {html.escape(str(last_address))}\n"
             f"📱 {html.escape(str(last_contact))}\n\n"
@@ -1756,10 +1888,10 @@ def ask_saved_or_new_delivery_data(
     data["wait_for_address"] = True
     message_text = tr(
         chat_id,
-        "<b>2/4 · Доставка</b>\n\n"
+        "<b>1/3 · Доставка</b>\n\n"
         f"<b>К оплате: {format_money(total_after)}₺</b>{conversion}\n\n"
         "Укажите адрес доставки:",
-        "<b>2/4 · Delivery</b>\n\n"
+        "<b>1/3 · Delivery</b>\n\n"
         f"<b>Amount due: {format_money(total_after)}₺</b>{conversion}\n\n"
         "Enter the delivery address:",
     )
@@ -1775,27 +1907,57 @@ def ask_saved_or_new_delivery_data(
 
 
 # ------------------------------------------------------------------------
-#   24. Callback: завершить заказ (с проверкой и списанием stock)
+#   24. Начало checkout и выбор баллов на финальном экране
 # ------------------------------------------------------------------------
-def show_points_choice(chat_id: int, user_points: int, total_try: int, call=None) -> None:
-    max_points = min(int(user_points), int(total_try))
+def checkout_points_state(chat_id: int) -> tuple[int, int, int]:
+    """Возвращает баланс, максимум для списания и сумму товаров."""
+    data = user_data.get(chat_id, {})
+    total_try = int(sum(float(item.get("price", 0)) for item in data.get("cart", [])))
+    promo_discount = (
+        min(int(data.get("promo_discount", 0) or 0), total_try)
+        if normalize_promo_code(data.get("promo_code", ""))
+        else 0
+    )
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    cursor.execute("SELECT points FROM users WHERE chat_id = ?", (chat_id,))
+    row = cursor.fetchone()
+    cursor.close()
+    connection.close()
+    user_points = int(row[0]) if row else 0
+    max_points = min(user_points, max(total_try - promo_discount, 0))
+    return user_points, max_points, total_try
+
+
+def show_points_choice(chat_id: int, call=None) -> None:
+    user_points, max_points, total_try = checkout_points_state(chat_id)
     data = user_data[chat_id]
+    selected_points = min(
+        int(data.get("pending_points_spent", 0) or 0),
+        max_points,
+    )
     data.update({
         "wait_for_points": False,
         "temp_total_try": total_try,
         "temp_user_points": user_points,
-        "pending_discount": 0,
-        "pending_points_spent": 0,
+        "pending_discount": selected_points,
+        "pending_points_spent": selected_points,
     })
-    clear_promo_state(data)
+    selected_line = tr(
+        chat_id,
+        f"\nСейчас выбрано: <b>{selected_points}</b> баллов.",
+        f"\nCurrently selected: <b>{selected_points}</b> points.",
+    ) if selected_points else ""
     text = tr(
         chat_id,
-        "<b>1/4 · Бонусные баллы</b>\n\n"
+        "<b>🎁 Баллы для заказа</b>\n\n"
         f"Баланс: {user_points}\n"
-        f"Для этого заказа можно использовать до <b>{max_points}</b> баллов.",
-        "<b>1/4 · Bonus points</b>\n\n"
+        f"Можно списать до <b>{max_points}</b> баллов."
+        f"{selected_line}",
+        "<b>🎁 Points for this order</b>\n\n"
         f"Balance: {user_points}\n"
-        f"You can use up to <b>{max_points}</b> points for this order.",
+        f"You can use up to <b>{max_points}</b> points."
+        f"{selected_line}",
     )
     render_inline_screen(
         chat_id,
@@ -1822,23 +1984,39 @@ def handle_finish_order(call):
     clear_promo_state(data)
 
     total_try = sum(i['price'] for i in cart)
-    # --- достаём баллы ---
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT points FROM users WHERE chat_id = ?", (chat_id,))
-    row = cur.fetchone()
-    conn.close()
-
-    user_points = row[0] if row else 0
-
-    if user_points > 0:
-        show_points_choice(chat_id, user_points, total_try, call)
-        return
     data["pending_discount"] = 0
     data["pending_points_spent"] = 0
+    data["temp_total_try"] = total_try
     user_data[chat_id] = data
 
     ask_saved_or_new_delivery_data(chat_id, total_try, 0, call)
+
+
+@ensure_user
+@bot.callback_query_handler(func=lambda call: call.data == "edit_points")
+def handle_edit_points(call):
+    chat_id = call.from_user.id
+    user_points, max_points, _ = checkout_points_state(chat_id)
+    if user_points <= 0:
+        bot.answer_callback_query(
+            call.id,
+            tr(chat_id, "На балансе пока нет баллов.", "You do not have any points yet."),
+            show_alert=True,
+        )
+        return
+    if max_points <= 0:
+        bot.answer_callback_query(
+            call.id,
+            tr(
+                chat_id,
+                "Сумма к оплате уже равна 0₺ — баллы не нужны.",
+                "The amount due is already 0₺, so no points are needed.",
+            ),
+            show_alert=True,
+        )
+        return
+    bot.answer_callback_query(call.id)
+    show_points_choice(chat_id, call)
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "points_all")
@@ -1846,20 +2024,14 @@ def handle_points_all(call):
     chat_id = call.from_user.id
     init_user(chat_id)
     data = user_data[chat_id]
-    max_points = min(
-        int(data.get("temp_user_points", 0) or 0),
-        int(data.get("temp_total_try", 0) or 0),
-    )
+    _, max_points, _ = checkout_points_state(chat_id)
     data["pending_discount"] = max_points
     data["pending_points_spent"] = max_points
+    if data.get("promo_code"):
+        data["points_before_promo"] = max_points
     data["wait_for_points"] = False
     bot.answer_callback_query(call.id, tr(chat_id, "Баллы применены", "Points applied"))
-    ask_saved_or_new_delivery_data(
-        chat_id,
-        int(data.get("temp_total_try", 0) or 0),
-        max_points,
-        call,
-    )
+    show_order_review(chat_id, call)
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "points_custom")
@@ -1868,21 +2040,20 @@ def handle_points_custom(call):
     init_user(chat_id)
     data = user_data[chat_id]
     data["wait_for_points"] = True
-    max_points = min(
-        int(data.get("temp_user_points", 0) or 0),
-        int(data.get("temp_total_try", 0) or 0),
-    )
+    user_points, max_points, total_try = checkout_points_state(chat_id)
+    data["temp_user_points"] = user_points
+    data["temp_total_try"] = total_try
     bot.answer_callback_query(call.id)
     disable_inline_keyboard(call)
     bot.send_message(
         chat_id,
         tr(
             chat_id,
-            f"<b>1/4 · Бонусные баллы</b>\n\nВведите число от 0 до {max_points}:",
-            f"<b>1/4 · Bonus points</b>\n\nEnter a number from 0 to {max_points}:",
+            f"<b>🎁 Баллы для заказа</b>\n\nВведите число от 0 до {max_points}:",
+            f"<b>🎁 Points for this order</b>\n\nEnter a number from 0 to {max_points}:",
         ),
         parse_mode="HTML",
-        reply_markup=text_entry_back_keyboard(chat_id, "points"),
+        reply_markup=text_entry_back_keyboard(chat_id, "review"),
     )
 
 
@@ -1906,12 +2077,16 @@ def show_comment_choice(chat_id: int, call=None) -> None:
         text=nav_text(chat_id, "contact"),
         callback_data="back_to_contact",
     ))
+    kb.add(types.InlineKeyboardButton(
+        text=nav_text(chat_id, "menu"),
+        callback_data="go_back_to_categories",
+    ))
     render_inline_screen(
         chat_id,
         tr(
             chat_id,
-            "<b>3/4 · Комментарий</b>\n\nХотите что-нибудь добавить к заказу?",
-            "<b>3/4 · Comment</b>\n\nWould you like to add a note to your order?",
+            "<b>2/3 · Комментарий</b>\n\nХотите что-нибудь добавить к заказу?",
+            "<b>2/3 · Comment</b>\n\nWould you like to add a note to your order?",
         ),
         kb,
         call,
@@ -1951,8 +2126,8 @@ def handle_use_last_data(call):
         chat_id,
         tr(
             chat_id,
-            "<b>2/4 · Доставка</b>\n\nСохранённых данных пока нет. Укажите адрес:",
-            "<b>2/4 · Delivery</b>\n\nNo saved details were found. Enter your address:",
+            "<b>1/3 · Доставка</b>\n\nСохранённых данных пока нет. Укажите адрес:",
+            "<b>1/3 · Delivery</b>\n\nNo saved details were found. Enter your address:",
         ),
         parse_mode="HTML",
         reply_markup=address_keyboard(chat_id),
@@ -1979,8 +2154,8 @@ def handle_enter_new_data(call):
         chat_id,
         tr(
             chat_id,
-            "<b>2/4 · Доставка</b>\n\nВведите новый адрес:",
-            "<b>2/4 · Delivery</b>\n\nEnter a new address:",
+            "<b>1/3 · Доставка</b>\n\nВведите новый адрес:",
+            "<b>1/3 · Delivery</b>\n\nEnter a new address:",
         ),
         parse_mode="HTML",
         reply_markup=address_keyboard(chat_id),
@@ -2012,8 +2187,8 @@ def handle_comment_add(call):
         chat_id,
         tr(
             chat_id,
-            "<b>3/4 · Комментарий</b>\n\nНапишите комментарий одним сообщением:",
-            "<b>3/4 · Comment</b>\n\nSend your comment in one message:",
+            "<b>2/3 · Комментарий</b>\n\nНапишите комментарий одним сообщением:",
+            "<b>2/3 · Comment</b>\n\nSend your comment in one message:",
         ),
         parse_mode="HTML",
         reply_markup=text_entry_back_keyboard(
@@ -2046,18 +2221,22 @@ def handle_points_input(message):
     chat_id = message.chat.id
     data = user_data.get(chat_id, {})
     text = message.text.strip()
-    user_points = int(data.get("temp_user_points", 0) or 0)
-    total_try = int(data.get("temp_total_try", 0) or 0)
-    max_points = min(user_points, total_try)
+    user_points, max_points, total_try = checkout_points_state(chat_id)
+    data["temp_user_points"] = user_points
+    data["temp_total_try"] = total_try
 
-    if is_navigation_text(chat_id, text, "points"):
+    if text == nav_text(chat_id, "menu"):
+        leave_checkout_to_main(chat_id)
+        return
+
+    if is_navigation_text(chat_id, text, "review"):
         data["wait_for_points"] = False
         bot.send_message(
             chat_id,
-            tr(chat_id, "Выберите способ списания баллов:", "Choose how to use points:"),
+            tr(chat_id, "Возвращаемся к заказу.", "Back to your order."),
             reply_markup=types.ReplyKeyboardRemove(),
         )
-        show_points_choice(chat_id, user_points, total_try)
+        show_order_review(chat_id)
         return
 
     # --- проверяем корректность ввода ---
@@ -2065,7 +2244,7 @@ def handle_points_input(message):
         bot.send_message(
             chat_id,
             t(chat_id, "invalid_points").format(max_points=max_points),
-            reply_markup=text_entry_back_keyboard(chat_id, "points"),
+            reply_markup=text_entry_back_keyboard(chat_id, "review"),
         )
         return
 
@@ -2075,13 +2254,15 @@ def handle_points_input(message):
         bot.send_message(
             chat_id,
             t(chat_id, "invalid_points").format(max_points=max_points),
-            reply_markup=text_entry_back_keyboard(chat_id, "points"),
+            reply_markup=text_entry_back_keyboard(chat_id, "review"),
         )
         return
 
     # --- сохраняем скидку и ждём адрес; баллы НЕ списываем здесь ---
     data["pending_discount"] = points_to_spend
     data["pending_points_spent"] = points_to_spend
+    if data.get("promo_code"):
+        data["points_before_promo"] = points_to_spend
     data["wait_for_points"] = False
 
     user_data[chat_id] = data
@@ -2094,7 +2275,7 @@ def handle_points_input(message):
         ),
         reply_markup=types.ReplyKeyboardRemove(),
     )
-    ask_saved_or_new_delivery_data(chat_id, total_try, points_to_spend)
+    show_order_review(chat_id)
 
 # ------------------------------------------------------------------------
 #   26. Handler: ввод адреса
@@ -2108,6 +2289,10 @@ def handle_address_input(message):
     chat_id = message.chat.id
     data = user_data.get(chat_id, {})
     text = message.text or ""
+
+    if text == nav_text(chat_id, "menu"):
+        leave_checkout_to_main(chat_id)
+        return
 
     # --- Кнопка Назад ---
     back_destination = "review" if data.get("return_to_review_after_address") else "cart"
@@ -2194,8 +2379,8 @@ def handle_address_input(message):
         chat_id,
         tr(
             chat_id,
-            "<b>2/4 · Доставка</b>\n\nУкажите телефон или Telegram для связи:",
-            "<b>2/4 · Delivery</b>\n\nEnter a phone number or Telegram username:",
+            "<b>1/3 · Доставка</b>\n\nУкажите телефон или Telegram для связи:",
+            "<b>1/3 · Delivery</b>\n\nEnter a phone number or Telegram username:",
         ),
         parse_mode="HTML",
         reply_markup=kb,
@@ -2214,6 +2399,10 @@ def handle_contact_input(message):
     data = user_data.get(chat_id, {})
     text = message.text or ""
 
+    if text == nav_text(chat_id, "menu"):
+        leave_checkout_to_main(chat_id)
+        return
+
     # --- Назад ---
     back_destination = "review" if data.get("return_to_review_after_contact") else "address"
     if is_navigation_text(chat_id, text, back_destination):
@@ -2231,8 +2420,8 @@ def handle_contact_input(message):
             chat_id,
             tr(
                 chat_id,
-                "<b>2/4 · Доставка</b>\n\nУкажите адрес доставки:",
-                "<b>2/4 · Delivery</b>\n\nEnter the delivery address:",
+                "<b>1/3 · Доставка</b>\n\nУкажите адрес доставки:",
+                "<b>1/3 · Delivery</b>\n\nEnter the delivery address:",
             ),
             parse_mode="HTML",
             reply_markup=kb,
@@ -2299,8 +2488,8 @@ def show_order_review(chat_id: int, call=None) -> None:
             chat_id,
             tr(
                 chat_id,
-                "<b>2/4 · Доставка</b>\n\nУкажите адрес доставки:",
-                "<b>2/4 · Delivery</b>\n\nEnter the delivery address:",
+                "<b>1/3 · Доставка</b>\n\nУкажите адрес доставки:",
+                "<b>1/3 · Delivery</b>\n\nEnter the delivery address:",
             ),
             parse_mode="HTML",
             reply_markup=address_keyboard(chat_id),
@@ -2314,8 +2503,8 @@ def show_order_review(chat_id: int, call=None) -> None:
             chat_id,
             tr(
                 chat_id,
-                "<b>2/4 · Доставка</b>\n\nУкажите контакт для связи:",
-                "<b>2/4 · Delivery</b>\n\nEnter your contact details:",
+                "<b>1/3 · Доставка</b>\n\nУкажите контакт для связи:",
+                "<b>1/3 · Delivery</b>\n\nEnter your contact details:",
             ),
             parse_mode="HTML",
             reply_markup=contact_keyboard(chat_id),
@@ -2331,13 +2520,12 @@ def show_order_review(chat_id: int, call=None) -> None:
     ) if promo_code else 0
     # Промокод имеет приоритет, поэтому при заказе на всю сумму лишние
     # выбранные баллы сохраняются на балансе пользователя.
-    points_spent = min(
-        int(data.get("pending_points_spent", 0) or 0),
-        max(total_before - promo_discount, 0),
-    )
+    user_points, max_points, _ = checkout_points_state(chat_id)
+    points_spent = min(int(data.get("pending_points_spent", 0) or 0), max_points)
     data["pending_points_spent"] = points_spent
     data["pending_discount"] = points_spent
     total_after = max(total_before - promo_discount - points_spent, 0)
+    conversion = checkout_conversion_text(chat_id, total_after, len(cart))
     item_lines = []
     for (cat, flavor, price), qty in get_grouped_cart(chat_id):
         item_lines.append(
@@ -2348,35 +2536,51 @@ def show_order_review(chat_id: int, call=None) -> None:
     contact = html.escape(str(data.get("contact") or "—"))
     comment = html.escape(str(data.get("comment") or "—"))
     if user_data.get(chat_id, {}).get("lang") == "en":
+        points_line = f"Points: −{points_spent}\n" if points_spent else ""
         promo_line = (
             f"Promo code {html.escape(promo_code)}: −{format_money(promo_discount)}₺\n"
             if promo_code else ""
         )
         review_text = (
-            "<b>4/4 · Check your order</b>\n\n"
+            "<b>3/3 · Check your order</b>\n\n"
             + "\n".join(item_lines)
             + f"\n\nSubtotal: {format_money(total_before)}₺\n"
-            + f"Points: −{points_spent}\n"
+            + points_line
             + promo_line
-            + f"<b>Amount due: {format_money(total_after)}₺</b>\n\n"
+            + f"<b>Amount due: {format_money(total_after)}₺</b>{conversion}\n\n"
             + f"📍 Address: {address}\n📱 Contact: {contact}\n💬 Comment: {comment}"
         )
     else:
+        points_line = f"Баллы: −{points_spent}\n" if points_spent else ""
         promo_line = (
             f"Промокод {html.escape(promo_code)}: −{format_money(promo_discount)}₺\n"
             if promo_code else ""
         )
         review_text = (
-            "<b>4/4 · Проверьте заказ</b>\n\n"
+            "<b>3/3 · Проверьте заказ</b>\n\n"
             + "\n".join(item_lines)
             + f"\n\nТовары: {format_money(total_before)}₺\n"
-            + f"Баллы: −{points_spent}\n"
+            + points_line
             + promo_line
-            + f"<b>К оплате: {format_money(total_after)}₺</b>\n\n"
+            + f"<b>К оплате: {format_money(total_after)}₺</b>{conversion}\n\n"
             + f"📍 Адрес: {address}\n📱 Контакт: {contact}\n💬 Комментарий: {comment}"
         )
 
     kb = types.InlineKeyboardMarkup(row_width=2)
+    if user_points > 0 and max_points > 0:
+        points_button_text = (
+            tr(
+                chat_id,
+                f"🎁 Баллы: −{points_spent}",
+                f"🎁 Points: −{points_spent}",
+            )
+            if points_spent
+            else tr(chat_id, "🎁 Списать баллы", "🎁 Use points")
+        )
+        kb.add(types.InlineKeyboardButton(
+            text=points_button_text,
+            callback_data="edit_points",
+        ))
     if promo_code:
         kb.add(
             types.InlineKeyboardButton(
@@ -2419,6 +2623,10 @@ def show_order_review(chat_id: int, call=None) -> None:
         text=tr(chat_id, "⬅️ К комментарию", "⬅️ Back to comment"),
         callback_data="back_to_comment",
     ))
+    kb.add(types.InlineKeyboardButton(
+        text=nav_text(chat_id, "menu"),
+        callback_data="go_back_to_categories",
+    ))
     render_inline_screen(
         chat_id,
         review_text,
@@ -2428,9 +2636,16 @@ def show_order_review(chat_id: int, call=None) -> None:
     )
 
 
-def promo_input_keyboard(chat_id: int) -> types.ReplyKeyboardMarkup:
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.add(nav_text(chat_id, "review"))
+def promo_input_keyboard(chat_id: int) -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton(
+        text=nav_text(chat_id, "review"),
+        callback_data="review_order",
+    ))
+    kb.add(types.InlineKeyboardButton(
+        text=nav_text(chat_id, "menu"),
+        callback_data="go_back_to_categories",
+    ))
     return kb
 
 
@@ -2489,6 +2704,9 @@ def handle_promo_input(message):
     chat_id = message.chat.id
     data = user_data[chat_id]
     text = (message.text or "").strip()
+    if text == nav_text(chat_id, "menu"):
+        leave_checkout_to_main(chat_id)
+        return
     if is_navigation_text(chat_id, text, "review"):
         data["wait_for_promo"] = False
         bot.send_message(
@@ -2577,7 +2795,11 @@ def handle_promo_input(message):
 def handle_review_order(call):
     chat_id = call.from_user.id
     bot.answer_callback_query(call.id)
-    user_data[chat_id]["wait_for_comment"] = False
+    user_data[chat_id].update({
+        "wait_for_points": False,
+        "wait_for_promo": False,
+        "wait_for_comment": False,
+    })
     show_order_review(chat_id, call)
 
 
@@ -2654,6 +2876,10 @@ def handle_comment_input(message):
     text = message.text.strip()
     editing_review = bool(data.get("return_to_review_after_comment"))
     back_destination = "review" if editing_review else "contact"
+
+    if text == nav_text(chat_id, "menu"):
+        leave_checkout_to_main(chat_id)
+        return
 
     if is_navigation_text(chat_id, text, back_destination):
         if data.pop("return_to_review_after_comment", False):
@@ -4973,19 +5199,15 @@ def callback_no_points(call):
     bot.answer_callback_query(call.id)
 
     data = user_data.get(chat_id, {})
-    total_try = int(
-        data.get("temp_total_try", 0)
-        or sum(float(item.get("price", 0)) for item in data.get("cart", []))
-    )
-
     # выключаем режим ввода баллов
     data["wait_for_points"] = False
     data["pending_discount"] = 0
     data["pending_points_spent"] = 0
+    if data.get("promo_code"):
+        data["points_before_promo"] = 0
 
     user_data[chat_id] = data
-
-    ask_saved_or_new_delivery_data(chat_id, total_try, 0, call)
+    show_order_review(chat_id, call)
 
 
 
