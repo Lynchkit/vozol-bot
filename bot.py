@@ -60,7 +60,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.08.20-compact-actual-tastes-v19"
+BOT_VERSION = "2026.08.20-named-stock-controls-v20"
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
 print("BOT_VERSION =", BOT_VERSION, flush=True)
@@ -1597,7 +1597,7 @@ def actual_tastes_editor_keyboard(category: str) -> types.InlineKeyboardMarkup:
     """Компактное управление: одна строка кнопок на один вкус."""
     flavors = menu.get(category, {}).get("flavors", [])
     kb = types.InlineKeyboardMarkup(row_width=3)
-    for offset, item in enumerate(flavors, start=1):
+    for item in flavors:
         flavor = str(item.get("flavor", "—"))
         token = product_token(category, flavor)
         stock = max(int(item.get("stock", 0) or 0), 0)
@@ -1607,7 +1607,7 @@ def actual_tastes_editor_keyboard(category: str) -> types.InlineKeyboardMarkup:
                 callback_data=f"actual_tastes_qty|{token}|dec",
             ),
             types.InlineKeyboardButton(
-                text=f"№{offset} · {stock} pcs",
+                text=f"{flavor} · {stock} pcs",
                 callback_data=f"actual_tastes_noop|{token}",
             ),
             types.InlineKeyboardButton(
@@ -1636,10 +1636,10 @@ def show_actual_tastes_editor(
     flavors = menu.get(category, {}).get("flavors", [])
     total_stock = sum(max(int(item.get("stock", 0) or 0), 0) for item in flavors)
     flavor_lines = []
-    for number, item in enumerate(flavors, start=1):
+    for item in flavors:
         flavor = html.escape(str(item.get("flavor", "—")))
         stock = max(int(item.get("stock", 0) or 0), 0)
-        flavor_lines.append(f"{number}. {flavor} — <b>{stock}</b>")
+        flavor_lines.append(f"{flavor} — <b>{stock}</b>")
     text = (
         f"<b>🔄 {html.escape(category)}</b>\n\n"
         f"Flavors: <b>{len(flavors)}</b> · Total stock: <b>{total_stock} pcs</b>\n\n"
@@ -1647,7 +1647,7 @@ def show_actual_tastes_editor(
     if flavors:
         text += "\n".join(flavor_lines)
         text += (
-            "\n\nUse the compact rows below: the number matches the list. "
+            "\n\nEach button row shows the flavor name and its quantity. "
             "Every click is saved immediately; stock 0 hides the flavor from customers."
         )
     else:
