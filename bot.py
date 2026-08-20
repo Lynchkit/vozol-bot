@@ -60,7 +60,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.08.14-consistent-navigation-v16"
+BOT_VERSION = "2026.08.20-stock-editor-promo-expiry-v17"
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
 print("BOT_VERSION =", BOT_VERSION, flush=True)
@@ -247,9 +247,23 @@ cursor_init.execute("""
         usage_limit      INTEGER NOT NULL,
         used_count       INTEGER NOT NULL DEFAULT 0,
         active           INTEGER NOT NULL DEFAULT 1,
-        created_at       TEXT NOT NULL
+        created_at       TEXT NOT NULL,
+        validity_days    INTEGER,
+        expires_at       TEXT
     )
 """)
+# Старые промокоды остаются без ограничения по дате. Для всех новых кампаний
+# оба поля заполняются при создании через /change.
+cursor_init.execute("PRAGMA table_info(promo_codes)")
+promo_code_columns = {row[1] for row in cursor_init.fetchall()}
+for column_name, column_type in (
+    ("validity_days", "INTEGER"),
+    ("expires_at", "TEXT"),
+):
+    if column_name not in promo_code_columns:
+        cursor_init.execute(
+            f"ALTER TABLE promo_codes ADD COLUMN {column_name} {column_type}"
+        )
 cursor_init.execute("""
     CREATE TABLE IF NOT EXISTS promo_redemptions (
         promo_id         INTEGER NOT NULL,
@@ -264,6 +278,16 @@ cursor_init.execute(
     "CREATE INDEX IF NOT EXISTS idx_promo_redemptions_order "
     "ON promo_redemptions(order_id)"
 )
+
+# Единый справочник вкусов для всех моделей. В menu.json у каждой модели
+# хранится собственное количество, а названия и порядок берутся отсюда.
+cursor_init.execute("""
+    CREATE TABLE IF NOT EXISTS flavor_catalog (
+        flavor_name TEXT PRIMARY KEY COLLATE NOCASE,
+        sort_order  INTEGER NOT NULL,
+        created_at  TEXT NOT NULL
+    )
+""")
 
 # Последние успешно полученные курсы сохраняются на постоянном диске Railway.
 # Если внешний сервис временно недоступен, итог заказа всё равно можно показать
@@ -318,6 +342,102 @@ def save_menu_safely() -> None:
         file_obj.flush()
         os.fsync(file_obj.fileno())
     os.replace(temporary_path, MENU_PATH)
+
+
+def blank_flavor_item(flavor_name: str) -> dict:
+    """Новая позиция общего справочника для конкретной модели."""
+    return {
+        "emoji": "",
+        "flavor": flavor_name,
+        "stock": 0,
+        "tags": [],
+        "description_ru": "",
+        "description_en": "",
+        "photo_url": "",
+    }
+
+
+def flavor_catalog_names() -> list[str]:
+    """Возвращает общий справочник вкусов в сохранённом порядке."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT flavor_name FROM flavor_catalog ORDER BY sort_order, flavor_name"
+        )
+        return [str(row[0]) for row in cursor.fetchall()]
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def sync_models_with_flavor_catalog(flavor_names: list[str]) -> bool:
+    """Синхронизирует все модели, сохраняя данные и остатки совпавших вкусов."""
+    changed = False
+    for category_data in menu.values():
+        existing_items = {
+            str(item.get("flavor", "")).strip().casefold(): item
+            for item in category_data.get("flavors", [])
+            if str(item.get("flavor", "")).strip()
+        }
+        synchronized = []
+        for flavor_name in flavor_names:
+            existing = existing_items.get(flavor_name.casefold())
+            if existing is None:
+                flavor_item = blank_flavor_item(flavor_name)
+            else:
+                flavor_item = dict(existing)
+                flavor_item["flavor"] = flavor_name
+                flavor_item["stock"] = max(int(flavor_item.get("stock", 0) or 0), 0)
+            synchronized.append(flavor_item)
+        if category_data.get("flavors", []) != synchronized:
+            category_data["flavors"] = synchronized
+            changed = True
+    if changed:
+        save_menu_safely()
+    return changed
+
+
+def initialize_flavor_catalog() -> None:
+    """На первом запуске строит общий справочник из уже существующего меню."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT COUNT(*) FROM flavor_catalog")
+        is_empty = int(cursor.fetchone()[0] or 0) == 0
+        if is_empty:
+            seen = set()
+            initial_names = []
+            for category_data in menu.values():
+                for item in category_data.get("flavors", []):
+                    flavor_name = str(item.get("flavor", "")).strip()
+                    identity = flavor_name.casefold()
+                    if not flavor_name or identity in seen:
+                        continue
+                    seen.add(identity)
+                    initial_names.append(flavor_name)
+            created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            cursor.executemany(
+                "INSERT INTO flavor_catalog(flavor_name, sort_order, created_at) "
+                "VALUES (?, ?, ?)",
+                [
+                    (flavor_name, index, created_at)
+                    for index, flavor_name in enumerate(initial_names)
+                ],
+            )
+            connection.commit()
+        cursor.execute(
+            "SELECT flavor_name FROM flavor_catalog ORDER BY sort_order, flavor_name"
+        )
+        stored_names = [str(row[0]) for row in cursor.fetchall()]
+    finally:
+        cursor.close()
+        connection.close()
+    if stored_names:
+        sync_models_with_flavor_catalog(stored_names)
+
+
+initialize_flavor_catalog()
 
 # 0. Убедимся, что у пользователя всегда есть запись в user_data, новое добавленное
 def init_user(chat_id: int):
@@ -492,6 +612,35 @@ def clear_promo_state(data: dict) -> None:
         "promo_discount": 0,
     })
     data.pop("points_before_promo", None)
+
+
+def clear_promo_creation_state(data: dict) -> None:
+    """Удаляет временные поля мастера создания промокода."""
+    for key in (
+        "promo_create_code",
+        "promo_create_limit",
+        "promo_create_discount",
+        "promo_create_days",
+    ):
+        data.pop(key, None)
+
+
+def promo_is_expired(expires_at, now: datetime.datetime | None = None) -> bool:
+    """Проверяет ISO-время окончания; NULL у старых кампаний значит без срока."""
+    raw_value = str(expires_at or "").strip()
+    if not raw_value:
+        return False
+    try:
+        expiry = datetime.datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+    except ValueError:
+        # Повреждённая дата не должна превращать промокод в бессрочный.
+        return True
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=datetime.timezone.utc)
+    current = now or datetime.datetime.now(datetime.timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=datetime.timezone.utc)
+    return expiry <= current
 
 
 class PromoCodeError(Exception):
@@ -1421,12 +1570,299 @@ def text_entry_back_keyboard(
 def edit_action_keyboard() -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add("➕ Add Category", "➖ Remove Category", "✏️ Rename Category")
-    kb.add("💲 Fix Price", "ALL IN", "🔄 Actual Flavor")
-    kb.add("🖼️ Add Category Picture", "Set Category Flavor to 0")
+    kb.add("💲 Fix Price", "📋 Full Flavor List", "🔄 Actual Tastes")
+    kb.add("🖼️ Add Category Picture")
     kb.add("📦 New Supply", "MESSAGE")
     kb.add("PROMO CREATE")
     kb.add("⬅️ Back", "❌ Cancel")
     return kb
+
+
+ACTUAL_TASTES_PAGE_SIZE = 12
+
+
+def admin_model_inline_keyboard(callback_prefix: str) -> types.InlineKeyboardMarkup:
+    """Выбор модели для двух новых складских инструментов."""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    for category in menu:
+        label = str(category)
+        if len(label) > 56:
+            label = label[:53] + "…"
+        kb.add(types.InlineKeyboardButton(
+            text=label,
+            callback_data=f"{callback_prefix}|{category_token(category)}",
+        ))
+    kb.add(types.InlineKeyboardButton(
+        text="⬅️ Back to /change",
+        callback_data="actual_tastes_done",
+    ))
+    return kb
+
+
+def parse_full_flavor_names(payload: str) -> list[str]:
+    """Принимает полный список: один вкус в строке, без остатков."""
+    result = []
+    seen = set()
+    for raw_line in str(payload or "").splitlines():
+        name = raw_line.strip()
+        if not name:
+            continue
+        name = re.sub(r"^(?:\d+[.)]\s*|[•·▪▫]\s*)", "", name).strip()
+        # Совместимость со старым форматом списка: "NAME - 5".
+        old_format = re.fullmatch(r"(.+?)\s+-\s+(\d+)", name)
+        if old_format:
+            name = old_format.group(1).strip()
+        name = re.sub(r"\s+", " ", name).strip()
+        if not name or len(name) > 120:
+            continue
+        identity = name.casefold()
+        if identity in seen:
+            continue
+        seen.add(identity)
+        result.append(name)
+        if len(result) >= 200:
+            break
+    return result
+
+
+def send_full_flavor_list_prompt(chat_id: int) -> None:
+    """Показывает единый справочник, используемый всеми моделями."""
+    flavor_names = flavor_catalog_names()
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    kb.add("⬅️ Back", "❌ Cancel")
+    header = (
+        "📋 Full Flavor List\n\n"
+        "Below are ALL flavors stored for every model, including flavors with stock 0."
+    )
+    bot.send_message(chat_id, header)
+    if flavor_names:
+        chunks = []
+        current = []
+        current_length = 0
+        for name in flavor_names:
+            line_length = len(name) + 1
+            if current and current_length + line_length > 3200:
+                chunks.append("\n".join(current))
+                current = []
+                current_length = 0
+            current.append(name)
+            current_length += line_length
+        if current:
+            chunks.append("\n".join(current))
+        for chunk in chunks:
+            bot.send_message(chat_id, f"<pre>{html.escape(chunk)}</pre>")
+    else:
+        bot.send_message(chat_id, "(empty)")
+    bot.send_message(
+        chat_id,
+        "Send the COMPLETE updated list: one flavor per line.\n\n"
+        "The same list will be used by every model. Existing matching flavors keep "
+        "their descriptions, pictures and stock. New flavors are saved with stock 0.",
+        reply_markup=kb,
+    )
+
+
+def actual_tastes_models_screen(chat_id: int, call=None) -> None:
+    render_inline_screen(
+        chat_id,
+        "<b>🔄 Actual Tastes</b>\n\nSelect a model to edit stock:",
+        admin_model_inline_keyboard("actual_tastes_model"),
+        call,
+        allow_media_edit=False,
+    )
+
+
+def actual_tastes_editor_keyboard(
+    category: str,
+    page: int,
+) -> types.InlineKeyboardMarkup:
+    flavors = menu.get(category, {}).get("flavors", [])
+    page_count = max((len(flavors) + ACTUAL_TASTES_PAGE_SIZE - 1) // ACTUAL_TASTES_PAGE_SIZE, 1)
+    page = max(0, min(page, page_count - 1))
+    start = page * ACTUAL_TASTES_PAGE_SIZE
+    visible = flavors[start:start + ACTUAL_TASTES_PAGE_SIZE]
+    kb = types.InlineKeyboardMarkup(row_width=3)
+    for offset, item in enumerate(visible, start=start + 1):
+        flavor = str(item.get("flavor", "—"))
+        token = product_token(category, flavor)
+        display_name = flavor if len(flavor) <= 52 else flavor[:49] + "…"
+        kb.row(types.InlineKeyboardButton(
+            text=f"{offset}. {display_name}",
+            callback_data=f"actual_tastes_noop|{token}",
+        ))
+        stock = max(int(item.get("stock", 0) or 0), 0)
+        kb.row(
+            types.InlineKeyboardButton(
+                text="➖",
+                callback_data=f"actual_tastes_qty|{token}|dec|{page}",
+            ),
+            types.InlineKeyboardButton(
+                text=f"{stock} pcs",
+                callback_data=f"actual_tastes_noop|{token}",
+            ),
+            types.InlineKeyboardButton(
+                text="➕",
+                callback_data=f"actual_tastes_qty|{token}|inc|{page}",
+            ),
+        )
+    if page_count > 1:
+        navigation = []
+        category_id = category_token(category)
+        if page > 0:
+            navigation.append(types.InlineKeyboardButton(
+                text="◀️",
+                callback_data=f"actual_tastes_page|{category_id}|{page - 1}",
+            ))
+        navigation.append(types.InlineKeyboardButton(
+            text=f"{page + 1}/{page_count}",
+            callback_data="actual_tastes_noop",
+        ))
+        if page + 1 < page_count:
+            navigation.append(types.InlineKeyboardButton(
+                text="▶️",
+                callback_data=f"actual_tastes_page|{category_id}|{page + 1}",
+            ))
+        kb.row(*navigation)
+    kb.row(
+        types.InlineKeyboardButton(
+            text="⬅️ Models",
+            callback_data="actual_tastes_models",
+        ),
+        types.InlineKeyboardButton(
+            text="✅ Done",
+            callback_data="actual_tastes_done",
+        ),
+    )
+    return kb
+
+
+def show_actual_tastes_editor(
+    chat_id: int,
+    category: str,
+    page: int = 0,
+    call=None,
+) -> None:
+    catalog_names = flavor_catalog_names()
+    with menu_lock:
+        sync_models_with_flavor_catalog(catalog_names)
+    flavors = menu.get(category, {}).get("flavors", [])
+    total_stock = sum(max(int(item.get("stock", 0) or 0), 0) for item in flavors)
+    text = (
+        f"<b>🔄 {html.escape(category)}</b>\n\n"
+        f"Stored flavors: <b>{len(flavors)}</b>\n"
+        f"Total stock: <b>{total_stock} pcs</b>\n\n"
+        "Use ➖ / ➕. Every click is saved immediately. Stock 0 hides the flavor from customers."
+    )
+    render_inline_screen(
+        chat_id,
+        text,
+        actual_tastes_editor_keyboard(category, page),
+        call,
+        allow_media_edit=False,
+    )
+
+
+def reject_stock_admin_callback(call) -> bool:
+    if not is_owner(call.from_user.id):
+        bot.answer_callback_query(call.id, "No access.", show_alert=True)
+        return True
+    if call.message.chat.type != "private":
+        bot.answer_callback_query(call.id, "Open /change in private chat.", show_alert=True)
+        return True
+    return False
+
+
+@ensure_user
+@bot.callback_query_handler(
+    func=lambda call: call.data and call.data.startswith("actual_tastes_model|")
+)
+def handle_actual_tastes_model(call):
+    if reject_stock_admin_callback(call):
+        return
+    token = call.data.split("|", 1)[1]
+    category = resolve_category(token)
+    if not category:
+        return bot.answer_callback_query(call.id, "Model not found.", show_alert=True)
+    bot.answer_callback_query(call.id)
+    show_actual_tastes_editor(call.from_user.id, category, 0, call)
+
+
+@ensure_user
+@bot.callback_query_handler(
+    func=lambda call: call.data and call.data.startswith("actual_tastes_page|")
+)
+def handle_actual_tastes_page(call):
+    if reject_stock_admin_callback(call):
+        return
+    try:
+        _prefix, token, page_text = call.data.split("|", 2)
+        page = max(int(page_text), 0)
+    except (ValueError, IndexError):
+        return bot.answer_callback_query(call.id, "Invalid page.", show_alert=True)
+    category = resolve_category(token)
+    if not category:
+        return bot.answer_callback_query(call.id, "Model not found.", show_alert=True)
+    bot.answer_callback_query(call.id)
+    show_actual_tastes_editor(call.from_user.id, category, page, call)
+
+
+@ensure_user
+@bot.callback_query_handler(
+    func=lambda call: call.data and call.data.startswith("actual_tastes_qty|")
+)
+def handle_actual_tastes_quantity(call):
+    if reject_stock_admin_callback(call):
+        return
+    try:
+        _prefix, token, action, page_text = call.data.split("|", 3)
+        page = max(int(page_text), 0)
+    except (ValueError, IndexError):
+        return bot.answer_callback_query(call.id, "Invalid stock action.", show_alert=True)
+    if action not in {"inc", "dec"}:
+        return bot.answer_callback_query(call.id, "Invalid stock action.", show_alert=True)
+    with menu_lock:
+        resolved = resolve_product(token)
+        if not resolved:
+            return bot.answer_callback_query(call.id, "Flavor not found.", show_alert=True)
+        category, item = resolved
+        current_stock = max(int(item.get("stock", 0) or 0), 0)
+        new_stock = current_stock + 1 if action == "inc" else max(current_stock - 1, 0)
+        item["stock"] = new_stock
+        save_menu_safely()
+    bot.answer_callback_query(call.id, f"{item.get('flavor', 'Flavor')}: {new_stock} pcs")
+    show_actual_tastes_editor(call.from_user.id, category, page, call)
+
+
+@ensure_user
+@bot.callback_query_handler(
+    func=lambda call: call.data and call.data.startswith("actual_tastes_noop")
+)
+def handle_actual_tastes_noop(call):
+    if reject_stock_admin_callback(call):
+        return
+    bot.answer_callback_query(call.id)
+
+
+@ensure_user
+@bot.callback_query_handler(func=lambda call: call.data == "actual_tastes_models")
+def handle_actual_tastes_models(call):
+    if reject_stock_admin_callback(call):
+        return
+    bot.answer_callback_query(call.id)
+    actual_tastes_models_screen(call.from_user.id, call)
+
+
+@ensure_user
+@bot.callback_query_handler(func=lambda call: call.data == "actual_tastes_done")
+def handle_actual_tastes_done(call):
+    if reject_stock_admin_callback(call):
+        return
+    chat_id = call.from_user.id
+    user_data[chat_id]["edit_phase"] = "choose_action"
+    user_data[chat_id].pop("edit_cat", None)
+    bot.answer_callback_query(call.id, "Saved")
+    disable_inline_keyboard(call)
+    bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
 
 # ------------------------------------------------------------------------
 #   14. Хендлер /start – регистрация, реферальная система, выбор языка
@@ -3136,13 +3572,21 @@ def handle_promo_input(message):
     connection = get_db_connection()
     cursor = connection.cursor()
     cursor.execute(
-        "SELECT promo_id, discount_amount, usage_limit, used_count, active "
+        "SELECT promo_id, discount_amount, usage_limit, used_count, active, expires_at "
         "FROM promo_codes WHERE code = ?",
         (code,),
     )
     promo_row = cursor.fetchone()
     already_used = False
+    promo_expired = False
     if promo_row:
+        promo_expired = promo_is_expired(promo_row[5])
+        if promo_expired and int(promo_row[4]):
+            cursor.execute(
+                "UPDATE promo_codes SET active = 0 WHERE promo_id = ?",
+                (promo_row[0],),
+            )
+            connection.commit()
         cursor.execute(
             "SELECT 1 FROM promo_redemptions WHERE promo_id = ? AND chat_id = ?",
             (promo_row[0], chat_id),
@@ -3151,7 +3595,13 @@ def handle_promo_input(message):
     cursor.close()
     connection.close()
 
-    if not promo_row or not int(promo_row[4]) or int(promo_row[3]) >= int(promo_row[2]):
+    if promo_expired:
+        error_text = tr(
+            chat_id,
+            "Срок действия этого промокода закончился.",
+            "This promo code has expired.",
+        )
+    elif not promo_row or not int(promo_row[4]) or int(promo_row[3]) >= int(promo_row[2]):
         error_text = tr(
             chat_id,
             "Такой промокод не найден или его лимит уже закончился.",
@@ -3376,7 +3826,7 @@ def finalize_order(call):
 
     pts_earned = total_after // PURCHASE_POINTS_DIVISOR
     items_json = json.dumps(cart, ensure_ascii=False)
-    now = datetime.datetime.utcnow().isoformat()
+    now = utc_now_iso()
     inviter = None
     order_id = None
     stock_changes = []
@@ -3424,11 +3874,17 @@ def finalize_order(call):
             promo_id = None
             if requested_promo_code:
                 cursor_local.execute(
-                    "SELECT promo_id, discount_amount, usage_limit, used_count, active "
+                    "SELECT promo_id, discount_amount, usage_limit, used_count, active, expires_at "
                     "FROM promo_codes WHERE code = ?",
                     (requested_promo_code,),
                 )
                 promo_row = cursor_local.fetchone()
+                if promo_row and promo_is_expired(promo_row[5]):
+                    cursor_local.execute(
+                        "UPDATE promo_codes SET active = 0 WHERE promo_id = ?",
+                        (promo_row[0],),
+                    )
+                    raise PromoCodeError("promo_expired")
                 if (
                     not promo_row
                     or not int(promo_row[4])
@@ -3482,9 +3938,12 @@ def finalize_order(call):
                             WHEN used_count + 1 >= usage_limit THEN 0
                             ELSE 1
                         END
-                    WHERE promo_id = ? AND active = 1 AND used_count < usage_limit
+                    WHERE promo_id = ?
+                      AND active = 1
+                      AND used_count < usage_limit
+                      AND (expires_at IS NULL OR expires_at > ?)
                     """,
-                    (promo_id,),
+                    (promo_id, now),
                 )
                 if cursor_local.rowcount != 1:
                     raise PromoCodeError("promo_unavailable")
@@ -3551,6 +4010,12 @@ def finalize_order(call):
                 chat_id,
                 "Вы уже использовали этот промокод. Он не применён к заказу.",
                 "You have already used this promo code. It was removed from the order.",
+            )
+        elif str(exc) == "promo_expired":
+            message_text = tr(
+                chat_id,
+                "Срок действия промокода закончился. Он не применён к заказу.",
+                "The promo code has expired. It was removed from the order.",
             )
         bot.send_message(chat_id, message_text)
         show_order_review(chat_id)
@@ -5367,24 +5832,15 @@ def universal_handler(message):
                 user_data[chat_id] = data
                 return
 
-            if text == "ALL IN":
-                data['edit_phase'] = 'choose_all_in_cat'
-                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-                for cat_key in menu:
-                    kb.add(cat_key)
-                kb.add("⬅️ Back", "❌ Cancel")
-                bot.send_message(chat_id, "Select category to replace full flavor list:", reply_markup=kb)
+            if text == "📋 Full Flavor List":
+                data['edit_phase'] = 'replace_master_flavor_list'
+                data.pop('edit_cat', None)
                 user_data[chat_id] = data
+                send_full_flavor_list_prompt(chat_id)
                 return
 
-            if text == "🔄 Actual Flavor":
-                data['edit_phase'] = 'choose_cat_actual'
-                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-                for cat_key in menu:
-                    kb.add(cat_key)
-                kb.add("⬅️ Back", "❌ Cancel")
-                bot.send_message(chat_id, "Select category to update individual flavor stock:", reply_markup=kb)
-                user_data[chat_id] = data
+            if text == "🔄 Actual Tastes":
+                actual_tastes_models_screen(chat_id)
                 return
 
             if text == "🖼️ Add Category Picture":
@@ -5397,20 +5853,9 @@ def universal_handler(message):
                 user_data[chat_id] = data
                 return
 
-            if text == "Set Category Flavor to 0":
-                data['edit_phase'] = 'choose_cat_zero'
-                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-                for cat_key in menu:
-                    kb.add(cat_key)
-                kb.add("⬅️ Back", "❌ Cancel")
-                bot.send_message(chat_id, "Select category to set all flavors to zero stock:", reply_markup=kb)
-                user_data[chat_id] = data
-                return
-
             if text == "PROMO CREATE":
                 data['edit_phase'] = 'promo_create_code'
-                data.pop('promo_create_code', None)
-                data.pop('promo_create_limit', None)
+                clear_promo_creation_state(data)
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
                 kb.add("⬅️ Back", "❌ Cancel")
                 bot.send_message(
@@ -5437,17 +5882,17 @@ def universal_handler(message):
             bot.send_message(chat_id, "Choose action:", reply_markup=edit_action_keyboard())
             return
 
-        # Создание промокода: название → общий лимит → фиксированная скидка.
+        # Создание промокода: код → лимит пользователей → скидка → 1–30 дней.
         if phase == 'promo_create_code':
             if text == "⬅️ Back":
                 data['edit_phase'] = 'choose_action'
+                clear_promo_creation_state(data)
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
                 user_data[chat_id] = data
                 return
             if text == "❌ Cancel":
                 data['edit_phase'] = None
-                data.pop('promo_create_code', None)
-                data.pop('promo_create_limit', None)
+                clear_promo_creation_state(data)
                 bot.send_message(chat_id, "Editing cancelled.", reply_markup=types.ReplyKeyboardRemove())
                 show_main_menu(chat_id)
                 user_data[chat_id] = data
@@ -5467,13 +5912,25 @@ def universal_handler(message):
             connection = get_db_connection()
             cursor = connection.cursor()
             cursor.execute(
-                "SELECT active, used_count, usage_limit FROM promo_codes WHERE code = ?",
+                "SELECT active, used_count, usage_limit, expires_at "
+                "FROM promo_codes WHERE code = ?",
                 (promo_code,),
             )
             existing = cursor.fetchone()
+            if existing and promo_is_expired(existing[3]) and int(existing[0]):
+                cursor.execute(
+                    "UPDATE promo_codes SET active = 0 WHERE code = ?",
+                    (promo_code,),
+                )
+                connection.commit()
             cursor.close()
             connection.close()
-            if existing and int(existing[0]) and int(existing[1]) < int(existing[2]):
+            if (
+                existing
+                and int(existing[0])
+                and int(existing[1]) < int(existing[2])
+                and not promo_is_expired(existing[3])
+            ):
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
                 kb.add("⬅️ Back", "❌ Cancel")
                 bot.send_message(
@@ -5505,8 +5962,7 @@ def universal_handler(message):
                 return
             if text == "❌ Cancel":
                 data['edit_phase'] = None
-                data.pop('promo_create_code', None)
-                data.pop('promo_create_limit', None)
+                clear_promo_creation_state(data)
                 bot.send_message(chat_id, "Editing cancelled.", reply_markup=types.ReplyKeyboardRemove())
                 show_main_menu(chat_id)
                 user_data[chat_id] = data
@@ -5539,8 +5995,7 @@ def universal_handler(message):
                 return
             if text == "❌ Cancel":
                 data['edit_phase'] = None
-                data.pop('promo_create_code', None)
-                data.pop('promo_create_limit', None)
+                clear_promo_creation_state(data)
                 bot.send_message(chat_id, "Editing cancelled.", reply_markup=types.ReplyKeyboardRemove())
                 show_main_menu(chat_id)
                 user_data[chat_id] = data
@@ -5551,26 +6006,72 @@ def universal_handler(message):
                 bot.send_message(chat_id, "Enter a positive TRY amount, for example 100:", reply_markup=kb)
                 return
 
+            data['promo_create_discount'] = int(text)
+            data['edit_phase'] = 'promo_create_days'
+            kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+            kb.add("1", "3", "7", "14", "30")
+            kb.add("⬅️ Back", "❌ Cancel")
+            bot.send_message(
+                chat_id,
+                "How many days should the promo code remain valid? Enter a number from 1 to 30:",
+                reply_markup=kb,
+            )
+            user_data[chat_id] = data
+            return
+
+        if phase == 'promo_create_days':
+            if text == "⬅️ Back":
+                data['edit_phase'] = 'promo_create_discount'
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("⬅️ Back", "❌ Cancel")
+                bot.send_message(chat_id, "Enter the fixed discount amount in TRY:", reply_markup=kb)
+                user_data[chat_id] = data
+                return
+            if text == "❌ Cancel":
+                data['edit_phase'] = None
+                clear_promo_creation_state(data)
+                bot.send_message(chat_id, "Editing cancelled.", reply_markup=types.ReplyKeyboardRemove())
+                show_main_menu(chat_id)
+                user_data[chat_id] = data
+                return
+            if not text.isdigit() or not 1 <= int(text) <= 30:
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("1", "3", "7", "14", "30")
+                kb.add("⬅️ Back", "❌ Cancel")
+                bot.send_message(chat_id, "Enter a whole number from 1 to 30:", reply_markup=kb)
+                return
+
             promo_code = data.get('promo_create_code')
             usage_limit = int(data.get('promo_create_limit', 0) or 0)
-            discount_amount = int(text)
-            if not promo_code or usage_limit <= 0:
+            discount_amount = int(data.get('promo_create_discount', 0) or 0)
+            validity_days = int(text)
+            if not promo_code or usage_limit <= 0 or discount_amount <= 0:
                 data['edit_phase'] = 'promo_create_code'
+                clear_promo_creation_state(data)
                 bot.send_message(chat_id, "Promo data was lost. Enter the code again.")
                 user_data[chat_id] = data
                 return
 
+            created_at_dt = datetime.datetime.now(datetime.timezone.utc)
+            expires_at_dt = created_at_dt + datetime.timedelta(days=validity_days)
+            created_at = created_at_dt.isoformat()
+            expires_at = expires_at_dt.isoformat()
             connection = get_db_connection()
             cursor = connection.cursor()
             try:
                 cursor.execute("BEGIN IMMEDIATE")
                 cursor.execute(
-                    "SELECT promo_id, active, used_count, usage_limit "
+                    "SELECT promo_id, active, used_count, usage_limit, expires_at "
                     "FROM promo_codes WHERE code = ?",
                     (promo_code,),
                 )
                 existing = cursor.fetchone()
-                if existing and int(existing[1]) and int(existing[2]) < int(existing[3]):
+                if (
+                    existing
+                    and int(existing[1])
+                    and int(existing[2]) < int(existing[3])
+                    and not promo_is_expired(existing[4], created_at_dt)
+                ):
                     raise PromoCodeError("promo_already_active")
                 if existing:
                     # История старой кампании остаётся в promo_redemptions по
@@ -5578,19 +6079,23 @@ def universal_handler(message):
                     cursor.execute("DELETE FROM promo_codes WHERE promo_id = ?", (existing[0],))
                 cursor.execute(
                     "INSERT INTO promo_codes "
-                    "(code, discount_amount, usage_limit, used_count, active, created_at) "
-                    "VALUES (?, ?, ?, 0, 1, ?)",
+                    "(code, discount_amount, usage_limit, used_count, active, created_at, "
+                    "validity_days, expires_at) "
+                    "VALUES (?, ?, ?, 0, 1, ?, ?, ?)",
                     (
                         promo_code,
                         discount_amount,
                         usage_limit,
-                        datetime.datetime.utcnow().isoformat(),
+                        created_at,
+                        validity_days,
+                        expires_at,
                     ),
                 )
                 connection.commit()
             except (PromoCodeError, sqlite3.IntegrityError):
                 connection.rollback()
                 data['edit_phase'] = 'promo_create_code'
+                clear_promo_creation_state(data)
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
                 kb.add("⬅️ Back", "❌ Cancel")
                 bot.send_message(
@@ -5600,6 +6105,18 @@ def universal_handler(message):
                 )
                 user_data[chat_id] = data
                 return
+            except sqlite3.Error as exc:
+                connection.rollback()
+                print(f"Promo creation failed for {promo_code}: {exc}", flush=True)
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("1", "3", "7", "14", "30")
+                kb.add("⬅️ Back", "❌ Cancel")
+                bot.send_message(
+                    chat_id,
+                    "Could not save the promo code. Please try the duration again.",
+                    reply_markup=kb,
+                )
+                return
             finally:
                 if connection:
                     try:
@@ -5608,13 +6125,14 @@ def universal_handler(message):
                     except Exception:
                         pass
 
-            data.pop('promo_create_code', None)
-            data.pop('promo_create_limit', None)
+            expires_local = expires_at_dt.astimezone(pytz.timezone("Europe/Istanbul"))
+            clear_promo_creation_state(data)
             data['edit_phase'] = 'choose_action'
             bot.send_message(
                 chat_id,
                 f"✅ Promo code {promo_code} created: {discount_amount}₺ discount, "
-                f"{usage_limit} different users.",
+                f"{usage_limit} different users, valid for {validity_days} days.\n"
+                f"Expires: {expires_local.strftime('%d.%m.%Y %H:%M')} (Türkiye time).",
                 reply_markup=edit_action_keyboard(),
             )
             user_data[chat_id] = data
@@ -5728,11 +6246,16 @@ def universal_handler(message):
                 bot.send_message(chat_id, "Invalid or existing name. Try again:", reply_markup=kb)
                 return
 
-            menu[new_cat] = {
-                "price": 1300,
-                "flavors": []
-            }
-            save_menu_safely()
+            catalog_names = flavor_catalog_names()
+            with menu_lock:
+                menu[new_cat] = {
+                    "price": 1300,
+                    "flavors": [
+                        blank_flavor_item(flavor_name)
+                        for flavor_name in catalog_names
+                    ],
+                }
+                save_menu_safely()
 
             data['edit_phase'] = 'choose_action'
             bot.send_message(chat_id, f"Category '{new_cat}' added.", reply_markup=edit_action_keyboard())
@@ -5815,44 +6338,7 @@ def universal_handler(message):
             return
 
 
-        # 5) Установить все вкусы категории на ноль
-        if phase == 'choose_cat_zero':
-            if text == "⬅️ Back":
-                data['edit_phase'] = 'choose_action'
-                bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
-                user_data[chat_id] = data
-                return
-            if text == "❌ Cancel":
-                data['edit_phase'] = None
-                data['edit_cat'] = None
-                # 1) Убираем reply-клавиатуру
-                bot.send_message(chat_id,
-                                 "Editing cancelled.",
-                                 reply_markup=types.ReplyKeyboardRemove())
-                # 2) Показываем inline-меню
-                bot.send_message(chat_id,
-                                 t(chat_id, "choose_category"),
-                                 reply_markup=get_inline_main_menu(chat_id))
-                user_data[chat_id] = data
-                return
-
-            if text in menu:
-                cat0 = text
-                for itm in menu[cat0]["flavors"]:
-                    itm["stock"] = 0
-                save_menu_safely()
-                bot.send_message(chat_id, f"All flavors in category '{cat0}' set to 0 stock.",
-                                 reply_markup=edit_action_keyboard())
-                data.pop('edit_cat', None)
-                data['edit_phase'] = 'choose_action'
-                user_data[chat_id] = data
-            else:
-                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-                kb.add("⬅️ Back", "❌ Cancel")
-                bot.send_message(chat_id, "Select a valid category to zero out:", reply_markup=kb)
-            return
-
-        # 6) Удалить категорию
+        # 5) Удалить категорию
         if phase == 'remove_category':
             if text == "⬅️ Back":
                 data['edit_phase'] = 'choose_action'
@@ -6019,8 +6505,8 @@ def universal_handler(message):
             user_data[chat_id] = data
             return
 
-        # 9) Выбрать категорию для ALL IN
-        if phase == 'choose_all_in_cat':
+        # Единый справочник для всех моделей: один вкус в строке.
+        if phase == 'replace_master_flavor_list':
             if text == "⬅️ Back":
                 data['edit_phase'] = 'choose_action'
                 bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
@@ -6028,271 +6514,86 @@ def universal_handler(message):
                 return
             if text == "❌ Cancel":
                 data['edit_phase'] = None
-                data['edit_cat'] = None
-                # 1) Убираем reply-клавиатуру
                 bot.send_message(chat_id,
                                  "Editing cancelled.",
                                  reply_markup=types.ReplyKeyboardRemove())
-                # 2) Показываем inline-меню
                 bot.send_message(chat_id,
                                  t(chat_id, "choose_category"),
                                  reply_markup=get_inline_main_menu(chat_id))
                 user_data[chat_id] = data
                 return
 
-            if text in menu:
-                data['edit_cat'] = text
-                current_list = []
-                for itm in menu[text]["flavors"]:
-                    current_list.append(f"{itm['flavor']} - {itm.get('stock', 0)}")
-                joined = "\n".join(current_list) if current_list else "(empty)"
+            flavor_names = parse_full_flavor_names(text)
+            if not flavor_names:
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
                 kb.add("⬅️ Back", "❌ Cancel")
                 bot.send_message(
                     chat_id,
-                    f"Current flavors in '{text}' (one per line as \"Name - qty\"):\n\n{joined}\n\n"
-                    "Send the full updated list in the same format. Each line: “Name - qty”.",
-                    reply_markup=kb
+                    "No valid flavors found. Send one flavor per line.",
+                    reply_markup=kb,
                 )
-                data['edit_phase'] = 'replace_all_in'
-                user_data[chat_id] = data
-            else:
+                return
+
+            previous_names = flavor_catalog_names()
+            previous_keys = {name.casefold() for name in previous_names}
+            new_keys = {name.casefold() for name in flavor_names}
+            preserved_count = len(previous_keys & new_keys)
+            new_count = len(new_keys - previous_keys)
+            removed_count = len(previous_keys - new_keys)
+            connection = get_db_connection()
+            cursor = connection.cursor()
+            created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            menu_snapshot = json.loads(json.dumps(menu, ensure_ascii=False))
+            try:
+                # Сохраняем единый порядок блокировок: сначала menu_lock,
+                # затем SQLite — так же, как при финальном оформлении заказа.
+                with menu_lock:
+                    cursor.execute("BEGIN IMMEDIATE")
+                    cursor.execute("DELETE FROM flavor_catalog")
+                    cursor.executemany(
+                        "INSERT INTO flavor_catalog(flavor_name, sort_order, created_at) "
+                        "VALUES (?, ?, ?)",
+                        [
+                            (flavor_name, index, created_at)
+                            for index, flavor_name in enumerate(flavor_names)
+                        ],
+                    )
+                    sync_models_with_flavor_catalog(flavor_names)
+                    connection.commit()
+            except Exception as exc:
+                connection.rollback()
+                with menu_lock:
+                    menu.clear()
+                    menu.update(menu_snapshot)
+                    try:
+                        save_menu_safely()
+                    except Exception as restore_exc:
+                        print(
+                            f"Full flavor catalog menu restore failed: {restore_exc}",
+                            flush=True,
+                        )
+                print(f"Full flavor catalog save failed: {exc}", flush=True)
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
                 kb.add("⬅️ Back", "❌ Cancel")
-                bot.send_message(chat_id, "Choose a valid category from the list.", reply_markup=kb)
-            return
-
-        # 10) Заменить полный список вкусов (ALL IN)
-        if phase == 'replace_all_in':
-            if text == "⬅️ Back":
-                data['edit_phase'] = 'choose_action'
-                bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
-                user_data[chat_id] = data
+                bot.send_message(
+                    chat_id,
+                    "Could not save the full flavor list. Please send it again.",
+                    reply_markup=kb,
+                )
                 return
-            if text == "❌ Cancel":
-                data['edit_phase'] = None
-                data['edit_cat'] = None
-                # 1) Убираем reply-клавиатуру
-                bot.send_message(chat_id,
-                                 "Editing cancelled.",
-                                 reply_markup=types.ReplyKeyboardRemove())
-                # 2) Показываем inline-меню
-                bot.send_message(chat_id,
-                                 t(chat_id, "choose_category"),
-                                 reply_markup=get_inline_main_menu(chat_id))
-                user_data[chat_id] = data
-                return
+            finally:
+                cursor.close()
+                connection.close()
 
-            cat0 = data.get('edit_cat')
-            lines = text.strip().splitlines()
-            new_flavors = []
-            for line in lines:
-                stripped = line.strip()
-                if not stripped or stripped.lower() == "(empty)":
-                    continue
-                if '-' in stripped:
-                    parts = stripped.rsplit('-', 1)
-                else:
-                    continue
-                name = parts[0].strip()
-                qty_part = parts[-1].strip()
-                if not qty_part.isdigit() or not name:
-                    continue
-                qty = int(qty_part)
-                new_flavors.append({
-                    "emoji": "",
-                    "flavor": name,
-                    "stock": qty,
-                    "tags": [],
-                    "description_ru": "",
-                    "description_en": "",
-                    "photo_url": ""
-                })
-            menu[cat0]["flavors"] = new_flavors
-            save_menu_safely()
-
-            bot.send_message(chat_id, f"Full flavor list for '{cat0}' replaced.", reply_markup=edit_action_keyboard())
-            data.pop('edit_cat', None)
             data['edit_phase'] = 'choose_action'
             user_data[chat_id] = data
-            return
-
-        # 11) Выбрать категорию для Actual Flavor (обновлённый список)
-        if phase == 'choose_cat_actual':
-            if text == "⬅️ Back":
-                data['edit_phase'] = 'choose_action'
-                bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
-                user_data[chat_id] = data
-                return
-            if text == "❌ Cancel":
-                data['edit_phase'] = None
-                data['edit_cat'] = None
-                # 1) Убираем reply-клавиатуру
-                bot.send_message(chat_id,
-                                 "Editing cancelled.",
-                                 reply_markup=types.ReplyKeyboardRemove())
-                # 2) Показываем inline-меню
-                bot.send_message(chat_id,
-                                 t(chat_id, "choose_category"),
-                                 reply_markup=get_inline_main_menu(chat_id))
-                user_data[chat_id] = data
-                return
-
-            if text in menu:
-                # Сохраняем выбранную категорию и переходим к выбору вкуса
-                data['edit_cat'] = text
-                data['edit_phase'] = 'choose_flavor_actual'
-
-                # Формируем клавиатуру с теми вкусами, в которых stock > 0
-                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-                any_in_stock = False
-                for itm in menu[text]["flavors"]:
-                    stock = itm.get("stock", 0)
-                    if isinstance(stock, str) and stock.isdigit():
-                        stock = int(stock)
-                        itm["stock"] = stock
-                    if isinstance(stock, int) and stock > 0:
-                        any_in_stock = True
-                        kb.add(f"{itm['flavor']} (current: {stock})")
-                if not any_in_stock:
-                    bot.send_message(
-                        chat_id,
-                        f"No flavors with stock > 0 in category '{text}'.",
-                        reply_markup=edit_action_keyboard()
-                    )
-                    data.pop('edit_cat', None)
-                    data['edit_phase'] = 'choose_action'
-                    user_data[chat_id] = data
-                    return
-
-                kb.add("⬅️ Back", "❌ Cancel")
-                bot.send_message(
-                    chat_id,
-                    f"Select a flavor from category '{text}' to update its stock:",
-                    reply_markup=kb
-                )
-                user_data[chat_id] = data
-            else:
-                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-                kb.add("⬅️ Back", "❌ Cancel")
-                bot.send_message(chat_id, "Choose a valid category from the list:", reply_markup=kb)
-            return
-
-        # 12) Фаза 'choose_flavor_actual' — получаем выбор одного вкуса и запрашиваем новую qty
-        if phase == 'choose_flavor_actual':
-            if text == "⬅️ Back":
-                data['edit_phase'] = 'choose_action'
-                bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
-                user_data[chat_id] = data
-                return
-            if text == "❌ Cancel":
-                data['edit_phase'] = None
-                data['edit_cat'] = None
-                # 1) Убираем reply-клавиатуру
-                bot.send_message(chat_id,
-                                 "Editing cancelled.",
-                                 reply_markup=types.ReplyKeyboardRemove())
-                # 2) Показываем inline-меню
-                bot.send_message(chat_id,
-                                 t(chat_id, "choose_category"),
-                                 reply_markup=get_inline_main_menu(chat_id))
-                user_data[chat_id] = data
-                return
-
-            cat0 = data.get('edit_cat')
-            if not cat0 or cat0 not in menu:
-                bot.send_message(chat_id, "Error: category not found.", reply_markup=edit_action_keyboard())
-                data.pop('edit_cat', None)
-                data['edit_phase'] = 'choose_action'
-                user_data[chat_id] = data
-                return
-
-            # Пытаемся сопоставить введённый текст с форматом "Flavor (current: X)"
-            chosen_flavor = None
-            for itm in menu[cat0]["flavors"]:
-                name = itm["flavor"]
-                display_label = f"{name} (current: {itm.get('stock', 0)})"
-                if text == display_label:
-                    chosen_flavor = name
-                    break
-
-            if not chosen_flavor:
-                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-                for itm in menu[cat0]["flavors"]:
-                    if itm.get("stock", 0) > 0:
-                        kb.add(f"{itm['flavor']} (current: {itm['stock']})")
-                kb.add("⬅️ Back", "❌ Cancel")
-                bot.send_message(chat_id, "Select a valid flavor (in stock > 0):", reply_markup=kb)
-                return
-
-            # Сохраняем выбранный вкус и просим ввести новую quantity
-            data['edit_flavor'] = chosen_flavor
-            data['edit_phase'] = 'enter_actual_qty'
             bot.send_message(
                 chat_id,
-                f"Enter the new stock quantity for '{chosen_flavor}':",
-                reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-                .add("⬅️ Back", "❌ Cancel")
+                "✅ Full flavor list saved for every model.\n"
+                f"Total: {len(flavor_names)} · Preserved: {preserved_count} · "
+                f"New with stock 0: {new_count} · Removed: {removed_count}",
+                reply_markup=edit_action_keyboard(),
             )
-            user_data[chat_id] = data
-            return
-
-        # 13) Фаза 'enter_actual_qty' — получаем новую qty и обновляем stock
-        if phase == 'enter_actual_qty':
-            if text == "⬅️ Back":
-                data['edit_phase'] = 'choose_action'
-                bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
-                user_data[chat_id] = data
-                return
-            if text == "❌ Cancel":
-                data['edit_phase'] = None
-                data['edit_cat'] = None
-                # 1) Убираем reply-клавиатуру
-                bot.send_message(chat_id,
-                                 "Editing cancelled.",
-                                 reply_markup=types.ReplyKeyboardRemove())
-                # 2) Показываем inline-меню
-                bot.send_message(chat_id,
-                                 t(chat_id, "choose_category"),
-                                 reply_markup=get_inline_main_menu(chat_id))
-                user_data[chat_id] = data
-                return
-
-            # Проверяем, что введён неотрицательный integer
-            if not text.isdigit():
-                bot.send_message(chat_id, "Invalid number. Please enter a non-negative integer:")
-                return
-
-            new_qty = int(text)
-            cat0 = data.get('edit_cat')
-            flavor0 = data.get('edit_flavor')
-
-            # Находим и обновляем соответствующий объект вкуса
-            updated = False
-            for itm in menu.get(cat0, {}).get("flavors", []):
-                if itm["flavor"] == flavor0:
-                    itm["stock"] = new_qty
-                    updated = True
-                    break
-
-            if not updated:
-                bot.send_message(chat_id, f"Error: flavor '{flavor0}' not found in '{cat0}'.",
-                                 reply_markup=edit_action_keyboard())
-            else:
-                # Сохраняем JSON на диск
-                save_menu_safely()
-
-                bot.send_message(
-                    chat_id,
-                    f"Stock for '{flavor0}' in category '{cat0}' has been updated to {new_qty}.",
-                    reply_markup=edit_action_keyboard()
-                )
-
-            # Очищаем данные и возвращаемся в главное меню редактирования
-            data.pop('edit_cat', None)
-            data.pop('edit_flavor', None)
-            data['edit_phase'] = 'choose_action'
-            user_data[chat_id] = data
             return
 
         # Если ни одна фаза не совпала, возвращаем пользователя в меню редактирования
@@ -6490,8 +6791,12 @@ def handle_cancel_order(call):
             cursor.execute(
                 "UPDATE promo_codes "
                 "SET used_count = CASE WHEN used_count > 0 THEN used_count - 1 ELSE 0 END, "
-                "active = 1 WHERE promo_id = ?",
-                (promo_id,),
+                "active = CASE "
+                "WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 0 "
+                "WHEN (CASE WHEN used_count > 0 THEN used_count - 1 ELSE 0 END) >= usage_limit THEN 0 "
+                "ELSE 1 END "
+                "WHERE promo_id = ?",
+                (utc_now_iso(), promo_id),
             )
             promo_restored = cursor.rowcount == 1
 
