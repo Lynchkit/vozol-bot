@@ -60,7 +60,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.08.20-category-flavors-promo-expiry-v18"
+BOT_VERSION = "2026.08.20-compact-actual-tastes-v19"
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
 print("BOT_VERSION =", BOT_VERSION, flush=True)
@@ -1485,9 +1485,6 @@ def edit_action_keyboard() -> types.ReplyKeyboardMarkup:
     return kb
 
 
-ACTUAL_TASTES_PAGE_SIZE = 12
-
-
 def admin_model_inline_keyboard(
     callback_prefix: str,
     back_callback: str,
@@ -1596,57 +1593,28 @@ def actual_tastes_models_screen(chat_id: int, call=None) -> None:
     )
 
 
-def actual_tastes_editor_keyboard(
-    category: str,
-    page: int,
-) -> types.InlineKeyboardMarkup:
+def actual_tastes_editor_keyboard(category: str) -> types.InlineKeyboardMarkup:
+    """Компактное управление: одна строка кнопок на один вкус."""
     flavors = menu.get(category, {}).get("flavors", [])
-    page_count = max((len(flavors) + ACTUAL_TASTES_PAGE_SIZE - 1) // ACTUAL_TASTES_PAGE_SIZE, 1)
-    page = max(0, min(page, page_count - 1))
-    start = page * ACTUAL_TASTES_PAGE_SIZE
-    visible = flavors[start:start + ACTUAL_TASTES_PAGE_SIZE]
     kb = types.InlineKeyboardMarkup(row_width=3)
-    for offset, item in enumerate(visible, start=start + 1):
+    for offset, item in enumerate(flavors, start=1):
         flavor = str(item.get("flavor", "—"))
         token = product_token(category, flavor)
-        display_name = flavor if len(flavor) <= 52 else flavor[:49] + "…"
-        kb.row(types.InlineKeyboardButton(
-            text=f"{offset}. {display_name}",
-            callback_data=f"actual_tastes_noop|{token}",
-        ))
         stock = max(int(item.get("stock", 0) or 0), 0)
         kb.row(
             types.InlineKeyboardButton(
                 text="➖",
-                callback_data=f"actual_tastes_qty|{token}|dec|{page}",
+                callback_data=f"actual_tastes_qty|{token}|dec",
             ),
             types.InlineKeyboardButton(
-                text=f"{stock} pcs",
+                text=f"№{offset} · {stock} pcs",
                 callback_data=f"actual_tastes_noop|{token}",
             ),
             types.InlineKeyboardButton(
                 text="➕",
-                callback_data=f"actual_tastes_qty|{token}|inc|{page}",
+                callback_data=f"actual_tastes_qty|{token}|inc",
             ),
         )
-    if page_count > 1:
-        navigation = []
-        category_id = category_token(category)
-        if page > 0:
-            navigation.append(types.InlineKeyboardButton(
-                text="◀️",
-                callback_data=f"actual_tastes_page|{category_id}|{page - 1}",
-            ))
-        navigation.append(types.InlineKeyboardButton(
-            text=f"{page + 1}/{page_count}",
-            callback_data="actual_tastes_noop",
-        ))
-        if page + 1 < page_count:
-            navigation.append(types.InlineKeyboardButton(
-                text="▶️",
-                callback_data=f"actual_tastes_page|{category_id}|{page + 1}",
-            ))
-        kb.row(*navigation)
     kb.row(
         types.InlineKeyboardButton(
             text="⬅️ Models",
@@ -1663,23 +1631,31 @@ def actual_tastes_editor_keyboard(
 def show_actual_tastes_editor(
     chat_id: int,
     category: str,
-    page: int = 0,
     call=None,
 ) -> None:
     flavors = menu.get(category, {}).get("flavors", [])
     total_stock = sum(max(int(item.get("stock", 0) or 0), 0) for item in flavors)
+    flavor_lines = []
+    for number, item in enumerate(flavors, start=1):
+        flavor = html.escape(str(item.get("flavor", "—")))
+        stock = max(int(item.get("stock", 0) or 0), 0)
+        flavor_lines.append(f"{number}. {flavor} — <b>{stock}</b>")
     text = (
         f"<b>🔄 {html.escape(category)}</b>\n\n"
-        f"Stored flavors: <b>{len(flavors)}</b>\n"
-        f"Total stock: <b>{total_stock} pcs</b>\n\n"
-        "Use ➖ / ➕. Every click is saved immediately. Stock 0 hides the flavor from customers."
+        f"Flavors: <b>{len(flavors)}</b> · Total stock: <b>{total_stock} pcs</b>\n\n"
     )
-    if not flavors:
-        text += "\n\nFirst save this model's list through 📋 Full Flavor List."
+    if flavors:
+        text += "\n".join(flavor_lines)
+        text += (
+            "\n\nUse the compact rows below: the number matches the list. "
+            "Every click is saved immediately; stock 0 hides the flavor from customers."
+        )
+    else:
+        text += "First save this model's list through 📋 Full Flavor List."
     render_inline_screen(
         chat_id,
         text,
-        actual_tastes_editor_keyboard(category, page),
+        actual_tastes_editor_keyboard(category),
         call,
         allow_media_edit=False,
     )
@@ -1740,26 +1716,7 @@ def handle_actual_tastes_model(call):
     if not category:
         return bot.answer_callback_query(call.id, "Model not found.", show_alert=True)
     bot.answer_callback_query(call.id)
-    show_actual_tastes_editor(call.from_user.id, category, 0, call)
-
-
-@ensure_user
-@bot.callback_query_handler(
-    func=lambda call: call.data and call.data.startswith("actual_tastes_page|")
-)
-def handle_actual_tastes_page(call):
-    if reject_stock_admin_callback(call):
-        return
-    try:
-        _prefix, token, page_text = call.data.split("|", 2)
-        page = max(int(page_text), 0)
-    except (ValueError, IndexError):
-        return bot.answer_callback_query(call.id, "Invalid page.", show_alert=True)
-    category = resolve_category(token)
-    if not category:
-        return bot.answer_callback_query(call.id, "Model not found.", show_alert=True)
-    bot.answer_callback_query(call.id)
-    show_actual_tastes_editor(call.from_user.id, category, page, call)
+    show_actual_tastes_editor(call.from_user.id, category, call)
 
 
 @ensure_user
@@ -1770,8 +1727,7 @@ def handle_actual_tastes_quantity(call):
     if reject_stock_admin_callback(call):
         return
     try:
-        _prefix, token, action, page_text = call.data.split("|", 3)
-        page = max(int(page_text), 0)
+        _prefix, token, action = call.data.split("|", 2)
     except (ValueError, IndexError):
         return bot.answer_callback_query(call.id, "Invalid stock action.", show_alert=True)
     if action not in {"inc", "dec"}:
@@ -1786,7 +1742,7 @@ def handle_actual_tastes_quantity(call):
         item["stock"] = new_stock
         save_menu_safely()
     bot.answer_callback_query(call.id, f"{item.get('flavor', 'Flavor')}: {new_stock} pcs")
-    show_actual_tastes_editor(call.from_user.id, category, page, call)
+    show_actual_tastes_editor(call.from_user.id, category, call)
 
 
 @ensure_user
