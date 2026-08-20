@@ -61,7 +61,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.08.20-profile-referral-v19"
+BOT_VERSION = "2026.08.21-category-currencies-v21"
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
 print("BOT_VERSION =", BOT_VERSION, flush=True)
@@ -1335,11 +1335,15 @@ def show_category_screen(chat_id: int, category: str, call=None) -> None:
         return
 
     user_data[chat_id]["current_category"] = category
-    price = format_money(menu[category].get("price", 0))
+    raw_price = menu[category].get("price", 0)
+    price = format_money(raw_price)
+    # Показываем стоимость одной штуки по той же формуле и тем же курсам,
+    # которые используются на финальном экране оформления.
+    conversion = checkout_conversion_text(chat_id, raw_price, 1)
     text = tr(
         chat_id,
-        f"<b>{html.escape(category)}</b>\nЦена: <b>{price}₺</b>\n\nВыберите вкус:",
-        f"<b>{html.escape(category)}</b>\nPrice: <b>{price}₺</b>\n\nChoose a flavor:",
+        f"<b>{html.escape(category)}</b>\nЦена: <b>{price}₺</b>{conversion}\n\nВыберите вкус:",
+        f"<b>{html.escape(category)}</b>\nPrice: <b>{price}₺</b>{conversion}\n\nChoose a flavor:",
     )
     keyboard = get_inline_flavors(chat_id, category)
     photo_url = str(menu[category].get("photo_url", "") or "").strip()
@@ -3365,40 +3369,71 @@ def show_order_review(chat_id: int, call=None) -> None:
         )
 
     kb = types.InlineKeyboardMarkup(row_width=2)
-    if user_points > 0 and max_points > 0:
-        points_button_text = (
-            tr(
-                chat_id,
-                f"🎁 Баллы: −{points_spent}",
-                f"🎁 Points: −{points_spent}",
-            )
-            if points_spent
-            else tr(chat_id, "🎁 Списать баллы", "🎁 Use points")
-        )
-        kb.add(types.InlineKeyboardButton(
-            text=points_button_text,
-            callback_data="edit_points",
-        ))
-    if promo_code:
-        kb.add(
-            types.InlineKeyboardButton(
-                text=tr(chat_id, "🎟 Изменить промокод", "🎟 Change promo code"),
-                callback_data="enter_promo",
-            ),
-            types.InlineKeyboardButton(
-                text=tr(chat_id, "❌ Убрать промокод", "❌ Remove promo code"),
-                callback_data="remove_promo",
-            ),
-        )
-    else:
-        kb.add(types.InlineKeyboardButton(
-            text=tr(chat_id, "🎟 Промокод", "🎟 Promo code"),
-            callback_data="enter_promo",
-        ))
+
+    # Главное действие всегда стоит первым и занимает всю строку.
     kb.add(types.InlineKeyboardButton(
         text=tr(chat_id, "✅ Подтвердить заказ", "✅ Confirm order"),
         callback_data="confirm_order",
     ))
+
+    # Скидки находятся рядом: баллы слева, промокод справа.
+    points_button_text = (
+        tr(
+            chat_id,
+            f"🎁 Баллы: −{points_spent}",
+            f"🎁 Points: −{points_spent}",
+        )
+        if points_spent
+        else tr(chat_id, "🎁 Списать баллы", "🎁 Use points")
+    )
+    if promo_code:
+        short_promo = promo_code if len(promo_code) <= 14 else promo_code[:13] + "…"
+        promo_button_text = tr(
+            chat_id,
+            f"🎟 {short_promo}: −{format_money(promo_discount)}₺",
+            f"🎟 {short_promo}: −{format_money(promo_discount)}₺",
+        )
+        promo_callback = "promo_options"
+    else:
+        promo_button_text = tr(chat_id, "🎟 Промокод", "🎟 Promo code")
+        promo_callback = "enter_promo"
+
+    kb.add(
+        types.InlineKeyboardButton(
+            text=points_button_text,
+            callback_data="edit_points",
+        ),
+        types.InlineKeyboardButton(
+            text=promo_button_text,
+            callback_data=promo_callback,
+        ),
+    )
+
+    # Все четыре действия редактирования спрятаны в одном компактном меню.
+    kb.add(types.InlineKeyboardButton(
+        text=tr(chat_id, "✏️ Изменить заказ", "✏️ Edit order"),
+        callback_data="edit_order_menu",
+    ))
+    kb.add(types.InlineKeyboardButton(
+        text=tr(chat_id, "⬅️ К комментарию", "⬅️ Back to comment"),
+        callback_data="back_to_comment",
+    ))
+    kb.add(types.InlineKeyboardButton(
+        text=nav_text(chat_id, "menu"),
+        callback_data="go_back_to_categories",
+    ))
+    render_inline_screen(
+        chat_id,
+        review_text,
+        kb,
+        call,
+        allow_media_edit=False,
+    )
+
+
+def show_order_edit_menu(chat_id: int, call=None) -> None:
+    """Компактное подменю всех изменений на финальном экране."""
+    kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(types.InlineKeyboardButton(
         text=tr(chat_id, "🛒 Изменить корзину", "🛒 Edit cart"),
         callback_data="back_to_cart",
@@ -3418,8 +3453,8 @@ def show_order_review(chat_id: int, call=None) -> None:
         callback_data="edit_order_comment",
     ))
     kb.add(types.InlineKeyboardButton(
-        text=tr(chat_id, "⬅️ К комментарию", "⬅️ Back to comment"),
-        callback_data="back_to_comment",
+        text=nav_text(chat_id, "review"),
+        callback_data="review_order",
     ))
     kb.add(types.InlineKeyboardButton(
         text=nav_text(chat_id, "menu"),
@@ -3427,7 +3462,54 @@ def show_order_review(chat_id: int, call=None) -> None:
     ))
     render_inline_screen(
         chat_id,
-        review_text,
+        tr(
+            chat_id,
+            "<b>✏️ Что изменить в заказе?</b>\n\nВыберите нужный раздел:",
+            "<b>✏️ What would you like to change?</b>\n\nChoose a section:",
+        ),
+        kb,
+        call,
+        allow_media_edit=False,
+    )
+
+
+def show_promo_options(chat_id: int, call=None) -> None:
+    """Управление уже применённым промокодом без перегрузки checkout."""
+    data = user_data.get(chat_id, {})
+    promo_code = normalize_promo_code(data.get("promo_code", ""))
+    if not promo_code:
+        show_order_review(chat_id, call)
+        return
+
+    promo_discount = max(int(data.get("promo_discount", 0) or 0), 0)
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton(
+            text=tr(chat_id, "✏️ Изменить", "✏️ Change"),
+            callback_data="enter_promo",
+        ),
+        types.InlineKeyboardButton(
+            text=tr(chat_id, "❌ Убрать", "❌ Remove"),
+            callback_data="remove_promo",
+        ),
+    )
+    kb.add(types.InlineKeyboardButton(
+        text=nav_text(chat_id, "review"),
+        callback_data="review_order",
+    ))
+    kb.add(types.InlineKeyboardButton(
+        text=nav_text(chat_id, "menu"),
+        callback_data="go_back_to_categories",
+    ))
+    render_inline_screen(
+        chat_id,
+        tr(
+            chat_id,
+            f"<b>🎟 Промокод {html.escape(promo_code)}</b>\n\n"
+            f"Скидка: <b>−{format_money(promo_discount)}₺</b>",
+            f"<b>🎟 Promo code {html.escape(promo_code)}</b>\n\n"
+            f"Discount: <b>−{format_money(promo_discount)}₺</b>",
+        ),
         kb,
         call,
         allow_media_edit=False,
@@ -3445,6 +3527,30 @@ def promo_input_keyboard(chat_id: int) -> types.InlineKeyboardMarkup:
         callback_data="go_back_to_categories",
     ))
     return kb
+
+
+@ensure_user
+@bot.callback_query_handler(func=lambda call: call.data == "edit_order_menu")
+def handle_edit_order_menu(call):
+    chat_id = call.from_user.id
+    data = user_data[chat_id]
+    data.update({
+        "wait_for_points": False,
+        "wait_for_promo": False,
+        "wait_for_address": False,
+        "wait_for_contact": False,
+        "wait_for_comment": False,
+    })
+    bot.answer_callback_query(call.id)
+    show_order_edit_menu(chat_id, call)
+
+
+@ensure_user
+@bot.callback_query_handler(func=lambda call: call.data == "promo_options")
+def handle_promo_options(call):
+    chat_id = call.from_user.id
+    bot.answer_callback_query(call.id)
+    show_promo_options(chat_id, call)
 
 
 @ensure_user
