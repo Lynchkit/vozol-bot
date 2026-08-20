@@ -61,7 +61,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.08.21-category-currencies-v21"
+BOT_VERSION = "2026.08.21-all-stage-currencies-v22"
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
 print("BOT_VERSION =", BOT_VERSION, flush=True)
@@ -846,11 +846,11 @@ def payment_copy_keyboard(chat_id: int, detail: str):
 
 
 def payment_order_target(order_id: int):
-    """Возвращает покупателя и сумму существующего заказа."""
+    """Возвращает покупателя, сумму и состав существующего заказа."""
     connection = get_db_connection()
     cursor = connection.cursor()
     cursor.execute(
-        "SELECT chat_id, total FROM orders WHERE order_id = ?",
+        "SELECT chat_id, total, items_json FROM orders WHERE order_id = ?",
         (order_id,),
     )
     row = cursor.fetchone()
@@ -2126,6 +2126,7 @@ def handle_flavor(call):
     bot.answer_callback_query(call.id)
 
     desc = item.get(f"description_{user_data[chat_id]['lang']}", "")
+    price_all = accepted_price_text(chat_id, price, 1)
     lines = [
         f"<b>{html.escape(str(flavor))}</b>",
         html.escape(str(cat)),
@@ -2134,7 +2135,7 @@ def handle_flavor(call):
     if desc:
         lines.extend([html.escape(str(desc)), ""])
     lines.extend([
-        tr(chat_id, f"Цена: <b>{format_money(price)}₺</b>", f"Price: <b>{format_money(price)}₺</b>"),
+        tr(chat_id, f"Цена: <b>{price_all}</b>", f"Price: <b>{price_all}</b>"),
         tr(chat_id, f"В наличии: {stock} шт.", f"In stock: {stock} pcs"),
     ])
     if in_cart:
@@ -2241,14 +2242,15 @@ def handle_add_to_cart(call):
     save_user_cart(chat_id)
 
     count, total = cart_totals(chat_id)
+    total_all = accepted_price_text(chat_id, total, count)
     text = tr(
         chat_id,
         f"<b>✅ Добавлено в корзину</b>\n\n"
         f"{html.escape(cat)}\n{html.escape(str(item['flavor']))}\n\n"
-        f"В корзине: {count} шт. на {format_money(total)}₺",
+        f"В корзине: {count} шт. на <b>{total_all}</b>",
         f"<b>✅ Added to cart</b>\n\n"
         f"{html.escape(cat)}\n{html.escape(str(item['flavor']))}\n\n"
-        f"Cart: {count} pcs totaling {format_money(total)}₺",
+        f"Cart: {count} pcs totaling <b>{total_all}</b>",
     )
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(types.InlineKeyboardButton(
@@ -2346,11 +2348,12 @@ def send_cart(chat_id: int, call=None) -> None:
             "",
         ])
 
+    total_all = accepted_price_text(chat_id, total, total_qty)
     text_lines.append(
         tr(
             chat_id,
-            f"Всего: {total_qty} шт.\n<b>К оплате: {format_money(total)}₺</b>",
-            f"Items: {total_qty} pcs\n<b>Amount due: {format_money(total)}₺</b>",
+            f"Всего: {total_qty} шт.\n<b>К оплате: {total_all}</b>",
+            f"Items: {total_qty} pcs\n<b>Amount due: {total_all}</b>",
         )
     )
 
@@ -2520,6 +2523,7 @@ def handle_clear_cart(call):
         send_cart(chat_id, call)
         return
 
+    total_all = accepted_price_text(chat_id, total, count)
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         types.InlineKeyboardButton(
@@ -2535,8 +2539,8 @@ def handle_clear_cart(call):
         chat_id,
         tr(
             chat_id,
-            f"<b>Очистить корзину?</b>\n\nБудут удалены все {count} шт. на сумму {format_money(total)}₺.",
-            f"<b>Clear your cart?</b>\n\nAll {count} items totaling {format_money(total)}₺ will be removed.",
+            f"<b>Очистить корзину?</b>\n\nБудут удалены все {count} шт. на сумму <b>{total_all}</b>.",
+            f"<b>Clear your cart?</b>\n\nAll {count} items totaling <b>{total_all}</b> will be removed.",
         ),
         kb,
         call,
@@ -2609,6 +2613,51 @@ def checkout_conversion_text(chat_id: int, total_after: int | float, qty: int) -
         f"${format_money(usd)}, "
         f"₴{format_money(uah)})"
     )
+
+
+def accepted_price_text(chat_id: int, total_try: int | float, qty: int) -> str:
+    """Цена в лирах и во всех валютах, которые принимает магазин."""
+    return (
+        f"{format_money(total_try)}₺"
+        f"{checkout_conversion_text(chat_id, total_try, max(int(qty), 0))}"
+    )
+
+
+def current_checkout_amount(chat_id: int) -> tuple[int | float, int]:
+    """Текущая сумма к оплате с учётом промокода и выбранных баллов."""
+    data = user_data.get(chat_id, {})
+    cart = data.get("cart", [])
+    total_before = sum(float(item.get("price", 0) or 0) for item in cart)
+    promo_code = normalize_promo_code(data.get("promo_code", ""))
+    promo_discount = (
+        min(max(int(data.get("promo_discount", 0) or 0), 0), int(total_before))
+        if promo_code else 0
+    )
+    available_after_promo = max(int(total_before) - promo_discount, 0)
+    points_spent = min(
+        max(int(data.get("pending_points_spent", 0) or 0), 0),
+        available_after_promo,
+    )
+    return max(total_before - promo_discount - points_spent, 0), len(cart)
+
+
+def current_checkout_price_text(chat_id: int) -> str:
+    """Готовая однострочная цена текущего заказа во всех валютах."""
+    total_after, qty = current_checkout_amount(chat_id)
+    return accepted_price_text(chat_id, total_after, qty)
+
+
+def stored_order_price_text(chat_id: int, order_id: int) -> str:
+    """Однострочная цена уже сохранённого заказа во всех валютах."""
+    row = payment_order_target(order_id)
+    if not row:
+        return ""
+    try:
+        items = json.loads(row[2] or "[]")
+        qty = max(len(items), 1)
+    except (json.JSONDecodeError, TypeError):
+        qty = 1
+    return accepted_price_text(chat_id, float(row[1] or 0), qty)
 
 
 def ask_saved_or_new_delivery_data(
@@ -2745,6 +2794,7 @@ def show_points_choice(chat_id: int, call=None) -> None:
         "pending_discount": selected_points,
         "pending_points_spent": selected_points,
     })
+    price_all = current_checkout_price_text(chat_id)
     selected_line = tr(
         chat_id,
         f"\nСейчас выбрано: <b>{selected_points}</b> баллов.",
@@ -2753,10 +2803,12 @@ def show_points_choice(chat_id: int, call=None) -> None:
     text = tr(
         chat_id,
         "<b>🎁 Баллы для заказа</b>\n\n"
+        f"К оплате сейчас: <b>{price_all}</b>\n\n"
         f"Баланс: {user_points}\n"
         f"Можно списать до <b>{max_points}</b> баллов."
         f"{selected_line}",
         "<b>🎁 Points for this order</b>\n\n"
+        f"Amount due now: <b>{price_all}</b>\n\n"
         f"Balance: {user_points}\n"
         f"You can use up to <b>{max_points}</b> points."
         f"{selected_line}",
@@ -2845,14 +2897,17 @@ def handle_points_custom(call):
     user_points, max_points, total_try = checkout_points_state(chat_id)
     data["temp_user_points"] = user_points
     data["temp_total_try"] = total_try
+    price_all = current_checkout_price_text(chat_id)
     bot.answer_callback_query(call.id)
     disable_inline_keyboard(call)
     bot.send_message(
         chat_id,
         tr(
             chat_id,
-            f"<b>🎁 Баллы для заказа</b>\n\nВведите число от 0 до {max_points}:",
-            f"<b>🎁 Points for this order</b>\n\nEnter a number from 0 to {max_points}:",
+            f"<b>🎁 Баллы для заказа</b>\n\nК оплате сейчас: <b>{price_all}</b>\n\n"
+            f"Введите число от 0 до {max_points}:",
+            f"<b>🎁 Points for this order</b>\n\nAmount due now: <b>{price_all}</b>\n\n"
+            f"Enter a number from 0 to {max_points}:",
         ),
         parse_mode="HTML",
         reply_markup=text_entry_back_keyboard(chat_id, "review"),
@@ -2861,6 +2916,7 @@ def handle_points_custom(call):
 
 def show_comment_choice(chat_id: int, call=None) -> None:
     data = user_data[chat_id]
+    price_all = current_checkout_price_text(chat_id)
     data.update({
         "wait_for_address": False,
         "wait_for_contact": False,
@@ -2887,8 +2943,8 @@ def show_comment_choice(chat_id: int, call=None) -> None:
         chat_id,
         tr(
             chat_id,
-            "<b>2/3 · Комментарий</b>\n\nХотите что-нибудь добавить к заказу?",
-            "<b>2/3 · Comment</b>\n\nWould you like to add a note to your order?",
+            f"<b>2/3 · Комментарий</b>\n\n<b>К оплате: {price_all}</b>\n\nХотите что-нибудь добавить к заказу?",
+            f"<b>2/3 · Comment</b>\n\n<b>Amount due: {price_all}</b>\n\nWould you like to add a note to your order?",
         ),
         kb,
         call,
@@ -2923,13 +2979,14 @@ def handle_use_last_data(call):
         return
 
     user_data[chat_id]["wait_for_address"] = True
+    price_all = current_checkout_price_text(chat_id)
     disable_inline_keyboard(call)
     bot.send_message(
         chat_id,
         tr(
             chat_id,
-            "<b>1/3 · Доставка</b>\n\nСохранённых данных пока нет. Укажите адрес:",
-            "<b>1/3 · Delivery</b>\n\nNo saved details were found. Enter your address:",
+            f"<b>1/3 · Доставка</b>\n\n<b>К оплате: {price_all}</b>\n\nСохранённых данных пока нет. Укажите адрес:",
+            f"<b>1/3 · Delivery</b>\n\n<b>Amount due: {price_all}</b>\n\nNo saved details were found. Enter your address:",
         ),
         parse_mode="HTML",
         reply_markup=address_keyboard(chat_id),
@@ -2951,13 +3008,14 @@ def handle_enter_new_data(call):
     data["wait_for_contact"] = False
     data["wait_for_comment"] = False
 
+    price_all = current_checkout_price_text(chat_id)
     disable_inline_keyboard(call)
     bot.send_message(
         chat_id,
         tr(
             chat_id,
-            "<b>1/3 · Доставка</b>\n\nВведите новый адрес:",
-            "<b>1/3 · Delivery</b>\n\nEnter a new address:",
+            f"<b>1/3 · Доставка</b>\n\n<b>К оплате: {price_all}</b>\n\nВведите новый адрес:",
+            f"<b>1/3 · Delivery</b>\n\n<b>Amount due: {price_all}</b>\n\nEnter a new address:",
         ),
         parse_mode="HTML",
         reply_markup=address_keyboard(chat_id),
@@ -2984,13 +3042,14 @@ def handle_comment_add(call):
     init_user(chat_id)
     bot.answer_callback_query(call.id)
     user_data[chat_id]["wait_for_comment"] = True
+    price_all = current_checkout_price_text(chat_id)
     disable_inline_keyboard(call)
     bot.send_message(
         chat_id,
         tr(
             chat_id,
-            "<b>2/3 · Комментарий</b>\n\nНапишите комментарий одним сообщением:",
-            "<b>2/3 · Comment</b>\n\nSend your comment in one message:",
+            f"<b>2/3 · Комментарий</b>\n\n<b>К оплате: {price_all}</b>\n\nНапишите комментарий одним сообщением:",
+            f"<b>2/3 · Comment</b>\n\n<b>Amount due: {price_all}</b>\n\nSend your comment in one message:",
         ),
         parse_mode="HTML",
         reply_markup=text_entry_back_keyboard(
@@ -3177,12 +3236,15 @@ def handle_address_input(message):
 
     # --- Переходим к контакту ---
     kb = contact_keyboard(chat_id)
+    price_all = current_checkout_price_text(chat_id)
     bot.send_message(
         chat_id,
         tr(
             chat_id,
-            "<b>1/3 · Доставка</b>\n\nУкажите телефон или Telegram для связи:",
-            "<b>1/3 · Delivery</b>\n\nEnter a phone number or Telegram username:",
+            f"<b>1/3 · Доставка</b>\n\n<b>К оплате: {price_all}</b>\n\n"
+            "Укажите телефон или Telegram для связи:",
+            f"<b>1/3 · Delivery</b>\n\n<b>Amount due: {price_all}</b>\n\n"
+            "Enter a phone number or Telegram username:",
         ),
         parse_mode="HTML",
         reply_markup=kb,
@@ -3218,12 +3280,13 @@ def handle_contact_input(message):
         data['wait_for_address'] = True
         data['wait_for_contact'] = False
         kb = address_keyboard(chat_id)
+        price_all = current_checkout_price_text(chat_id)
         bot.send_message(
             chat_id,
             tr(
                 chat_id,
-                "<b>1/3 · Доставка</b>\n\nУкажите адрес доставки:",
-                "<b>1/3 · Delivery</b>\n\nEnter the delivery address:",
+                f"<b>1/3 · Доставка</b>\n\n<b>К оплате: {price_all}</b>\n\nУкажите адрес доставки:",
+                f"<b>1/3 · Delivery</b>\n\n<b>Amount due: {price_all}</b>\n\nEnter the delivery address:",
             ),
             parse_mode="HTML",
             reply_markup=kb,
@@ -3282,6 +3345,7 @@ def show_order_review(chat_id: int, call=None) -> None:
     if not cart:
         send_cart(chat_id, call)
         return
+    price_all = current_checkout_price_text(chat_id)
     if not data.get("address"):
         data["wait_for_address"] = True
         if call is not None:
@@ -3290,8 +3354,8 @@ def show_order_review(chat_id: int, call=None) -> None:
             chat_id,
             tr(
                 chat_id,
-                "<b>1/3 · Доставка</b>\n\nУкажите адрес доставки:",
-                "<b>1/3 · Delivery</b>\n\nEnter the delivery address:",
+                f"<b>1/3 · Доставка</b>\n\n<b>К оплате: {price_all}</b>\n\nУкажите адрес доставки:",
+                f"<b>1/3 · Delivery</b>\n\n<b>Amount due: {price_all}</b>\n\nEnter the delivery address:",
             ),
             parse_mode="HTML",
             reply_markup=address_keyboard(chat_id),
@@ -3305,8 +3369,8 @@ def show_order_review(chat_id: int, call=None) -> None:
             chat_id,
             tr(
                 chat_id,
-                "<b>1/3 · Доставка</b>\n\nУкажите контакт для связи:",
-                "<b>1/3 · Delivery</b>\n\nEnter your contact details:",
+                f"<b>1/3 · Доставка</b>\n\n<b>К оплате: {price_all}</b>\n\nУкажите контакт для связи:",
+                f"<b>1/3 · Delivery</b>\n\n<b>Amount due: {price_all}</b>\n\nEnter your contact details:",
             ),
             parse_mode="HTML",
             reply_markup=contact_keyboard(chat_id),
@@ -3433,6 +3497,7 @@ def show_order_review(chat_id: int, call=None) -> None:
 
 def show_order_edit_menu(chat_id: int, call=None) -> None:
     """Компактное подменю всех изменений на финальном экране."""
+    price_all = current_checkout_price_text(chat_id)
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(types.InlineKeyboardButton(
         text=tr(chat_id, "🛒 Изменить корзину", "🛒 Edit cart"),
@@ -3464,8 +3529,8 @@ def show_order_edit_menu(chat_id: int, call=None) -> None:
         chat_id,
         tr(
             chat_id,
-            "<b>✏️ Что изменить в заказе?</b>\n\nВыберите нужный раздел:",
-            "<b>✏️ What would you like to change?</b>\n\nChoose a section:",
+            f"<b>✏️ Что изменить в заказе?</b>\n\n<b>К оплате: {price_all}</b>\n\nВыберите нужный раздел:",
+            f"<b>✏️ What would you like to change?</b>\n\n<b>Amount due: {price_all}</b>\n\nChoose a section:",
         ),
         kb,
         call,
@@ -3482,6 +3547,7 @@ def show_promo_options(chat_id: int, call=None) -> None:
         return
 
     promo_discount = max(int(data.get("promo_discount", 0) or 0), 0)
+    price_all = current_checkout_price_text(chat_id)
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         types.InlineKeyboardButton(
@@ -3506,9 +3572,11 @@ def show_promo_options(chat_id: int, call=None) -> None:
         tr(
             chat_id,
             f"<b>🎟 Промокод {html.escape(promo_code)}</b>\n\n"
-            f"Скидка: <b>−{format_money(promo_discount)}₺</b>",
+            f"Скидка: <b>−{format_money(promo_discount)}₺</b>\n"
+            f"К оплате: <b>{price_all}</b>",
             f"<b>🎟 Promo code {html.escape(promo_code)}</b>\n\n"
-            f"Discount: <b>−{format_money(promo_discount)}₺</b>",
+            f"Discount: <b>−{format_money(promo_discount)}₺</b>\n"
+            f"Amount due: <b>{price_all}</b>",
         ),
         kb,
         call,
@@ -3561,6 +3629,7 @@ def handle_enter_promo(call):
     if not data.get("promo_code") and "points_before_promo" not in data:
         data["points_before_promo"] = int(data.get("pending_points_spent", 0) or 0)
     data["wait_for_promo"] = True
+    price_all = current_checkout_price_text(chat_id)
     data.update({
         "wait_for_points": False,
         "wait_for_address": False,
@@ -3573,7 +3642,9 @@ def handle_enter_promo(call):
         chat_id,
         tr(
             chat_id,
+            f"<b>К оплате сейчас: {price_all}</b>\n\n"
             "Введите промокод, чтобы получить скидку на заказ:",
+            f"<b>Amount due now: {price_all}</b>\n\n"
             "Enter a promo code to receive a discount on your order:",
         ),
         reply_markup=promo_input_keyboard(chat_id),
@@ -3729,10 +3800,15 @@ def handle_edit_order_address(call):
     data = user_data[chat_id]
     data.update({"wait_for_address": True, "wait_for_contact": False, "wait_for_comment": False})
     data["return_to_review_after_address"] = True
+    price_all = current_checkout_price_text(chat_id)
     disable_inline_keyboard(call)
     bot.send_message(
         chat_id,
-        tr(chat_id, "Введите новый адрес:", "Enter a new address:"),
+        tr(
+            chat_id,
+            f"<b>К оплате: {price_all}</b>\n\nВведите новый адрес:",
+            f"<b>Amount due: {price_all}</b>\n\nEnter a new address:",
+        ),
         reply_markup=address_keyboard(chat_id, "review"),
     )
 
@@ -3745,10 +3821,15 @@ def handle_edit_order_contact(call):
     data = user_data[chat_id]
     data.update({"wait_for_address": False, "wait_for_contact": True, "wait_for_comment": False})
     data["return_to_review_after_contact"] = True
+    price_all = current_checkout_price_text(chat_id)
     disable_inline_keyboard(call)
     bot.send_message(
         chat_id,
-        t(chat_id, "enter_contact"),
+        tr(
+            chat_id,
+            f"<b>К оплате: {price_all}</b>\n\nВведите контакт для связи:",
+            f"<b>Amount due: {price_all}</b>\n\nEnter your contact details:",
+        ),
         reply_markup=contact_keyboard(chat_id, "review"),
     )
 
@@ -3761,10 +3842,15 @@ def handle_edit_order_comment(call):
     data = user_data[chat_id]
     data.update({"wait_for_address": False, "wait_for_contact": False, "wait_for_comment": True})
     data["return_to_review_after_comment"] = True
+    price_all = current_checkout_price_text(chat_id)
     disable_inline_keyboard(call)
     bot.send_message(
         chat_id,
-        tr(chat_id, "Введите новый комментарий:", "Enter a new comment:"),
+        tr(
+            chat_id,
+            f"<b>К оплате: {price_all}</b>\n\nВведите новый комментарий:",
+            f"<b>Amount due: {price_all}</b>\n\nEnter a new comment:",
+        ),
         reply_markup=text_entry_back_keyboard(
             chat_id,
             "review",
@@ -3811,7 +3897,16 @@ def handle_comment_input(message):
             return
         data["wait_for_comment"] = False
         data["wait_for_contact"] = True
-        bot.send_message(chat_id, t(chat_id, "enter_contact"), reply_markup=contact_keyboard(chat_id))
+        price_all = current_checkout_price_text(chat_id)
+        bot.send_message(
+            chat_id,
+            tr(
+                chat_id,
+                f"<b>К оплате: {price_all}</b>\n\nВведите контакт для связи:",
+                f"<b>Amount due: {price_all}</b>\n\nEnter your contact details:",
+            ),
+            reply_markup=contact_keyboard(chat_id),
+        )
         return
 
     # --- сохраняем комментарий ---
@@ -4279,9 +4374,14 @@ def handle_back_to_contact(call):
 
     # Показываем клавиатуру для ввода контакта
     kb = contact_keyboard(chat_id)
+    price_all = current_checkout_price_text(chat_id)
     bot.send_message(
         chat_id,
-        t(chat_id, "enter_contact"),
+        tr(
+            chat_id,
+            f"<b>К оплате: {price_all}</b>\n\nВведите контакт для связи:",
+            f"<b>Amount due: {price_all}</b>\n\nEnter your contact details:",
+        ),
         reply_markup=kb
     )
 
@@ -5026,6 +5126,7 @@ def handle_payment_send(call):
 
     customer_chat_id = int(order_row[0])
     init_user(customer_chat_id)
+    order_price_all = stored_order_price_text(customer_chat_id, order_id)
     method_name = tr(customer_chat_id, method[0], method[1])
     detail_html = payment_detail_html(detail)
     copy_keyboard = payment_copy_keyboard(customer_chat_id, detail)
@@ -5038,12 +5139,14 @@ def handle_payment_send(call):
         customer_chat_id,
         f"<b>💳 Реквизиты для оплаты заказа №{order_id}</b>\n\n"
         f"Способ: <b>{method_name}</b>\n"
+        f"К оплате: <b>{order_price_all}</b>\n"
         f"{detail_html}\n\n"
         f"{copy_hint}\n"
         "После доставки бот предложит загрузить подтверждение оплаты. "
         "При оплате наличными чек не требуется.",
         f"<b>💳 Payment details for order #{order_id}</b>\n\n"
         f"Method: <b>{method_name}</b>\n"
+        f"Amount due: <b>{order_price_all}</b>\n"
         f"{detail_html}\n\n"
         f"{copy_hint}\n"
         "After delivery, the bot will offer to upload your payment confirmation. "
@@ -5118,15 +5221,18 @@ def send_delivered_customer_message(
     else:
         user_data[chat_id].pop("awaiting_payment_proof_order_id", None)
 
+    order_price_all = stored_order_price_text(chat_id, order_id)
     text = tr(
         chat_id,
         f"<b>✅ Ваш заказ №{order_id} доставлен!</b>\n\n"
+        f"Сумма заказа: <b>{order_price_all}</b>\n\n"
         "Спасибо, что выбрали нас ❤️\n\n"
         "💵 Если вы оплатили наличными — просто проигнорируйте это сообщение.\n"
         "💳 Если оплата была переводом, через банк или криптовалютой — "
         "отправьте сюда фотографию чека или файл подтверждения.\n\n"
         "Бот автоматически привяжет его к вашему заказу.",
         f"<b>✅ Your order #{order_id} has been delivered!</b>\n\n"
+        f"Order total: <b>{order_price_all}</b>\n\n"
         "Thank you for choosing us ❤️\n\n"
         "💵 If you paid in cash, simply ignore this message.\n"
         "💳 If you paid by bank transfer, online, or with cryptocurrency, "
@@ -5242,14 +5348,16 @@ def handle_upload_proof_prompt(call):
 
     init_user(chat_id)
     user_data[chat_id]["awaiting_payment_proof_order_id"] = order_id
+    order_price_all = stored_order_price_text(chat_id, order_id)
     bot.answer_callback_query(call.id)
     bot.send_message(
         chat_id,
         tr(
             chat_id,
-            f"📎 Отправьте одним сообщением фотографию чека или PDF/изображение "
-            f"для заказа №{order_id}.",
-            f"📎 Send one photo, PDF, or image confirming payment for order #{order_id}.",
+            f"📎 Заказ №{order_id} · <b>{order_price_all}</b>\n\n"
+            "Отправьте одним сообщением фотографию чека или PDF/изображение.",
+            f"📎 Order #{order_id} · <b>{order_price_all}</b>\n\n"
+            "Send one photo, PDF, or image confirming payment.",
         ),
         reply_markup=back_to_main_keyboard(chat_id),
     )
