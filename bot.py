@@ -10,6 +10,7 @@ import string
 import sqlite3
 import threading
 import pytz
+from urllib.parse import urlencode
 
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -60,7 +61,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.08.20-category-flavors-promo-expiry-v18"
+BOT_VERSION = "2026.08.20-profile-referral-v19"
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
 print("BOT_VERSION =", BOT_VERSION, flush=True)
@@ -948,13 +949,15 @@ def send_referral_info(chat_id: int, referral_code: str) -> None:
     invite_link = f"https://t.me/{bot_username}?start=ref={referral_code}"
     if user_data.get(chat_id, {}).get("lang") == "en":
         text = (
-            f"🎁 <b>Get {REFERRAL_BONUS_POINTS} points for inviting a friend!</b>\n\n"
+            f"🎁 <b>Get {REFERRAL_BONUS_POINTS} points when your invited friend "
+            "places their first order!</b>\n\n"
             f"<b>Referral code:</b> <code>{referral_code}</code>\n"
             f"<b>Invitation link:</b>\n{invite_link}"
         )
     else:
         text = (
-            f"🎁 <b>{REFERRAL_BONUS_POINTS} баллов за приглашение друга!</b>\n\n"
+            f"🎁 <b>{REFERRAL_BONUS_POINTS} баллов, когда приглашённый друг "
+            "оформит первый заказ!</b>\n\n"
             f"<b>Реферальный код:</b> <code>{referral_code}</code>\n"
             f"<b>Ссылка для приглашения:</b>\n{invite_link}"
         )
@@ -4330,16 +4333,18 @@ def show_profile(chat_id: int, call=None) -> None:
         chat_id,
         "<b>👤 Профиль</b>\n\n"
         f"🎁 Баллы: <b>{points}</b>\n"
+        "1 балл = 1₺ скидки\n"
         f"📦 Заказы: <b>{order_count}</b>",
         "<b>👤 Profile</b>\n\n"
         f"🎁 Points: <b>{points}</b>\n"
+        "1 point = 1₺ discount\n"
         f"📦 Orders: <b>{order_count}</b>",
     )
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         types.InlineKeyboardButton(
-            text=tr(chat_id, "🎁 Мои баллы", "🎁 My points"),
-            callback_data="profile_points",
+            text=tr(chat_id, "🎁 Пригласить друга", "🎁 Invite a friend"),
+            callback_data="profile_referral",
         ),
         types.InlineKeyboardButton(
             text=tr(chat_id, "📦 Мои заказы", "📦 My orders"),
@@ -4383,6 +4388,84 @@ def show_points_info(chat_id: int, call=None) -> None:
             f"<b>🎁 Bonus points</b>\n\nYou have <b>{points}</b> points.\n1 point = 1₺ discount.",
         ),
         profile_back_keyboard(chat_id),
+        call,
+        allow_media_edit=False,
+    )
+
+
+def show_referral_info(chat_id: int, call=None) -> None:
+    """Показывает персональную ссылку и точные условия реферального бонуса."""
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    cursor_local.execute(
+        "SELECT referral_code FROM users WHERE chat_id = ?",
+        (chat_id,),
+    )
+    row = cursor_local.fetchone()
+
+    referral_code = str(row[0]).strip() if row and row[0] else ""
+    if not referral_code:
+        referral_code = generate_ref_code()
+        while True:
+            cursor_local.execute(
+                "SELECT 1 FROM users WHERE referral_code = ?",
+                (referral_code,),
+            )
+            if cursor_local.fetchone() is None:
+                break
+            referral_code = generate_ref_code()
+        cursor_local.execute(
+            "UPDATE users SET referral_code = ? WHERE chat_id = ?",
+            (referral_code, chat_id),
+        )
+        conn_local.commit()
+
+    cursor_local.close()
+    conn_local.close()
+
+    bot_username = bot.get_me().username
+    invite_link = f"https://t.me/{bot_username}?start=ref={referral_code}"
+    share_text = tr(
+        chat_id,
+        "Заказывай через этого бота — вот моя персональная ссылка:",
+        "Order through this bot — here is my personal link:",
+    )
+    share_url = "https://t.me/share/url?" + urlencode({
+        "url": invite_link,
+        "text": share_text,
+    })
+
+    text = tr(
+        chat_id,
+        "<b>🎁 Пригласить друга</b>\n\n"
+        "Поделитесь своей персональной ссылкой с другом. "
+        "Если новый пользователь перейдёт по ней и оформит свой первый заказ, "
+        f"вам начислят <b>{REFERRAL_BONUS_POINTS} баллов</b>.\n\n"
+        f"<b>{REFERRAL_BONUS_POINTS} баллов = {REFERRAL_BONUS_POINTS}₺ скидки.</b>\n"
+        "Баллы можно использовать при оформлении следующего заказа.\n\n"
+        f"Ваша ссылка:\n<code>{html.escape(invite_link)}</code>",
+        "<b>🎁 Invite a friend</b>\n\n"
+        "Share your personal link with a friend. If a new user opens it "
+        "and places their first order, "
+        f"you will receive <b>{REFERRAL_BONUS_POINTS} points</b>.\n\n"
+        f"<b>{REFERRAL_BONUS_POINTS} points = {REFERRAL_BONUS_POINTS}₺ discount.</b>\n"
+        "You can use the points on your next order.\n\n"
+        f"Your link:\n<code>{html.escape(invite_link)}</code>",
+    )
+
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton(
+        text=tr(chat_id, "📤 Поделиться ссылкой", "📤 Share link"),
+        url=share_url,
+    ))
+    kb.add(types.InlineKeyboardButton(
+        text=tr(chat_id, "⬅️ Назад в профиль", "⬅️ Back to profile"),
+        callback_data="profile",
+    ))
+    render_inline_screen(
+        chat_id,
+        text,
+        kb,
         call,
         allow_media_edit=False,
     )
@@ -4506,6 +4589,13 @@ def handle_profile_points(call):
     init_user(call.from_user.id)
     bot.answer_callback_query(call.id)
     show_points_info(call.from_user.id, call)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "profile_referral")
+def handle_profile_referral(call):
+    init_user(call.from_user.id)
+    bot.answer_callback_query(call.id)
+    show_referral_info(call.from_user.id, call)
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "profile_history")
