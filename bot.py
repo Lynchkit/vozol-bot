@@ -60,7 +60,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.08.20-stock-editor-promo-expiry-v17"
+BOT_VERSION = "2026.08.20-category-flavors-promo-expiry-v18"
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
 print("BOT_VERSION =", BOT_VERSION, flush=True)
@@ -279,16 +279,6 @@ cursor_init.execute(
     "ON promo_redemptions(order_id)"
 )
 
-# Единый справочник вкусов для всех моделей. В menu.json у каждой модели
-# хранится собственное количество, а названия и порядок берутся отсюда.
-cursor_init.execute("""
-    CREATE TABLE IF NOT EXISTS flavor_catalog (
-        flavor_name TEXT PRIMARY KEY COLLATE NOCASE,
-        sort_order  INTEGER NOT NULL,
-        created_at  TEXT NOT NULL
-    )
-""")
-
 # Последние успешно полученные курсы сохраняются на постоянном диске Railway.
 # Если внешний сервис временно недоступен, итог заказа всё равно можно показать
 # по последнему известному набору курсов, не подставляя выдуманные значения.
@@ -345,7 +335,7 @@ def save_menu_safely() -> None:
 
 
 def blank_flavor_item(flavor_name: str) -> dict:
-    """Новая позиция общего справочника для конкретной модели."""
+    """Новая позиция списка выбранной модели с нулевым остатком."""
     return {
         "emoji": "",
         "flavor": flavor_name,
@@ -355,89 +345,6 @@ def blank_flavor_item(flavor_name: str) -> dict:
         "description_en": "",
         "photo_url": "",
     }
-
-
-def flavor_catalog_names() -> list[str]:
-    """Возвращает общий справочник вкусов в сохранённом порядке."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
-    try:
-        cursor.execute(
-            "SELECT flavor_name FROM flavor_catalog ORDER BY sort_order, flavor_name"
-        )
-        return [str(row[0]) for row in cursor.fetchall()]
-    finally:
-        cursor.close()
-        connection.close()
-
-
-def sync_models_with_flavor_catalog(flavor_names: list[str]) -> bool:
-    """Синхронизирует все модели, сохраняя данные и остатки совпавших вкусов."""
-    changed = False
-    for category_data in menu.values():
-        existing_items = {
-            str(item.get("flavor", "")).strip().casefold(): item
-            for item in category_data.get("flavors", [])
-            if str(item.get("flavor", "")).strip()
-        }
-        synchronized = []
-        for flavor_name in flavor_names:
-            existing = existing_items.get(flavor_name.casefold())
-            if existing is None:
-                flavor_item = blank_flavor_item(flavor_name)
-            else:
-                flavor_item = dict(existing)
-                flavor_item["flavor"] = flavor_name
-                flavor_item["stock"] = max(int(flavor_item.get("stock", 0) or 0), 0)
-            synchronized.append(flavor_item)
-        if category_data.get("flavors", []) != synchronized:
-            category_data["flavors"] = synchronized
-            changed = True
-    if changed:
-        save_menu_safely()
-    return changed
-
-
-def initialize_flavor_catalog() -> None:
-    """На первом запуске строит общий справочник из уже существующего меню."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
-    try:
-        cursor.execute("SELECT COUNT(*) FROM flavor_catalog")
-        is_empty = int(cursor.fetchone()[0] or 0) == 0
-        if is_empty:
-            seen = set()
-            initial_names = []
-            for category_data in menu.values():
-                for item in category_data.get("flavors", []):
-                    flavor_name = str(item.get("flavor", "")).strip()
-                    identity = flavor_name.casefold()
-                    if not flavor_name or identity in seen:
-                        continue
-                    seen.add(identity)
-                    initial_names.append(flavor_name)
-            created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
-            cursor.executemany(
-                "INSERT INTO flavor_catalog(flavor_name, sort_order, created_at) "
-                "VALUES (?, ?, ?)",
-                [
-                    (flavor_name, index, created_at)
-                    for index, flavor_name in enumerate(initial_names)
-                ],
-            )
-            connection.commit()
-        cursor.execute(
-            "SELECT flavor_name FROM flavor_catalog ORDER BY sort_order, flavor_name"
-        )
-        stored_names = [str(row[0]) for row in cursor.fetchall()]
-    finally:
-        cursor.close()
-        connection.close()
-    if stored_names:
-        sync_models_with_flavor_catalog(stored_names)
-
-
-initialize_flavor_catalog()
 
 # 0. Убедимся, что у пользователя всегда есть запись в user_data, новое добавленное
 def init_user(chat_id: int):
@@ -1581,8 +1488,11 @@ def edit_action_keyboard() -> types.ReplyKeyboardMarkup:
 ACTUAL_TASTES_PAGE_SIZE = 12
 
 
-def admin_model_inline_keyboard(callback_prefix: str) -> types.InlineKeyboardMarkup:
-    """Выбор модели для двух новых складских инструментов."""
+def admin_model_inline_keyboard(
+    callback_prefix: str,
+    back_callback: str,
+) -> types.InlineKeyboardMarkup:
+    """Выбор одной модели для складского инструмента."""
     kb = types.InlineKeyboardMarkup(row_width=1)
     for category in menu:
         label = str(category)
@@ -1594,7 +1504,7 @@ def admin_model_inline_keyboard(callback_prefix: str) -> types.InlineKeyboardMar
         ))
     kb.add(types.InlineKeyboardButton(
         text="⬅️ Back to /change",
-        callback_data="actual_tastes_done",
+        callback_data=back_callback,
     ))
     return kb
 
@@ -1625,14 +1535,18 @@ def parse_full_flavor_names(payload: str) -> list[str]:
     return result
 
 
-def send_full_flavor_list_prompt(chat_id: int) -> None:
-    """Показывает единый справочник, используемый всеми моделями."""
-    flavor_names = flavor_catalog_names()
+def send_full_flavor_list_prompt(chat_id: int, category: str) -> None:
+    """Показывает полный сохранённый список вкусов одной модели."""
+    flavor_names = [
+        str(item.get("flavor", "")).strip()
+        for item in menu.get(category, {}).get("flavors", [])
+        if str(item.get("flavor", "")).strip()
+    ]
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add("⬅️ Back", "❌ Cancel")
     header = (
-        "📋 Full Flavor List\n\n"
-        "Below are ALL flavors stored for every model, including flavors with stock 0."
+        f"📋 Full Flavor List · {html.escape(category)}\n\n"
+        "Below are ALL flavors stored for this model, including flavors with stock 0."
     )
     bot.send_message(chat_id, header)
     if flavor_names:
@@ -1656,9 +1570,19 @@ def send_full_flavor_list_prompt(chat_id: int) -> None:
     bot.send_message(
         chat_id,
         "Send the COMPLETE updated list: one flavor per line.\n\n"
-        "The same list will be used by every model. Existing matching flavors keep "
-        "their descriptions, pictures and stock. New flavors are saved with stock 0.",
+        "Only this model will be changed. Existing matching flavors keep their "
+        "descriptions, pictures and stock. New flavors are saved with stock 0.",
         reply_markup=kb,
+    )
+
+
+def full_flavor_models_screen(chat_id: int, call=None) -> None:
+    render_inline_screen(
+        chat_id,
+        "<b>📋 Full Flavor List</b>\n\nSelect the model whose full flavor list you want to replace:",
+        admin_model_inline_keyboard("full_flavor_model", "full_flavor_done"),
+        call,
+        allow_media_edit=False,
     )
 
 
@@ -1666,7 +1590,7 @@ def actual_tastes_models_screen(chat_id: int, call=None) -> None:
     render_inline_screen(
         chat_id,
         "<b>🔄 Actual Tastes</b>\n\nSelect a model to edit stock:",
-        admin_model_inline_keyboard("actual_tastes_model"),
+        admin_model_inline_keyboard("actual_tastes_model", "actual_tastes_done"),
         call,
         allow_media_edit=False,
     )
@@ -1742,9 +1666,6 @@ def show_actual_tastes_editor(
     page: int = 0,
     call=None,
 ) -> None:
-    catalog_names = flavor_catalog_names()
-    with menu_lock:
-        sync_models_with_flavor_catalog(catalog_names)
     flavors = menu.get(category, {}).get("flavors", [])
     total_stock = sum(max(int(item.get("stock", 0) or 0), 0) for item in flavors)
     text = (
@@ -1753,6 +1674,8 @@ def show_actual_tastes_editor(
         f"Total stock: <b>{total_stock} pcs</b>\n\n"
         "Use ➖ / ➕. Every click is saved immediately. Stock 0 hides the flavor from customers."
     )
+    if not flavors:
+        text += "\n\nFirst save this model's list through 📋 Full Flavor List."
     render_inline_screen(
         chat_id,
         text,
@@ -1770,6 +1693,39 @@ def reject_stock_admin_callback(call) -> bool:
         bot.answer_callback_query(call.id, "Open /change in private chat.", show_alert=True)
         return True
     return False
+
+
+@ensure_user
+@bot.callback_query_handler(
+    func=lambda call: call.data and call.data.startswith("full_flavor_model|")
+)
+def handle_full_flavor_model(call):
+    if reject_stock_admin_callback(call):
+        return
+    token = call.data.split("|", 1)[1]
+    category = resolve_category(token)
+    if not category:
+        return bot.answer_callback_query(call.id, "Model not found.", show_alert=True)
+    chat_id = call.from_user.id
+    data = user_data[chat_id]
+    data["edit_cat"] = category
+    data["edit_phase"] = "replace_category_flavor_list"
+    bot.answer_callback_query(call.id)
+    disable_inline_keyboard(call)
+    send_full_flavor_list_prompt(chat_id, category)
+
+
+@ensure_user
+@bot.callback_query_handler(func=lambda call: call.data == "full_flavor_done")
+def handle_full_flavor_done(call):
+    if reject_stock_admin_callback(call):
+        return
+    chat_id = call.from_user.id
+    user_data[chat_id]["edit_phase"] = "choose_action"
+    user_data[chat_id].pop("edit_cat", None)
+    bot.answer_callback_query(call.id)
+    disable_inline_keyboard(call)
+    bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
 
 
 @ensure_user
@@ -5833,10 +5789,10 @@ def universal_handler(message):
                 return
 
             if text == "📋 Full Flavor List":
-                data['edit_phase'] = 'replace_master_flavor_list'
+                data['edit_phase'] = 'choose_action'
                 data.pop('edit_cat', None)
                 user_data[chat_id] = data
-                send_full_flavor_list_prompt(chat_id)
+                full_flavor_models_screen(chat_id)
                 return
 
             if text == "🔄 Actual Tastes":
@@ -6246,14 +6202,10 @@ def universal_handler(message):
                 bot.send_message(chat_id, "Invalid or existing name. Try again:", reply_markup=kb)
                 return
 
-            catalog_names = flavor_catalog_names()
             with menu_lock:
                 menu[new_cat] = {
                     "price": 1300,
-                    "flavors": [
-                        blank_flavor_item(flavor_name)
-                        for flavor_name in catalog_names
-                    ],
+                    "flavors": [],
                 }
                 save_menu_safely()
 
@@ -6505,21 +6457,41 @@ def universal_handler(message):
             user_data[chat_id] = data
             return
 
-        # Единый справочник для всех моделей: один вкус в строке.
-        if phase == 'replace_master_flavor_list':
+        # Полный список одной выбранной модели: один вкус в строке.
+        if phase == 'replace_category_flavor_list':
             if text == "⬅️ Back":
                 data['edit_phase'] = 'choose_action'
-                bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
+                data.pop('edit_cat', None)
+                bot.send_message(
+                    chat_id,
+                    "Select another model:",
+                    reply_markup=types.ReplyKeyboardRemove(),
+                )
+                full_flavor_models_screen(chat_id)
                 user_data[chat_id] = data
                 return
             if text == "❌ Cancel":
                 data['edit_phase'] = None
+                data.pop('edit_cat', None)
                 bot.send_message(chat_id,
                                  "Editing cancelled.",
                                  reply_markup=types.ReplyKeyboardRemove())
                 bot.send_message(chat_id,
                                  t(chat_id, "choose_category"),
                                  reply_markup=get_inline_main_menu(chat_id))
+                user_data[chat_id] = data
+                return
+
+            category = data.get('edit_cat')
+            if category not in menu:
+                data['edit_phase'] = 'choose_action'
+                data.pop('edit_cat', None)
+                bot.send_message(
+                    chat_id,
+                    "This model no longer exists. Select a model again:",
+                    reply_markup=types.ReplyKeyboardRemove(),
+                )
+                full_flavor_models_screen(chat_id)
                 user_data[chat_id] = data
                 return
 
@@ -6534,45 +6506,48 @@ def universal_handler(message):
                 )
                 return
 
-            previous_names = flavor_catalog_names()
-            previous_keys = {name.casefold() for name in previous_names}
-            new_keys = {name.casefold() for name in flavor_names}
-            preserved_count = len(previous_keys & new_keys)
-            new_count = len(new_keys - previous_keys)
-            removed_count = len(previous_keys - new_keys)
-            connection = get_db_connection()
-            cursor = connection.cursor()
-            created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
-            menu_snapshot = json.loads(json.dumps(menu, ensure_ascii=False))
+            category_snapshot = json.loads(json.dumps(menu[category], ensure_ascii=False))
             try:
-                # Сохраняем единый порядок блокировок: сначала menu_lock,
-                # затем SQLite — так же, как при финальном оформлении заказа.
                 with menu_lock:
-                    cursor.execute("BEGIN IMMEDIATE")
-                    cursor.execute("DELETE FROM flavor_catalog")
-                    cursor.executemany(
-                        "INSERT INTO flavor_catalog(flavor_name, sort_order, created_at) "
-                        "VALUES (?, ?, ?)",
-                        [
-                            (flavor_name, index, created_at)
-                            for index, flavor_name in enumerate(flavor_names)
-                        ],
-                    )
-                    sync_models_with_flavor_catalog(flavor_names)
-                    connection.commit()
+                    existing_items = {
+                        str(item.get("flavor", "")).strip().casefold(): item
+                        for item in menu[category].get("flavors", [])
+                        if str(item.get("flavor", "")).strip()
+                    }
+                    previous_keys = set(existing_items)
+                    new_keys = {name.casefold() for name in flavor_names}
+                    synchronized = []
+                    for flavor_name in flavor_names:
+                        existing = existing_items.get(flavor_name.casefold())
+                        if existing is None:
+                            flavor_item = blank_flavor_item(flavor_name)
+                        else:
+                            flavor_item = dict(existing)
+                            flavor_item["flavor"] = flavor_name
+                            try:
+                                flavor_item["stock"] = max(
+                                    int(flavor_item.get("stock", 0) or 0),
+                                    0,
+                                )
+                            except (TypeError, ValueError):
+                                flavor_item["stock"] = 0
+                        synchronized.append(flavor_item)
+                    menu[category]["flavors"] = synchronized
+                    save_menu_safely()
+                    preserved_count = len(previous_keys & new_keys)
+                    new_count = len(new_keys - previous_keys)
+                    removed_count = len(previous_keys - new_keys)
             except Exception as exc:
-                connection.rollback()
                 with menu_lock:
-                    menu.clear()
-                    menu.update(menu_snapshot)
+                    menu[category] = category_snapshot
                     try:
                         save_menu_safely()
                     except Exception as restore_exc:
                         print(
-                            f"Full flavor catalog menu restore failed: {restore_exc}",
+                            f"Full flavor list restore failed for {category}: {restore_exc}",
                             flush=True,
                         )
-                print(f"Full flavor catalog save failed: {exc}", flush=True)
+                print(f"Full flavor list save failed for {category}: {exc}", flush=True)
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
                 kb.add("⬅️ Back", "❌ Cancel")
                 bot.send_message(
@@ -6581,15 +6556,13 @@ def universal_handler(message):
                     reply_markup=kb,
                 )
                 return
-            finally:
-                cursor.close()
-                connection.close()
 
             data['edit_phase'] = 'choose_action'
+            data.pop('edit_cat', None)
             user_data[chat_id] = data
             bot.send_message(
                 chat_id,
-                "✅ Full flavor list saved for every model.\n"
+                f"✅ Full flavor list saved for {html.escape(category)}.\n"
                 f"Total: {len(flavor_names)} · Preserved: {preserved_count} · "
                 f"New with stock 0: {new_count} · Removed: {removed_count}",
                 reply_markup=edit_action_keyboard(),
