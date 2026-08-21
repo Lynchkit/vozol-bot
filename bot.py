@@ -61,7 +61,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.08.21-all-stage-currencies-v22"
+BOT_VERSION = "2026.08.21-flavor-buttons-no-price-v23"
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
 print("BOT_VERSION =", BOT_VERSION, flush=True)
@@ -1282,7 +1282,6 @@ def back_to_main_keyboard(chat_id: int) -> types.InlineKeyboardMarkup:
 # ------------------------------------------------------------------------
 def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=1)
-    price = format_money(menu[cat]["price"])
 
     # Сохраняем в user_data текущий список «живых» вкусов
     user_data[chat_id]["current_flavors"] = [
@@ -1298,7 +1297,7 @@ def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
         rating = item.get("rating")
         rating_str = f" ⭐{rating}" if rating else ""
         stock_unit = tr(chat_id, "шт", "pcs")
-        label = f"{emoji} {flavor}{rating_str} · {price}₺ · {stock} {stock_unit}"
+        label = f"{emoji} {flavor}{rating_str} · {stock} {stock_unit}"
         kb.add(types.InlineKeyboardButton(
             text=label,
             callback_data=f"product|{product_token(cat, flavor)}"
