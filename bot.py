@@ -61,7 +61,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.08.21-flavor-buttons-no-price-v23"
+BOT_VERSION = "2026.08.30-manual-order-points-v24"
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
 print("BOT_VERSION =", BOT_VERSION, flush=True)
@@ -205,6 +205,27 @@ for column_name, column_type in (
         cursor_init.execute(
             f"ALTER TABLE orders ADD COLUMN {column_name} {column_type}"
         )
+
+# Ручные начисления привязаны к заказу и сохраняются отдельным журналом.
+# Уникальный ID исходного сообщения защищает баланс от повторной обработки
+# одного и того же ответа администратора.
+cursor_init.execute("""
+    CREATE TABLE IF NOT EXISTS manual_point_credits (
+        credit_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id          INTEGER NOT NULL,
+        chat_id           INTEGER NOT NULL,
+        admin_id          INTEGER NOT NULL,
+        points            INTEGER NOT NULL CHECK(points > 0),
+        source_chat_id    INTEGER NOT NULL,
+        source_message_id INTEGER NOT NULL,
+        created_at        TEXT NOT NULL,
+        UNIQUE(source_chat_id, source_message_id)
+    )
+""")
+cursor_init.execute(
+    "CREATE INDEX IF NOT EXISTS idx_manual_point_credits_order "
+    "ON manual_point_credits(order_id, created_at)"
+)
 
 # Незавершённая корзина хранится отдельно от оперативного состояния бота.
 # Поэтому redeploy/restart Railway не уничтожает выбранные пользователем товары.
@@ -416,6 +437,11 @@ def init_user(chat_id: int):
 #   6. Хранилище данных пользователей (in-memory)
 # ------------------------------------------------------------------------
 user_data = {}  # структура объяснялась ранее
+
+# Ввод ручного начисления начинается кнопкой в карточке заказа. Состояние
+# краткоживущее: после рестарта достаточно снова нажать кнопку.
+pending_manual_point_credits = {}
+pending_manual_point_credits_lock = threading.RLock()
 
 
 def save_user_cart(chat_id: int) -> None:
@@ -890,6 +916,102 @@ def admin_order_keyboard(
         callback_data=f"payment_menu|{order_id}",
     ))
     return kb
+
+
+def personal_order_keyboard(order_id: int) -> types.InlineKeyboardMarkup:
+    """Действия под копией нового заказа в личном чате владельца с ботом."""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton(
+        text="🎁 Начислить баллы",
+        callback_data=f"credit_points|{order_id}",
+    ))
+    return kb
+
+
+class ManualPointCreditError(Exception):
+    """Ожидаемая ошибка ручного начисления баллов."""
+
+
+def apply_manual_point_credit(
+    order_id: int,
+    expected_chat_id: int,
+    amount: int,
+    admin_id: int,
+    source_chat_id: int,
+    source_message_id: int,
+) -> tuple[int, int]:
+    """Атомарно начисляет баллы и возвращает (chat_id, новый баланс)."""
+    if amount <= 0:
+        raise ManualPointCreditError("invalid_amount")
+
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("BEGIN IMMEDIATE")
+        cursor.execute(
+            "SELECT chat_id FROM orders WHERE order_id = ?",
+            (order_id,),
+        )
+        order_row = cursor.fetchone()
+        if not order_row:
+            raise ManualPointCreditError("order_not_found")
+
+        customer_chat_id = int(order_row[0])
+        if customer_chat_id != int(expected_chat_id):
+            raise ManualPointCreditError("order_changed")
+
+        cursor.execute(
+            "SELECT points FROM users WHERE chat_id = ?",
+            (customer_chat_id,),
+        )
+        user_row = cursor.fetchone()
+        if not user_row:
+            raise ManualPointCreditError("user_not_found")
+
+        cursor.execute(
+            """
+            INSERT INTO manual_point_credits (
+                order_id, chat_id, admin_id, points,
+                source_chat_id, source_message_id, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                order_id,
+                customer_chat_id,
+                admin_id,
+                amount,
+                source_chat_id,
+                source_message_id,
+                utc_now_iso(),
+            ),
+        )
+        cursor.execute(
+            "UPDATE users SET points = points + ? WHERE chat_id = ?",
+            (amount, customer_chat_id),
+        )
+        if cursor.rowcount != 1:
+            raise ManualPointCreditError("user_not_found")
+        cursor.execute(
+            "SELECT points FROM users WHERE chat_id = ?",
+            (customer_chat_id,),
+        )
+        balance_row = cursor.fetchone()
+        if not balance_row:
+            raise ManualPointCreditError("user_not_found")
+        new_balance = int(balance_row[0] or 0)
+        connection.commit()
+        return customer_chat_id, new_balance
+    except sqlite3.IntegrityError as exc:
+        connection.rollback()
+        if "source_chat_id" in str(exc) or "UNIQUE constraint failed" in str(exc):
+            raise ManualPointCreditError("already_processed") from exc
+        raise
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        cursor.close()
+        connection.close()
 
 
 def payment_methods_keyboard(order_id: int) -> types.InlineKeyboardMarkup:
@@ -4306,7 +4428,11 @@ def finalize_order(call):
     )
     if PERSONAL_CHAT_ID:
         try:
-            bot.send_message(PERSONAL_CHAT_ID, full_rus)
+            bot.send_message(
+                PERSONAL_CHAT_ID,
+                full_rus,
+                reply_markup=personal_order_keyboard(order_id),
+            )
         except Exception as exc:
             print(f"Personal order notification failed for order {order_id}: {exc}")
 
@@ -5997,6 +6123,201 @@ def cmd_help(message: types.Message):
     else:
         init_user(message.chat.id)
         show_help_info(message.chat.id)
+
+
+@bot.callback_query_handler(
+    func=lambda call: call.data and call.data.startswith("credit_points|")
+)
+def handle_manual_point_credit_prompt(call):
+    """Запрашивает у владельца количество баллов для выбранного заказа."""
+    if not is_owner(call.from_user.id):
+        return bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
+    if not PERSONAL_CHAT_ID or call.message.chat.id != PERSONAL_CHAT_ID:
+        return bot.answer_callback_query(
+            call.id,
+            "Кнопка доступна только в вашем личном чате с ботом",
+            show_alert=True,
+        )
+
+    try:
+        order_id = int(call.data.split("|", 1)[1])
+    except (ValueError, IndexError):
+        return bot.answer_callback_query(call.id, "Data error", show_alert=True)
+
+    order_row = payment_order_target(order_id)
+    if not order_row:
+        return bot.answer_callback_query(
+            call.id,
+            "Заказ отменён или не найден",
+            show_alert=True,
+        )
+    customer_chat_id = int(order_row[0])
+
+    try:
+        prompt = bot.send_message(
+            call.message.chat.id,
+            f"<b>🎁 Заказ №{order_id}</b>\n\n"
+            "Введите количество баллов, которое нужно начислить клиенту.\n"
+            "Только целое число больше 0. Для отмены отправьте <code>0</code>.",
+            reply_to_message_id=call.message.message_id,
+            reply_markup=types.ForceReply(
+                selective=False,
+                input_field_placeholder="Например: 200",
+            ),
+        )
+    except Exception as exc:
+        print(
+            f"Manual points prompt failed for order {order_id}: {exc}",
+            flush=True,
+        )
+        return bot.answer_callback_query(
+            call.id,
+            "Не удалось открыть ввод баллов",
+            show_alert=True,
+        )
+
+    with pending_manual_point_credits_lock:
+        pending_manual_point_credits[call.from_user.id] = {
+            "order_id": order_id,
+            "customer_chat_id": customer_chat_id,
+            "prompt_chat_id": call.message.chat.id,
+            "prompt_message_id": prompt.message_id,
+        }
+    bot.answer_callback_query(call.id, "Введите количество баллов")
+
+
+def is_manual_point_credit_reply(message) -> bool:
+    """Принимает только ответ владельца на последний запрос начисления."""
+    if (
+        not is_owner(message.from_user.id)
+        or not PERSONAL_CHAT_ID
+        or message.chat.id != PERSONAL_CHAT_ID
+    ):
+        return False
+    replied_message = getattr(message, "reply_to_message", None)
+    if replied_message is None:
+        return False
+    with pending_manual_point_credits_lock:
+        pending = pending_manual_point_credits.get(message.from_user.id)
+        return bool(
+            pending
+            and pending.get("prompt_chat_id") == message.chat.id
+            and pending.get("prompt_message_id") == replied_message.message_id
+        )
+
+
+@bot.message_handler(func=is_manual_point_credit_reply, content_types=["text"])
+def handle_manual_point_credit_input(message):
+    """Начисляет введённые баллы сразу после валидного ответа владельца."""
+    admin_id = message.from_user.id
+    raw_value = (message.text or "").strip()
+
+    with pending_manual_point_credits_lock:
+        pending = pending_manual_point_credits.get(admin_id)
+        if not pending:
+            return
+        replied_message = getattr(message, "reply_to_message", None)
+        if (
+            replied_message is None
+            or pending.get("prompt_chat_id") != message.chat.id
+            or pending.get("prompt_message_id") != replied_message.message_id
+        ):
+            return
+
+    if raw_value.casefold() in {"0", "отмена", "cancel"}:
+        with pending_manual_point_credits_lock:
+            pending_manual_point_credits.pop(admin_id, None)
+        bot.reply_to(message, "Начисление отменено.")
+        return
+
+    if not re.fullmatch(r"\+?\d+", raw_value) or int(raw_value) <= 0:
+        retry_prompt = bot.reply_to(
+            message,
+            "Введите целое число больше 0. Для отмены отправьте <code>0</code>.",
+            reply_markup=types.ForceReply(
+                selective=False,
+                input_field_placeholder="Например: 200",
+            ),
+        )
+        with pending_manual_point_credits_lock:
+            current = pending_manual_point_credits.get(admin_id)
+            if (
+                current
+                and current.get("prompt_message_id") == pending.get("prompt_message_id")
+            ):
+                current["prompt_message_id"] = retry_prompt.message_id
+        return
+
+    amount = int(raw_value)
+    with pending_manual_point_credits_lock:
+        pending = pending_manual_point_credits.pop(admin_id, None)
+    if not pending:
+        return
+
+    order_id = int(pending["order_id"])
+    customer_chat_id = int(pending["customer_chat_id"])
+    try:
+        customer_chat_id, new_balance = apply_manual_point_credit(
+            order_id=order_id,
+            expected_chat_id=customer_chat_id,
+            amount=amount,
+            admin_id=admin_id,
+            source_chat_id=message.chat.id,
+            source_message_id=message.message_id,
+        )
+    except ManualPointCreditError as exc:
+        error_text = {
+            "order_not_found": "Заказ уже отменён или не найден. Баллы не начислены.",
+            "order_changed": "Данные заказа изменились. Баллы не начислены.",
+            "user_not_found": "Пользователь не найден. Баллы не начислены.",
+            "already_processed": "Этот ответ уже обработан. Повторного начисления не было.",
+        }.get(str(exc), "Баллы не начислены.")
+        bot.reply_to(message, error_text)
+        return
+    except Exception as exc:
+        print(
+            f"Manual points credit failed for order {order_id}: "
+            f"{type(exc).__name__}: {exc}",
+            flush=True,
+        )
+        bot.reply_to(
+            message,
+            "Не удалось начислить баллы. Ошибка записана в Railway Logs; "
+            "нажмите кнопку заказа и попробуйте ещё раз.",
+        )
+        return
+
+    customer_notified = True
+    try:
+        init_user(customer_chat_id)
+        bot.send_message(
+            customer_chat_id,
+            tr(
+                customer_chat_id,
+                f"🎁 Вам начислено <b>{amount}</b> баллов по заказу №{order_id}.\n"
+                f"Новый баланс: <b>{new_balance}</b> баллов.\n"
+                "1 балл = 1₺ скидки на следующий заказ.",
+                f"🎁 You received <b>{amount}</b> points for order #{order_id}.\n"
+                f"New balance: <b>{new_balance}</b> points.\n"
+                "1 point = 1₺ off your next order.",
+            ),
+        )
+    except Exception as exc:
+        customer_notified = False
+        print(
+            f"Manual points notification failed for order {order_id}: {exc}",
+            flush=True,
+        )
+
+    confirmation = (
+        f"✅ По заказу №{order_id} начислено <b>{amount}</b> баллов.\n"
+        f"Новый баланс клиента: <b>{new_balance}</b>."
+    )
+    if not customer_notified:
+        confirmation += (
+            "\n⚠️ Баланс обновлён, но сообщение клиенту доставить не удалось."
+        )
+    bot.reply_to(message, confirmation)
 
 
 # ------------------------------------------------------------------------
