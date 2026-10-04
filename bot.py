@@ -64,7 +64,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.10.04-profile-grid-v27"
+BOT_VERSION = "2026.10.04-taste-dots-v28"
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
 print("BOT_VERSION =", BOT_VERSION, flush=True)
@@ -2449,6 +2449,12 @@ def taste_scale_value(item: dict, key: str) -> int:
         return 0
 
 
+def taste_scale_dots(item: dict, key: str) -> str:
+    """Показывает шкалу 0–5 компактными заполненными и пустыми точками."""
+    value = taste_scale_value(item, key)
+    return "●" * value + "○" * (5 - value)
+
+
 def flavor_info_alert(chat_id: int, item: dict) -> str:
     """Короткая карточка вкуса для Telegram alert (не более 200 символов)."""
     language = user_data.get(chat_id, {}).get("lang") or "ru"
@@ -2468,16 +2474,16 @@ def flavor_info_alert(chat_id: int, item: dict) -> str:
         )
         return message[:195]
 
-    sweet = taste_scale_value(item, "taste_sweetness")
-    cooling = taste_scale_value(item, "taste_cooling")
-    sour = taste_scale_value(item, "taste_sourness")
+    sweet = taste_scale_dots(item, "taste_sweetness")
+    cooling = taste_scale_dots(item, "taste_cooling")
+    sour = taste_scale_dots(item, "taste_sourness")
     description = description[:95]
     message = tr(
         chat_id,
         f"{flavor[:55]}\n{description}\n"
-        f"Сладость: {sweet}/5 · Холодок: {cooling}/5 · Кислинка: {sour}/5",
+        f"Сладость: {sweet} · Холодок: {cooling} · Кислинка: {sour}",
         f"{flavor[:55]}\n{description}\n"
-        f"Sweetness: {sweet}/5 · Cooling: {cooling}/5 · Sourness: {sour}/5",
+        f"Sweetness: {sweet} · Cooling: {cooling} · Sourness: {sour}",
     )
     return message[:195]
 
@@ -2542,13 +2548,13 @@ def handle_flavor(call):
     if desc:
         lines.extend([html.escape(desc), ""])
     if info_ready:
-        sweet = taste_scale_value(item, "taste_sweetness")
-        cooling = taste_scale_value(item, "taste_cooling")
-        sour = taste_scale_value(item, "taste_sourness")
+        sweet = taste_scale_dots(item, "taste_sweetness")
+        cooling = taste_scale_dots(item, "taste_cooling")
+        sour = taste_scale_dots(item, "taste_sourness")
         lines.extend([
-            tr(chat_id, f"🍬 Сладость: {sweet}/5", f"🍬 Sweetness: {sweet}/5"),
-            tr(chat_id, f"🧊 Холодок: {cooling}/5", f"🧊 Cooling: {cooling}/5"),
-            tr(chat_id, f"🍋 Кислинка: {sour}/5", f"🍋 Sourness: {sour}/5"),
+            tr(chat_id, f"🍬 Сладость: {sweet}", f"🍬 Sweetness: {sweet}"),
+            tr(chat_id, f"🧊 Холодок: {cooling}", f"🧊 Cooling: {cooling}"),
+            tr(chat_id, f"🍋 Кислинка: {sour}", f"🍋 Sourness: {sour}"),
             "",
         ])
     lines.extend([
