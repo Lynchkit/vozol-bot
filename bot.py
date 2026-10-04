@@ -64,7 +64,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.10.04-taste-dots-v28"
+BOT_VERSION = "2026.10.04-group-post-publisher-v29"
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
 print("BOT_VERSION =", BOT_VERSION, flush=True)
@@ -355,6 +355,17 @@ cursor_init.execute(
     "CREATE INDEX IF NOT EXISTS idx_reviews_timestamp ON reviews(timestamp)"
 )
 
+# Настройки, которые владелец меняет прямо из Telegram. Группа публикаций
+# хранится отдельно от GROUP_CHAT_ID, поэтому заказы продолжат приходить в
+# прежнюю административную группу.
+cursor_init.execute("""
+    CREATE TABLE IF NOT EXISTS bot_settings (
+        setting_key   TEXT PRIMARY KEY,
+        setting_value TEXT NOT NULL,
+        updated_at    TEXT NOT NULL
+    )
+""")
+
 conn_init.commit()
 cursor_init.close()
 conn_init.close()
@@ -476,6 +487,12 @@ user_data = {}  # структура объяснялась ранее
 # краткоживущее: после рестарта достаточно снова нажать кнопку.
 pending_manual_point_credits = {}
 pending_manual_point_credits_lock = threading.RLock()
+
+# Черновик публикации живёт только до отправки либо отмены. Сам выбранный чат
+# хранится в SQLite и поэтому не теряется после redeploy Railway.
+post_drafts = {}
+post_drafts_lock = threading.RLock()
+_bot_username_cache = None
 
 
 def save_user_cart(chat_id: int) -> None:
@@ -720,6 +737,84 @@ def is_owner(user_id: int) -> bool:
 def utc_now_iso() -> str:
     """Единый UTC timestamp для регистрации и статуса пользователя."""
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def get_bot_setting(key: str) -> str | None:
+    """Читает постоянную настройку бота из SQLite."""
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    try:
+        cursor_local.execute(
+            "SELECT setting_value FROM bot_settings WHERE setting_key = ?",
+            (key,),
+        )
+        row = cursor_local.fetchone()
+        return row[0] if row else None
+    finally:
+        cursor_local.close()
+        conn_local.close()
+
+
+def set_bot_setting(key: str, value: str) -> None:
+    """Сохраняет постоянную настройку бота с защитой от дубликатов."""
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    try:
+        cursor_local.execute(
+            """
+            INSERT INTO bot_settings (setting_key, setting_value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(setting_key) DO UPDATE SET
+                setting_value = excluded.setting_value,
+                updated_at = excluded.updated_at
+            """,
+            (key, str(value), utc_now_iso()),
+        )
+        conn_local.commit()
+    finally:
+        cursor_local.close()
+        conn_local.close()
+
+
+def configured_post_chat_id() -> int | None:
+    """Возвращает отдельную группу для публичных постов."""
+    raw_value = get_bot_setting("public_post_chat_id")
+    if not raw_value:
+        return None
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError):
+        return None
+
+
+def bot_public_username() -> str:
+    """Получает username бота для deep-link кнопки магазина."""
+    global _bot_username_cache
+    if _bot_username_cache:
+        return _bot_username_cache
+
+    env_username = os.getenv("BOT_USERNAME", "").strip().lstrip("@")
+    if env_username:
+        _bot_username_cache = env_username
+        return _bot_username_cache
+
+    username = str(getattr(bot.get_me(), "username", "") or "").strip().lstrip("@")
+    if not username:
+        raise RuntimeError("Telegram did not return the bot username")
+    _bot_username_cache = username
+    return _bot_username_cache
+
+
+def shop_post_keyboard() -> types.InlineKeyboardMarkup:
+    """Одна заметная кнопка под опубликованным постом."""
+    keyboard = types.InlineKeyboardMarkup(row_width=1)
+    keyboard.add(
+        types.InlineKeyboardButton(
+            "🛒 Выбрать и заказать",
+            url=f"https://t.me/{bot_public_username()}?start=shop",
+        )
+    )
+    return keyboard
 
 
 def telegram_profile_values(profile) -> tuple[str | None, str | None, str | None]:
@@ -7029,6 +7124,299 @@ def cmd_help(message: types.Message):
     else:
         init_user(message.chat.id)
         show_help_info(message.chat.id)
+
+
+@bot.message_handler(commands=["setpostgroup"])
+def cmd_set_post_group(message):
+    """Назначает текущую группу местом для публичных постов магазина."""
+    if not is_owner(message.from_user.id):
+        return bot.reply_to(message, "У вас нет доступа.")
+    if message.chat.type not in {"group", "supergroup"}:
+        return bot.reply_to(
+            message,
+            "Эту команду нужно отправить именно в группе, куда бот будет "
+            "публиковать посты.",
+        )
+
+    chat_title = str(getattr(message.chat, "title", "") or "Группа")
+    set_bot_setting("public_post_chat_id", str(message.chat.id))
+    set_bot_setting("public_post_chat_title", chat_title)
+    bot.reply_to(
+        message,
+        f"✅ <b>{html.escape(chat_title)}</b> выбрана для публикаций.\n\n"
+        "Теперь откройте личный чат со мной и отправьте команду "
+        "<code>/post</code>.",
+    )
+
+
+@bot.message_handler(commands=["post"])
+def cmd_create_group_post(message):
+    """Запускает у владельца короткий мастер публикации."""
+    if not is_owner(message.from_user.id) or message.chat.type != "private":
+        return bot.reply_to(message, "Эта команда доступна владельцу в личном чате с ботом.")
+
+    target_chat_id = configured_post_chat_id()
+    if target_chat_id is None:
+        return bot.send_message(
+            message.chat.id,
+            "Сначала добавьте бота в нужную группу и один раз отправьте там "
+            "команду <code>/setpostgroup</code>.",
+        )
+
+    stored_title = get_bot_setting("public_post_chat_title") or "выбранная группа"
+    try:
+        target_chat = bot.get_chat(target_chat_id)
+        current_title = str(getattr(target_chat, "title", "") or stored_title)
+        if current_title != stored_title:
+            set_bot_setting("public_post_chat_title", current_title)
+        stored_title = current_title
+    except Exception as exc:
+        print(f"Post group access check failed for {target_chat_id}: {exc}", flush=True)
+        return bot.send_message(
+            message.chat.id,
+            "Не могу открыть выбранную группу. Проверьте, что бот всё ещё "
+            "добавлен туда, затем снова отправьте в группе "
+            "<code>/setpostgroup</code>.",
+        )
+
+    with post_drafts_lock:
+        post_drafts[message.from_user.id] = {
+            "status": "waiting",
+            "target_chat_id": target_chat_id,
+        }
+
+    bot.send_message(
+        message.chat.id,
+        f"<b>📝 Новый пост</b>\n\n"
+        f"Группа: <b>{html.escape(stored_title)}</b>\n\n"
+        "Отправьте готовый пост одним сообщением: текст, фотографию, GIF, "
+        "видео или файл. Подпись к фото/видео тоже сохранится.\n\n"
+        "После этого я покажу предпросмотр с кнопкой заказа.\n"
+        "Отмена: <code>/cancelpost</code>",
+        reply_markup=types.ReplyKeyboardRemove(),
+    )
+
+
+@bot.message_handler(commands=["cancelpost"])
+def cmd_cancel_group_post(message):
+    """Отменяет текущий черновик публикации владельца."""
+    if not is_owner(message.from_user.id) or message.chat.type != "private":
+        return
+    with post_drafts_lock:
+        draft = post_drafts.pop(message.from_user.id, None)
+    if draft:
+        preview_message_id = draft.get("preview_message_id")
+        if preview_message_id:
+            try:
+                bot.delete_message(message.chat.id, preview_message_id)
+            except Exception:
+                pass
+        bot.send_message(message.chat.id, "❌ Публикация отменена.")
+    else:
+        bot.send_message(message.chat.id, "Сейчас нет незавершённой публикации.")
+
+
+def is_waiting_for_group_post(message) -> bool:
+    """Отделяет контент будущего поста от остальных сообщений боту."""
+    if not is_owner(message.from_user.id) or message.chat.type != "private":
+        return False
+    with post_drafts_lock:
+        draft = post_drafts.get(message.from_user.id)
+        return bool(draft and draft.get("status") == "waiting")
+
+
+@bot.message_handler(
+    func=is_waiting_for_group_post,
+    content_types=["text", "photo", "video", "animation", "document"],
+)
+def receive_group_post_draft(message):
+    """Копирует будущий пост в предпросмотр, не публикуя его сразу."""
+    media_group_id = getattr(message, "media_group_id", None)
+    if media_group_id:
+        should_explain = False
+        with post_drafts_lock:
+            draft = post_drafts.get(message.from_user.id)
+            if draft and draft.get("rejected_media_group_id") != media_group_id:
+                draft["rejected_media_group_id"] = media_group_id
+                should_explain = True
+        if should_explain:
+            bot.send_message(
+                message.chat.id,
+                "Альбом из нескольких файлов нельзя прикрепить к одной кнопке "
+                "целиком. Отправьте один текст, одно фото или одно видео; "
+                "ожидание поста продолжается.",
+            )
+        return
+
+    if message.content_type == "text" and (message.text or "").startswith("/"):
+        return bot.send_message(
+            message.chat.id,
+            "Отправьте сам текст поста без команды или отмените создание через "
+            "<code>/cancelpost</code>.",
+        )
+
+    try:
+        preview = bot.copy_message(
+            message.chat.id,
+            message.chat.id,
+            message.message_id,
+            reply_markup=shop_post_keyboard(),
+        )
+    except Exception as exc:
+        print(f"Post preview creation failed: {exc}", flush=True)
+        return bot.send_message(
+            message.chat.id,
+            "Не удалось создать предпросмотр. Попробуйте отправить пост ещё раз.",
+        )
+
+    controls = types.InlineKeyboardMarkup(row_width=2)
+    controls.add(
+        types.InlineKeyboardButton("✅ Опубликовать", callback_data="post_publish")
+    )
+    controls.row(
+        types.InlineKeyboardButton("✏️ Другой пост", callback_data="post_replace"),
+        types.InlineKeyboardButton("❌ Отмена", callback_data="post_cancel"),
+    )
+    control_message = bot.send_message(
+        message.chat.id,
+        "Так пост увидят участники группы. Всё верно?",
+        reply_markup=controls,
+    )
+
+    with post_drafts_lock:
+        current = post_drafts.get(message.from_user.id)
+        if current:
+            current.update({
+                "status": "ready",
+                "source_chat_id": message.chat.id,
+                "source_message_id": message.message_id,
+                "preview_message_id": preview.message_id,
+                "control_message_id": control_message.message_id,
+            })
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "post_publish")
+def publish_group_post(call):
+    """Публикует подтверждённый черновик ровно один раз."""
+    if not is_owner(call.from_user.id) or call.message.chat.type != "private":
+        return bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
+
+    with post_drafts_lock:
+        draft = post_drafts.get(call.from_user.id)
+        if not draft or draft.get("status") != "ready":
+            return bot.answer_callback_query(
+                call.id,
+                "Этот черновик уже опубликован или отменён",
+                show_alert=True,
+            )
+        draft["status"] = "publishing"
+        draft_snapshot = dict(draft)
+
+    target_chat_id = configured_post_chat_id() or draft_snapshot.get("target_chat_id")
+    try:
+        published = bot.copy_message(
+            target_chat_id,
+            draft_snapshot["source_chat_id"],
+            draft_snapshot["source_message_id"],
+            reply_markup=shop_post_keyboard(),
+        )
+    except Exception as exc:
+        print(f"Post publication failed for chat {target_chat_id}: {exc}", flush=True)
+        with post_drafts_lock:
+            current = post_drafts.get(call.from_user.id)
+            if current and current.get("status") == "publishing":
+                current["status"] = "ready"
+        bot.answer_callback_query(call.id, "Не удалось опубликовать", show_alert=True)
+        return bot.send_message(
+            call.message.chat.id,
+            "Пост не отправлен. Проверьте, что бот может писать в выбранной "
+            "группе, и нажмите «Опубликовать» ещё раз.",
+        )
+
+    with post_drafts_lock:
+        post_drafts.pop(call.from_user.id, None)
+
+    bot.answer_callback_query(call.id, "Пост опубликован")
+    target_title = get_bot_setting("public_post_chat_title") or "группе"
+    try:
+        bot.edit_message_text(
+            f"✅ Пост опубликован в <b>{html.escape(target_title)}</b>.",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            parse_mode="HTML",
+            reply_markup=None,
+        )
+    except Exception:
+        bot.send_message(
+            call.message.chat.id,
+            f"✅ Пост опубликован в <b>{html.escape(target_title)}</b>.",
+        )
+    print(
+        f"Public post sent to {target_chat_id}, message_id={published.message_id}",
+        flush=True,
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "post_replace")
+def replace_group_post_draft(call):
+    """Возвращает мастера в ожидание нового содержимого."""
+    if not is_owner(call.from_user.id) or call.message.chat.type != "private":
+        return bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
+
+    with post_drafts_lock:
+        draft = post_drafts.get(call.from_user.id)
+        if not draft or draft.get("status") != "ready":
+            return bot.answer_callback_query(
+                call.id,
+                "Черновик уже закрыт",
+                show_alert=True,
+            )
+        preview_message_id = draft.get("preview_message_id")
+        draft.clear()
+        draft.update({
+            "status": "waiting",
+            "target_chat_id": configured_post_chat_id(),
+        })
+
+    if preview_message_id:
+        try:
+            bot.delete_message(call.message.chat.id, preview_message_id)
+        except Exception:
+            pass
+    bot.answer_callback_query(call.id, "Отправьте новый пост")
+    bot.edit_message_text(
+        "✏️ Отправьте новый текст, фото или видео.\n"
+        "Отмена: <code>/cancelpost</code>",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=None,
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "post_cancel")
+def cancel_group_post_callback(call):
+    """Закрывает черновик с кнопки предпросмотра."""
+    if not is_owner(call.from_user.id) or call.message.chat.type != "private":
+        return bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
+    with post_drafts_lock:
+        draft = post_drafts.pop(call.from_user.id, None)
+    preview_message_id = draft.get("preview_message_id") if draft else None
+    if preview_message_id:
+        try:
+            bot.delete_message(call.message.chat.id, preview_message_id)
+        except Exception:
+            pass
+    bot.answer_callback_query(call.id, "Публикация отменена")
+    try:
+        bot.edit_message_text(
+            "❌ Публикация отменена.",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=None,
+        )
+    except Exception:
+        pass
 
 
 @bot.callback_query_handler(
