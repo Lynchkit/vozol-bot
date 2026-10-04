@@ -64,7 +64,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.10.04-group-post-publisher-v29"
+BOT_VERSION = "2026.10.04-daily-report-toggle-v30"
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
 print("BOT_VERSION =", BOT_VERSION, flush=True)
@@ -774,6 +774,14 @@ def set_bot_setting(key: str, value: str) -> None:
     finally:
         cursor_local.close()
         conn_local.close()
+
+
+def daily_report_enabled() -> bool:
+    """По умолчанию сохраняет прежнее поведение: отчёт включён."""
+    raw_value = get_bot_setting("daily_sold_report_enabled")
+    if raw_value is None:
+        return True
+    return str(raw_value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def configured_post_chat_id() -> int | None:
@@ -6956,9 +6964,13 @@ def send_daily_sold_report():
     """
     Функция, которую будет вызывать APScheduler.
     """
+    if not daily_report_enabled():
+        print("Daily sold report is disabled by owner", flush=True)
+        return False
     text = compose_sold_report()
     # отправляем в вашу группу
     bot.send_message(GROUP_CHAT_ID, text)
+    return True
 
 @ensure_user
 @bot.message_handler(commands=['sold'])
@@ -6968,6 +6980,44 @@ def cmd_sold(message):
     report = compose_sold_report()
     # при ручном вызове шлём в тот же чат, откуда команда
     bot.send_message(message.chat.id, report)
+
+
+@bot.message_handler(commands=['reportoff'])
+def cmd_daily_report_off(message):
+    """Немедленно отключает автоматический отчёт в 23:55."""
+    if not is_owner(message.from_user.id):
+        return bot.reply_to(message, "У вас нет доступа.")
+    set_bot_setting("daily_sold_report_enabled", "0")
+    bot.reply_to(
+        message,
+        "⛔ Автоматический отчёт в 23:55 выключен.\n"
+        "Чтобы включить его снова: <code>/reporton</code>",
+    )
+
+
+@bot.message_handler(commands=['reporton'])
+def cmd_daily_report_on(message):
+    """Немедленно включает автоматический отчёт в 23:55."""
+    if not is_owner(message.from_user.id):
+        return bot.reply_to(message, "У вас нет доступа.")
+    set_bot_setting("daily_sold_report_enabled", "1")
+    bot.reply_to(
+        message,
+        "✅ Автоматический отчёт в 23:55 включён.\n"
+        "Чтобы выключить его: <code>/reportoff</code>",
+    )
+
+
+@bot.message_handler(commands=['reportstatus'])
+def cmd_daily_report_status(message):
+    """Показывает текущее состояние без изменения настройки."""
+    if not is_owner(message.from_user.id):
+        return bot.reply_to(message, "У вас нет доступа.")
+    status = "✅ включён" if daily_report_enabled() else "⛔ выключен"
+    bot.reply_to(
+        message,
+        f"Автоматический отчёт в 23:55 сейчас <b>{status}</b>.",
+    )
 
 
 # 1) Определяем отдельный хендлер прямо рядом с /convert, /points и т.д.
