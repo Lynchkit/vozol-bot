@@ -64,7 +64,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.10.04-clean-flavor-cards-v26"
+BOT_VERSION = "2026.10.04-profile-grid-v27"
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
 print("BOT_VERSION =", BOT_VERSION, flush=True)
@@ -5007,13 +5007,23 @@ def show_profile(chat_id: int, call=None) -> None:
     cursor_local.close()
     conn_local.close()
 
+    if review_count % 10 == 1 and review_count % 100 != 11:
+        rating_count_ru = "оценка"
+    elif review_count % 10 in (2, 3, 4) and review_count % 100 not in (12, 13, 14):
+        rating_count_ru = "оценки"
+    else:
+        rating_count_ru = "оценок"
+    rating_count_en = "rating" if review_count == 1 else "ratings"
+
     rating_ru = (
-        f"⭐ Оценка магазина: <b>{average_rating:.1f}/5</b> · {review_count} оценок"
+        f"⭐ Оценка магазина: <b>{average_rating:.1f}/5</b> · "
+        f"{review_count} {rating_count_ru}"
         if average_rating is not None
         else "⭐ Оценка магазина: пока нет оценок"
     )
     rating_en = (
-        f"⭐ Store rating: <b>{average_rating:.1f}/5</b> · {review_count} ratings"
+        f"⭐ Store rating: <b>{average_rating:.1f}/5</b> · "
+        f"{review_count} {rating_count_en}"
         if average_rating is not None
         else "⭐ Store rating: no ratings yet"
     )
@@ -5034,22 +5044,24 @@ def show_profile(chat_id: int, call=None) -> None:
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         types.InlineKeyboardButton(
+            text=tr(chat_id, "📦 Мои заказы", "📦 My orders"),
+            callback_data="profile_history",
+        ),
+        types.InlineKeyboardButton(
+            text=tr(chat_id, "⭐ Отзывы", "⭐ Reviews"),
+            callback_data="profile_reviews|0",
+        ),
+    )
+    kb.add(
+        types.InlineKeyboardButton(
             text=tr(chat_id, "🎁 Пригласить друга", "🎁 Invite a friend"),
             callback_data="profile_referral",
         ),
         types.InlineKeyboardButton(
-            text=tr(chat_id, "📦 Мои заказы", "📦 My orders"),
-            callback_data="profile_history",
+            text=tr(chat_id, "🌐 Язык", "🌐 Language"),
+            callback_data="profile_language",
         ),
     )
-    kb.add(types.InlineKeyboardButton(
-        text=tr(chat_id, "⭐ Отзывы покупателей", "⭐ Customer reviews"),
-        callback_data="profile_reviews|0",
-    ))
-    kb.add(types.InlineKeyboardButton(
-        text=tr(chat_id, "🌐 Язык", "🌐 Language"),
-        callback_data="profile_language",
-    ))
     kb.add(types.InlineKeyboardButton(
         text=tr(chat_id, "ℹ️ Помощь", "ℹ️ Help"),
         callback_data="profile_help",
