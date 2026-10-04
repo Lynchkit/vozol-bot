@@ -64,7 +64,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.10.05-channel-on-start-v32"
+BOT_VERSION = "2026.10.05-private-start-guard-v33"
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
 print("BOT_VERSION =", BOT_VERSION, flush=True)
@@ -2286,6 +2286,21 @@ def handle_actual_tastes_done(call):
 @ensure_user
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
+    # Команда /start в группе не должна создавать там пользовательское меню.
+    # Вместо этого даём безопасную ссылку на личный чат с ботом.
+    if message.chat.type != "private":
+        keyboard = types.InlineKeyboardMarkup(row_width=1)
+        keyboard.add(types.InlineKeyboardButton(
+            text="🛍 Открыть магазин",
+            url=f"https://t.me/{bot_public_username()}?start=shop",
+        ))
+        bot.reply_to(
+            message,
+            "Оформление заказа доступно в личном чате с ботом.",
+            reply_markup=keyboard,
+        )
+        return
+
     chat_id = message.chat.id
     init_user(chat_id)
 
