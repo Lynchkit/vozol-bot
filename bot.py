@@ -64,7 +64,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.10.04-daily-report-toggle-v30"
+BOT_VERSION = "2026.10.05-channel-on-start-v32"
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
 print("BOT_VERSION =", BOT_VERSION, flush=True)
@@ -1093,6 +1093,10 @@ def customer_order_keyboard(
             ),
             callback_data=f"customer_cancel_request|{order_id}",
         ))
+        kb.add(types.InlineKeyboardButton(
+            text=tr(chat_id, "📢 Новости и акции", "📢 News and promotions"),
+            url="https://t.me/vozol_alanya",
+        ))
     kb.add(types.InlineKeyboardButton(
         text=nav_text(chat_id, "menu"),
         callback_data="go_back_to_categories",
@@ -1480,6 +1484,10 @@ def get_inline_language_buttons(
         types.InlineKeyboardButton(text="Русский 🇷🇺", callback_data="set_lang|ru"),
         types.InlineKeyboardButton(text="English 🇬🇧", callback_data="set_lang|en")
     )
+    kb.add(types.InlineKeyboardButton(
+        text="📢 Новости и акции / News & promotions",
+        url="https://t.me/vozol_alanya",
+    ))
     if include_back:
         kb.add(types.InlineKeyboardButton(
             text=tr(chat_id, "⬅️ Назад", "⬅️ Back"),
@@ -1526,6 +1534,10 @@ def get_inline_main_menu(chat_id: int, show_language: bool = False) -> types.Inl
     kb.add(types.InlineKeyboardButton(
         text=tr(chat_id, "👤 Профиль", "👤 Profile"),
         callback_data="profile",
+    ))
+    kb.add(types.InlineKeyboardButton(
+        text=tr(chat_id, "📢 Новости и акции", "📢 News and promotions"),
+        url="https://t.me/vozol_alanya",
     ))
 
     return kb
@@ -4894,7 +4906,8 @@ def finalize_order(call):
             f"Total: {format_money(total_after)}₺{conversion_suffix}\n"
             f"📍 Address: {safe_address}\n"
             f"📱 Contact: {safe_contact}\n"
-            f"💬 Comment: {safe_comment}"
+            f"💬 Comment: {safe_comment}\n\n"
+            "📢 Follow our news channel for important updates and promotions."
         )
     else:
         user_order_summary = (
@@ -4904,7 +4917,8 @@ def finalize_order(call):
             f"Итог: {format_money(total_after)}₺{conversion_suffix}\n"
             f"📍 Адрес: {safe_address}\n"
             f"📱 Контакт: {safe_contact}\n"
-            f"💬 Комментарий: {safe_comment}"
+            f"💬 Комментарий: {safe_comment}\n\n"
+            "📢 Наш новостной канал: важные новости и акции."
         )
     customer_order_message = bot.send_message(
         chat_id,
