@@ -64,7 +64,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.10.05-channel-on-start-v32"
+BOT_VERSION = "2026.10.05-saved-payment-method-v36"
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
 print("BOT_VERSION =", BOT_VERSION, flush=True)
@@ -1009,11 +1009,12 @@ def payment_copy_keyboard(chat_id: int, detail: str):
 
 
 def payment_order_target(order_id: int):
-    """Возвращает покупателя, сумму и состав существующего заказа."""
+    """Возвращает покупателя, сумму, состав и выбранный способ оплаты."""
     connection = get_db_connection()
     cursor = connection.cursor()
     cursor.execute(
-        "SELECT chat_id, total, items_json FROM orders WHERE order_id = ?",
+        "SELECT chat_id, total, items_json, delivery_currency "
+        "FROM orders WHERE order_id = ?",
         (order_id,),
     )
     row = cursor.fetchone()
@@ -2286,6 +2287,11 @@ def handle_actual_tastes_done(call):
 @ensure_user
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
+    # Пользовательское меню существует только в личном чате. В группах бот
+    # полностью игнорирует /start, чтобы не засорять рабочую переписку.
+    if message.chat.type != "private":
+        return
+
     chat_id = message.chat.id
     init_user(chat_id)
 
@@ -5842,7 +5848,11 @@ def handle_payment_back(call):
     bot.edit_message_reply_markup(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
-        reply_markup=admin_order_keyboard(order_id, int(order_row[0])),
+        reply_markup=admin_order_keyboard(
+            order_id,
+            int(order_row[0]),
+            order_row[3],
+        ),
     )
     bot.answer_callback_query(call.id)
 
@@ -5915,12 +5925,43 @@ def handle_payment_send(call):
             show_alert=True,
         )
 
+    method_saved = True
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE orders SET delivery_currency = ? "
+            "WHERE order_id = ? AND delivered_at IS NULL",
+            (method_key, order_id),
+        )
+        if cursor.rowcount != 1:
+            method_saved = False
+            connection.rollback()
+        else:
+            connection.commit()
+    except sqlite3.Error as exc:
+        method_saved = False
+        connection.rollback()
+        print(
+            f"Payment method save failed for order {order_id}: {exc}",
+            flush=True,
+        )
+    finally:
+        cursor.close()
+        connection.close()
+
     bot.edit_message_reply_markup(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         reply_markup=admin_order_keyboard(order_id, customer_chat_id, method_key),
     )
-    bot.answer_callback_query(call.id, f"Отправлено: {method[0]}", show_alert=True)
+    callback_text = f"Отправлено и сохранено: {method[0]}"
+    if not method_saved:
+        callback_text = (
+            f"{method[0]} отправлены, но способ не сохранился. "
+            "При доставке выберите его вручную."
+        )
+    bot.answer_callback_query(call.id, callback_text, show_alert=True)
 
 
 def delivered_payment_keyboard(
@@ -5930,14 +5971,15 @@ def delivered_payment_keyboard(
 ) -> types.InlineKeyboardMarkup:
     """Кнопки под сообщением о доставке."""
     kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.add(types.InlineKeyboardButton(
-        text=tr(chat_id, "⭐ Оценить заказ", "⭐ Rate the order"),
-        callback_data=f"review_start|{order_id}",
-    ))
     if proof_required:
         kb.add(types.InlineKeyboardButton(
             text=tr(chat_id, "📎 Отправить чек", "📎 Upload payment proof"),
             callback_data=f"upload_proof|{order_id}",
+        ))
+    else:
+        kb.add(types.InlineKeyboardButton(
+            text=tr(chat_id, "⭐ Оценить заказ", "⭐ Rate the order"),
+            callback_data=f"review_start|{order_id}",
         ))
     kb.add(types.InlineKeyboardButton(
         text=nav_text(chat_id, "menu"),
@@ -5975,23 +6017,34 @@ def send_delivered_customer_message(
         user_data[chat_id].pop("awaiting_payment_proof_order_id", None)
 
     order_price_all = stored_order_price_text(chat_id, order_id)
-    text = tr(
-        chat_id,
-        f"<b>✅ Ваш заказ №{order_id} доставлен!</b>\n\n"
-        f"Сумма заказа: <b>{order_price_all}</b>\n\n"
-        "Спасибо, что выбрали нас ❤️\n\n"
-        "💵 Если вы оплатили наличными — просто проигнорируйте это сообщение.\n"
-        "💳 Если оплата была переводом, через банк или криптовалютой — "
-        "отправьте сюда фотографию чека или файл подтверждения.\n\n"
-        "Бот автоматически привяжет его к вашему заказу.",
-        f"<b>✅ Your order #{order_id} has been delivered!</b>\n\n"
-        f"Order total: <b>{order_price_all}</b>\n\n"
-        "Thank you for choosing us ❤️\n\n"
-        "💵 If you paid in cash, simply ignore this message.\n"
-        "💳 If you paid by bank transfer, online, or with cryptocurrency, "
-        "send a photo or a file confirming the payment here.\n\n"
-        "The bot will automatically attach it to your order.",
-    )
+    if proof_required:
+        text = tr(
+            chat_id,
+            f"<b>✅ Ваш заказ №{order_id} доставлен!</b>\n\n"
+            f"Сумма заказа: <b>{order_price_all}</b>\n\n"
+            "Спасибо, что выбрали нас ❤️\n\n"
+            "💳 Для выбранного способа оплаты требуется подтверждение. "
+            "Отправьте фотографию чека или файл подтверждения.\n\n"
+            "После проверки оплаты появится возможность оценить заказ.",
+            f"<b>✅ Your order #{order_id} has been delivered!</b>\n\n"
+            f"Order total: <b>{order_price_all}</b>\n\n"
+            "Thank you for choosing us ❤️\n\n"
+            "💳 The selected payment method requires confirmation. "
+            "Send a photo or a file confirming the payment.\n\n"
+            "You will be able to rate the order after the payment is verified.",
+        )
+    else:
+        text = tr(
+            chat_id,
+            f"<b>✅ Ваш заказ №{order_id} доставлен!</b>\n\n"
+            f"Сумма заказа: <b>{order_price_all}</b>\n\n"
+            "Спасибо, что выбрали нас ❤️\n\n"
+            "Подтверждение оплаты не требуется. Теперь вы можете оценить заказ.",
+            f"<b>✅ Your order #{order_id} has been delivered!</b>\n\n"
+            f"Order total: <b>{order_price_all}</b>\n\n"
+            "Thank you for choosing us ❤️\n\n"
+            "Payment confirmation is not required. You can now rate the order.",
+        )
     bot.send_message(
         chat_id,
         text,
@@ -6038,7 +6091,7 @@ def review_order_row(order_id: int, chat_id: int):
     conn_local = get_db_connection()
     cursor_local = conn_local.cursor()
     cursor_local.execute(
-        "SELECT order_id, delivered_at FROM orders "
+        "SELECT order_id, delivered_at, delivery_currency, payment_status FROM orders "
         "WHERE order_id = ? AND chat_id = ?",
         (order_id, chat_id),
     )
@@ -6046,6 +6099,14 @@ def review_order_row(order_id: int, chat_id: int):
     cursor_local.close()
     conn_local.close()
     return row
+
+
+def payment_allows_review(delivery_currency, payment_status) -> bool:
+    """Онлайн-заказ можно оценить только после подтверждения его оплаты."""
+    method = str(delivery_currency or "").casefold()
+    if method in PROOF_REQUIRED_DELIVERY_METHODS:
+        return str(payment_status or "").casefold() == "confirmed"
+    return True
 
 
 def review_moderation_keyboard(review_id: int, visible: bool) -> types.InlineKeyboardMarkup:
@@ -6120,6 +6181,16 @@ def handle_review_start(call):
             tr(chat_id, "Этот заказ нельзя оценить.", "This order cannot be rated."),
             show_alert=True,
         )
+    if not payment_allows_review(order_row[2], order_row[3]):
+        return bot.answer_callback_query(
+            call.id,
+            tr(
+                chat_id,
+                "Сначала отправьте чек и дождитесь подтверждения оплаты.",
+                "Please upload payment proof and wait for payment confirmation first.",
+            ),
+            show_alert=True,
+        )
     conn_local = get_db_connection()
     cursor_local = conn_local.cursor()
     cursor_local.execute("SELECT 1 FROM reviews WHERE order_id = ?", (order_id,))
@@ -6165,7 +6236,8 @@ def handle_review_rating(call):
     try:
         cursor_local.execute("BEGIN IMMEDIATE")
         cursor_local.execute(
-            "SELECT delivered_at FROM orders WHERE order_id = ? AND chat_id = ?",
+            "SELECT delivered_at, delivery_currency, payment_status "
+            "FROM orders WHERE order_id = ? AND chat_id = ?",
             (order_id, chat_id),
         )
         order_row = cursor_local.fetchone()
@@ -6174,6 +6246,17 @@ def handle_review_rating(call):
             return bot.answer_callback_query(
                 call.id,
                 tr(chat_id, "Этот заказ нельзя оценить.", "This order cannot be rated."),
+                show_alert=True,
+            )
+        if not payment_allows_review(order_row[1], order_row[2]):
+            conn_local.rollback()
+            return bot.answer_callback_query(
+                call.id,
+                tr(
+                    chat_id,
+                    "Сначала отправьте чек и дождитесь подтверждения оплаты.",
+                    "Please upload payment proof and wait for payment confirmation first.",
+                ),
                 show_alert=True,
             )
         cursor_local.execute("SELECT 1 FROM reviews WHERE order_id = ?", (order_id,))
@@ -6770,10 +6853,16 @@ def handle_payment_proof_accept(call):
             customer_chat_id,
             tr(
                 customer_chat_id,
-                f"✅ Оплата заказа №{order_id} подтверждена. Спасибо!",
-                f"✅ Payment for order #{order_id} has been confirmed. Thank you!",
+                f"✅ Оплата заказа №{order_id} подтверждена. Спасибо!\n\n"
+                "Теперь вы можете оценить заказ.",
+                f"✅ Payment for order #{order_id} has been confirmed. Thank you!\n\n"
+                "You can now rate the order.",
             ),
-            reply_markup=back_to_main_keyboard(customer_chat_id),
+            reply_markup=delivered_payment_keyboard(
+                customer_chat_id,
+                order_id,
+                proof_required=False,
+            ),
         )
     except Exception as exc:
         notification_sent = False
@@ -9327,13 +9416,43 @@ def handle_cancel_order(call):
         print(f"Cancel order {order_id}: callback answer failed: {exc}", flush=True)
 
 
-# 1) Обработчик нажатия "Order Delivered"
-# 1) When “Order Delivered” is pressed, show currency choices (EN only)
+DELIVERY_METHODS = (
+    "cash", "rub", "dollar", "euro", "uah", "iban", "crypto", "free",
+)
 
-# 1) Заказ доставлен → предложить валюту «внутри» того же сообщения
-# 1) Нажали «✅ Order Delivered»
-# 1) Нажали «✅ Order Delivered»
-# 1) Заказ доставлен → предложить валюту «внутри» того же сообщения
+
+def delivery_method_keyboard(
+    order_id: int,
+    preferred_method: str | None = None,
+    show_all: bool = False,
+) -> types.InlineKeyboardMarkup:
+    """Подтверждает сохранённый способ или показывает полный список."""
+    preferred = str(preferred_method or "").casefold()
+    kb = types.InlineKeyboardMarkup(row_width=3)
+    if preferred in DELIVERY_METHODS and not show_all:
+        kb.add(types.InlineKeyboardButton(
+            text=f"✅ Confirm delivery · {preferred.upper()}",
+            callback_data=f"deliver_currency|{order_id}|{preferred}",
+        ))
+        kb.add(types.InlineKeyboardButton(
+            text="🔄 Other payment method",
+            callback_data=f"delivery_other_method|{order_id}",
+        ))
+    else:
+        kb.add(*[
+            types.InlineKeyboardButton(
+                text=method.upper(),
+                callback_data=f"deliver_currency|{order_id}|{method}",
+            )
+            for method in DELIVERY_METHODS
+        ])
+    kb.add(types.InlineKeyboardButton(
+        text="⏪ Back",
+        callback_data=f"back_to_group|{order_id}",
+    ))
+    return kb
+
+
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("order_delivered|"))
 def handle_order_delivered(call: types.CallbackQuery):
 
@@ -9342,38 +9461,47 @@ def handle_order_delivered(call: types.CallbackQuery):
     if call.message.chat.id != GROUP_CHAT_ID:
         return bot.answer_callback_query(call.id, "Нажали не в том чате", show_alert=True)
 
-    bot.answer_callback_query(call.id)
-
     parts = call.data.split("|")
     if len(parts) < 2:
         return bot.answer_callback_query(call.id, "Data error", show_alert=True)
+    try:
+        order_id = int(parts[1])
+    except ValueError:
+        return bot.answer_callback_query(call.id, "Data error", show_alert=True)
 
-    order_id = int(parts[1])
-
-    # Формируем клавиатуру выбора валют
-    currencies = ["cash", "rub", "dollar", "euro", "uah", "iban", "crypto", "free"]
-    kb = types.InlineKeyboardMarkup(row_width=3)
-
-    for cur in currencies:
-        kb.add(
-            types.InlineKeyboardButton(
-                text=cur.upper(),
-                callback_data=f"deliver_currency|{order_id}|{cur}"
-            )
-        )
-
-    kb.add(
-        types.InlineKeyboardButton(
-            text="⏪ Back",
-            callback_data=f"back_to_group|{order_id}"
-        )
-    )
+    order_row = payment_order_target(order_id)
+    if not order_row:
+        return bot.answer_callback_query(call.id, "Order not found", show_alert=True)
+    preferred_method = order_row[3]
 
     bot.edit_message_reply_markup(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
-        reply_markup=kb
+        reply_markup=delivery_method_keyboard(order_id, preferred_method),
     )
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(
+    func=lambda call: call.data and call.data.startswith("delivery_other_method|")
+)
+def handle_delivery_other_method(call: types.CallbackQuery):
+    if not is_owner(call.from_user.id):
+        return bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
+    if call.message.chat.id != GROUP_CHAT_ID:
+        return bot.answer_callback_query(call.id, "Нажали не в том чате", show_alert=True)
+    try:
+        order_id = int(call.data.split("|", 1)[1])
+    except (ValueError, IndexError):
+        return bot.answer_callback_query(call.id, "Data error", show_alert=True)
+    if not payment_order_target(order_id):
+        return bot.answer_callback_query(call.id, "Order not found", show_alert=True)
+    bot.edit_message_reply_markup(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=delivery_method_keyboard(order_id, show_all=True),
+    )
+    bot.answer_callback_query(call.id)
 
 
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("deliver_currency|"))
@@ -9391,10 +9519,7 @@ def handle_deliver_currency(call: types.CallbackQuery):
         return bot.answer_callback_query(call.id, "Data error", show_alert=True)
 
     currency = currency.casefold()
-    allowed_currencies = {
-        "cash", "rub", "dollar", "euro", "uah", "iban", "crypto", "free",
-    }
-    if currency not in allowed_currencies:
+    if currency not in DELIVERY_METHODS:
         return bot.answer_callback_query(call.id, "Unknown payment method", show_alert=True)
 
     proof_required = currency in PROOF_REQUIRED_DELIVERY_METHODS
@@ -9558,7 +9683,7 @@ def handle_back_to_options(call: types.CallbackQuery):
     order_row = payment_order_target(order_id)
     if not order_row:
         return bot.answer_callback_query(call.id, "Order not found", show_alert=True)
-    kb = admin_order_keyboard(order_id, int(order_row[0]))
+    kb = admin_order_keyboard(order_id, int(order_row[0]), order_row[3])
 
     bot.edit_message_reply_markup(
         chat_id=call.message.chat.id,
@@ -9578,7 +9703,7 @@ def handle_back_to_group(call: types.CallbackQuery):
     order_row = payment_order_target(order_id)
     if not order_row:
         return bot.answer_callback_query(call.id, "Order not found", show_alert=True)
-    kb = admin_order_keyboard(order_id, int(order_row[0]))
+    kb = admin_order_keyboard(order_id, int(order_row[0]), order_row[3])
     bot.edit_message_reply_markup(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
