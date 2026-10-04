@@ -42,6 +42,9 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "424751188"))
 # Баллы начисляются вдвое медленнее, чем раньше.
 PURCHASE_POINTS_DIVISOR = 60
 REFERRAL_BONUS_POINTS = 200
+CUSTOMER_CANCEL_WINDOW_MINUTES = 5
+PUBLIC_REVIEW_LIMIT = 15
+REVIEWS_PER_PAGE = 5
 
 GROUP_CHAT_ID    = int(os.getenv("GROUP_CHAT_ID",    "-1002414380144"))
 PERSONAL_CHAT_ID = int(os.getenv("PERSONAL_CHAT_ID", "0"))
@@ -61,7 +64,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.08.30-manual-order-points-v24"
+BOT_VERSION = "2026.10.04-cancel-reviews-flavor-info-v25"
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
 print("BOT_VERSION =", BOT_VERSION, flush=True)
@@ -79,9 +82,11 @@ bot = TeleBot(TOKEN, parse_mode="HTML")
 # ------------------------------------------------------------------------
 #   2. Пути к JSON-файлам и БД (персистентный том /data)
 # ------------------------------------------------------------------------
-MENU_PATH = "/data/menu.json"
-LANG_PATH = "/data/languages.json"
-DB_PATH = "/data/database.db"
+DATA_DIR = os.getenv("BOT_DATA_DIR", "/data")
+os.makedirs(DATA_DIR, exist_ok=True)
+MENU_PATH = os.path.join(DATA_DIR, "menu.json")
+LANG_PATH = os.path.join(DATA_DIR, "languages.json")
+DB_PATH = os.path.join(DATA_DIR, "database.db")
 # ------------------------------------------------------------------------
 #   3. Функция для получения локального подключения к БД
 # ------------------------------------------------------------------------
@@ -184,7 +189,10 @@ cursor_init.execute("""
         promo_discount INTEGER DEFAULT 0,
         delivery_currency TEXT,
         delivered_at   TEXT,
-        payment_status TEXT
+        payment_status TEXT,
+        order_status TEXT NOT NULL DEFAULT 'active',
+        order_group_message_id INTEGER,
+        order_customer_message_id INTEGER
     )
 """)
 
@@ -200,6 +208,9 @@ for column_name, column_type in (
     ("delivery_currency", "TEXT"),
     ("delivered_at", "TEXT"),
     ("payment_status", "TEXT"),
+    ("order_status", "TEXT NOT NULL DEFAULT 'active'"),
+    ("order_group_message_id", "INTEGER"),
+    ("order_customer_message_id", "INTEGER"),
 ):
     if column_name not in order_columns:
         cursor_init.execute(
@@ -316,14 +327,33 @@ cursor_init.execute("""
 cursor_init.execute("""
     CREATE TABLE IF NOT EXISTS reviews (
         review_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id    INTEGER,
         chat_id     INTEGER,
         category    TEXT,
         flavor      TEXT,
         rating      INTEGER,
         comment     TEXT,
+        comment_visible INTEGER NOT NULL DEFAULT 1,
         timestamp   TEXT
     )
 """)
+cursor_init.execute("PRAGMA table_info(reviews)")
+review_columns = {row[1] for row in cursor_init.fetchall()}
+for column_name, column_type in (
+    ("order_id", "INTEGER"),
+    ("comment_visible", "INTEGER NOT NULL DEFAULT 1"),
+):
+    if column_name not in review_columns:
+        cursor_init.execute(
+            f"ALTER TABLE reviews ADD COLUMN {column_name} {column_type}"
+        )
+cursor_init.execute(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_order "
+    "ON reviews(order_id) WHERE order_id IS NOT NULL"
+)
+cursor_init.execute(
+    "CREATE INDEX IF NOT EXISTS idx_reviews_timestamp ON reviews(timestamp)"
+)
 
 conn_init.commit()
 cursor_init.close()
@@ -365,6 +395,10 @@ def blank_flavor_item(flavor_name: str) -> dict:
         "tags": [],
         "description_ru": "",
         "description_en": "",
+        "taste_sweetness": 0,
+        "taste_cooling": 0,
+        "taste_sourness": 0,
+        "taste_info_ready": False,
         "photo_url": "",
     }
 
@@ -928,6 +962,41 @@ def personal_order_keyboard(order_id: int) -> types.InlineKeyboardMarkup:
     return kb
 
 
+def customer_order_keyboard(
+    chat_id: int,
+    order_id: int,
+    *,
+    confirm_cancel: bool = False,
+) -> types.InlineKeyboardMarkup:
+    """Отмена доступна ограниченное время; основное меню всегда остаётся."""
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    if confirm_cancel:
+        kb.row(
+            types.InlineKeyboardButton(
+                text=tr(chat_id, "✅ Да, отменить", "✅ Yes, cancel"),
+                callback_data=f"customer_cancel_confirm|{order_id}",
+            ),
+            types.InlineKeyboardButton(
+                text=tr(chat_id, "⬅️ Нет", "⬅️ No"),
+                callback_data=f"customer_cancel_back|{order_id}",
+            ),
+        )
+    else:
+        kb.add(types.InlineKeyboardButton(
+            text=tr(
+                chat_id,
+                f"❌ Отменить заказ ({CUSTOMER_CANCEL_WINDOW_MINUTES} мин.)",
+                f"❌ Cancel order ({CUSTOMER_CANCEL_WINDOW_MINUTES} min)",
+            ),
+            callback_data=f"customer_cancel_request|{order_id}",
+        ))
+    kb.add(types.InlineKeyboardButton(
+        text=nav_text(chat_id, "menu"),
+        callback_data="go_back_to_categories",
+    ))
+    return kb
+
+
 class ManualPointCreditError(Exception):
     """Ожидаемая ошибка ручного начисления баллов."""
 
@@ -1420,10 +1489,17 @@ def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
         rating_str = f" ⭐{rating}" if rating else ""
         stock_unit = tr(chat_id, "шт", "pcs")
         label = f"{emoji} {flavor}{rating_str} · {stock} {stock_unit}"
-        kb.add(types.InlineKeyboardButton(
-            text=label,
-            callback_data=f"product|{product_token(cat, flavor)}"
-        ))
+        token = product_token(cat, flavor)
+        kb.row(
+            types.InlineKeyboardButton(
+                text=label,
+                callback_data=f"product|{token}",
+            ),
+            types.InlineKeyboardButton(
+                text="❓",
+                callback_data=f"flavor_info|{token}",
+            ),
+        )
 
     kb.add(types.InlineKeyboardButton(
         text=nav_text(chat_id, "models"),
@@ -1606,6 +1682,7 @@ def edit_action_keyboard() -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add("➕ Add Category", "➖ Remove Category", "✏️ Rename Category")
     kb.add("💲 Fix Price", "📋 Full Flavor List", "🔄 Actual Tastes")
+    kb.add("❓ Flavor Information")
     kb.add("🖼️ Add Category Picture")
     kb.add("📦 New Supply", "MESSAGE")
     kb.add("PROMO CREATE")
@@ -1712,6 +1789,117 @@ def full_flavor_models_screen(chat_id: int, call=None) -> None:
         call,
         allow_media_edit=False,
     )
+
+
+def flavor_info_models_screen(chat_id: int, call=None) -> None:
+    render_inline_screen(
+        chat_id,
+        "<b>❓ Flavor Information</b>\n\nSelect a model to edit flavor descriptions:",
+        admin_model_inline_keyboard("flavor_info_model", "flavor_info_done"),
+        call,
+        allow_media_edit=False,
+    )
+
+
+def send_flavor_info_prompt(chat_id: int, category: str) -> None:
+    """Отправляет редактируемый шаблон описаний всех вкусов модели."""
+    lines = []
+    for item in menu.get(category, {}).get("flavors", []):
+        name = str(item.get("flavor", "")).strip().replace("|", "/")
+        if not name:
+            continue
+        description_ru = re.sub(
+            r"\s+", " ", str(item.get("description_ru", "") or "")
+        ).strip().replace("|", "/")
+        description_en = re.sub(
+            r"\s+", " ", str(item.get("description_en", "") or "")
+        ).strip().replace("|", "/")
+        lines.append(
+            f"{name} | {description_ru} | {description_en} | "
+            f"{taste_scale_value(item, 'taste_sweetness')} | "
+            f"{taste_scale_value(item, 'taste_cooling')} | "
+            f"{taste_scale_value(item, 'taste_sourness')}"
+        )
+
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    kb.add("⬅️ Back", "❌ Cancel")
+    bot.send_message(
+        chat_id,
+        f"<b>❓ Flavor Information · {html.escape(category)}</b>\n\n"
+        "Format for every line:\n"
+        "<code>NAME | RU description | EN description | sweetness | cooling | sourness</code>\n\n"
+        "All three scales must be numbers from 0 to 5. Do not change flavor names "
+        "and do not use | inside descriptions.",
+    )
+    if lines:
+        chunks = []
+        current = []
+        current_length = 0
+        for line in lines:
+            line_length = len(line) + 1
+            if current and current_length + line_length > 3200:
+                chunks.append("\n".join(current))
+                current = []
+                current_length = 0
+            current.append(line)
+            current_length += line_length
+        if current:
+            chunks.append("\n".join(current))
+        for chunk in chunks:
+            bot.send_message(chat_id, f"<pre>{html.escape(chunk)}</pre>")
+    else:
+        bot.send_message(chat_id, "(empty)")
+    bot.send_message(
+        chat_id,
+        "Send the complete edited template back. This changes descriptions only; "
+        "stock and flavor names stay unchanged.",
+        reply_markup=kb,
+    )
+
+
+def parse_flavor_info_payload(category: str, payload: str) -> tuple[list[tuple[dict, str, str, int, int, int]], list[str]]:
+    """Проверяет массовый шаблон; при любой ошибке каталог не изменяется."""
+    existing = {
+        str(item.get("flavor", "")).strip().casefold(): item
+        for item in menu.get(category, {}).get("flavors", [])
+        if str(item.get("flavor", "")).strip()
+    }
+    updates = []
+    errors = []
+    seen = set()
+    for line_number, raw_line in enumerate(str(payload or "").splitlines(), start=1):
+        if not raw_line.strip():
+            continue
+        parts = [part.strip() for part in raw_line.split("|")]
+        if len(parts) != 6:
+            errors.append(f"Line {line_number}: expected 6 fields separated by |")
+            continue
+        name, description_ru, description_en, sweet_raw, cooling_raw, sour_raw = parts
+        item = existing.get(name.casefold())
+        if item is None:
+            errors.append(f"Line {line_number}: flavor not found: {name or '(empty)'}")
+            continue
+        if name.casefold() in seen:
+            errors.append(f"Line {line_number}: duplicate flavor: {name}")
+            continue
+        seen.add(name.casefold())
+        if len(description_ru) > 160 or len(description_en) > 160:
+            errors.append(f"Line {line_number}: description is longer than 160 characters")
+            continue
+        try:
+            sweet = int(sweet_raw)
+            cooling = int(cooling_raw)
+            sour = int(sour_raw)
+        except ValueError:
+            errors.append(f"Line {line_number}: scales must be whole numbers from 0 to 5")
+            continue
+        if any(value < 0 or value > 5 for value in (sweet, cooling, sour)):
+            errors.append(f"Line {line_number}: scales must be from 0 to 5")
+            continue
+        updates.append((item, description_ru, description_en, sweet, cooling, sour))
+    if not updates and not errors:
+        errors.append("The template is empty.")
+    return updates, errors
 
 
 def actual_tastes_models_screen(chat_id: int, call=None) -> None:
@@ -1849,6 +2037,41 @@ def handle_full_flavor_done(call):
     if reject_stock_admin_callback(call):
         return
     chat_id = call.from_user.id
+    user_data[chat_id]["edit_phase"] = "choose_action"
+    user_data[chat_id].pop("edit_cat", None)
+    bot.answer_callback_query(call.id)
+    disable_inline_keyboard(call)
+    bot.send_message(chat_id, "Back to editing menu:", reply_markup=edit_action_keyboard())
+
+
+@ensure_user
+@bot.callback_query_handler(
+    func=lambda call: call.data and call.data.startswith("flavor_info_model|")
+)
+def handle_flavor_info_model(call):
+    if reject_stock_admin_callback(call):
+        return
+    token = call.data.split("|", 1)[1]
+    category = resolve_category(token)
+    if not category:
+        return bot.answer_callback_query(call.id, "Model not found.", show_alert=True)
+    chat_id = call.from_user.id
+    init_user(chat_id)
+    data = user_data[chat_id]
+    data["edit_cat"] = category
+    data["edit_phase"] = "replace_flavor_info"
+    bot.answer_callback_query(call.id)
+    disable_inline_keyboard(call)
+    send_flavor_info_prompt(chat_id, category)
+
+
+@ensure_user
+@bot.callback_query_handler(func=lambda call: call.data == "flavor_info_done")
+def handle_flavor_info_done(call):
+    if reject_stock_admin_callback(call):
+        return
+    chat_id = call.from_user.id
+    init_user(chat_id)
     user_data[chat_id]["edit_phase"] = "choose_action"
     user_data[chat_id].pop("edit_cat", None)
     bot.answer_callback_query(call.id)
@@ -2224,6 +2447,70 @@ def handle_go_back_to_categories(call):
 # ------------------------------------------------------------------------
 #   18. Callback: выбор вкуса
 # ------------------------------------------------------------------------
+def taste_scale_value(item: dict, key: str) -> int:
+    """Возвращает безопасное значение шкалы вкуса от 0 до 5."""
+    try:
+        return max(0, min(int(item.get(key, 0) or 0), 5))
+    except (TypeError, ValueError):
+        return 0
+
+
+def flavor_info_alert(chat_id: int, item: dict) -> str:
+    """Короткая карточка вкуса для Telegram alert (не более 200 символов)."""
+    language = user_data.get(chat_id, {}).get("lang") or "ru"
+    flavor = re.sub(r"\s+", " ", str(item.get("flavor", ""))).strip()
+    description = str(item.get(f"description_{language}", "") or "").strip()
+    if not description:
+        fallback_key = "description_en" if language == "ru" else "description_ru"
+        description = str(item.get(fallback_key, "") or "").strip()
+    description = re.sub(r"\s+", " ", description)
+    ready = bool(item.get("taste_info_ready")) or bool(description)
+
+    if not ready:
+        message = tr(
+            chat_id,
+            f"{flavor}\nОписание вкуса пока не добавлено.",
+            f"{flavor}\nFlavor description has not been added yet.",
+        )
+        return message[:195]
+
+    sweet = taste_scale_value(item, "taste_sweetness")
+    cooling = taste_scale_value(item, "taste_cooling")
+    sour = taste_scale_value(item, "taste_sourness")
+    description = description[:95]
+    message = tr(
+        chat_id,
+        f"{flavor[:55]}\n{description}\n"
+        f"Сладость: {sweet}/5 · Холодок: {cooling}/5 · Кислинка: {sour}/5",
+        f"{flavor[:55]}\n{description}\n"
+        f"Sweetness: {sweet}/5 · Cooling: {cooling}/5 · Sourness: {sour}/5",
+    )
+    return message[:195]
+
+
+@ensure_user
+@bot.callback_query_handler(
+    func=lambda call: call.data and call.data.startswith("flavor_info|")
+)
+def handle_flavor_info(call):
+    chat_id = call.from_user.id
+    init_user(chat_id)
+    token = call.data.split("|", 1)[1]
+    resolved = resolve_product(token)
+    if not resolved:
+        return bot.answer_callback_query(
+            call.id,
+            t(chat_id, "error_invalid"),
+            show_alert=True,
+        )
+    _category, item = resolved
+    bot.answer_callback_query(
+        call.id,
+        flavor_info_alert(chat_id, item),
+        show_alert=True,
+    )
+
+
 @ensure_user
 @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("product|"))
 def handle_flavor(call):
@@ -4447,10 +4734,33 @@ def finalize_order(call):
     )
     kb_admin = admin_order_keyboard(order_id, chat_id)
 
+    group_order_message = None
     try:
-        bot.send_message(GROUP_CHAT_ID, full_en, reply_markup=kb_admin)
+        group_order_message = bot.send_message(
+            GROUP_CHAT_ID,
+            full_en,
+            reply_markup=kb_admin,
+        )
     except Exception as exc:
         print(f"Group order notification failed for order {order_id}: {exc}")
+    if group_order_message is not None:
+        conn_message = None
+        cursor_message = None
+        try:
+            conn_message = get_db_connection()
+            cursor_message = conn_message.cursor()
+            cursor_message.execute(
+                "UPDATE orders SET order_group_message_id = ? WHERE order_id = ?",
+                (int(group_order_message.message_id), order_id),
+            )
+            conn_message.commit()
+        except Exception as exc:
+            print(f"Group message id save failed for order {order_id}: {exc}", flush=True)
+        finally:
+            if cursor_message is not None:
+                cursor_message.close()
+            if conn_message is not None:
+                conn_message.close()
 
     # --- сообщение пользователю ---
     bot.send_message(
@@ -4478,7 +4788,28 @@ def finalize_order(call):
             f"📱 Контакт: {safe_contact}\n"
             f"💬 Комментарий: {safe_comment}"
         )
-    bot.send_message(chat_id, user_order_summary, reply_markup=back_to_main_keyboard(chat_id))
+    customer_order_message = bot.send_message(
+        chat_id,
+        user_order_summary,
+        reply_markup=customer_order_keyboard(chat_id, order_id),
+    )
+    conn_customer_message = None
+    cursor_customer_message = None
+    try:
+        conn_customer_message = get_db_connection()
+        cursor_customer_message = conn_customer_message.cursor()
+        cursor_customer_message.execute(
+            "UPDATE orders SET order_customer_message_id = ? WHERE order_id = ?",
+            (int(customer_order_message.message_id), order_id),
+        )
+        conn_customer_message.commit()
+    except Exception as exc:
+        print(f"Customer message id save failed for order {order_id}: {exc}", flush=True)
+    finally:
+        if cursor_customer_message is not None:
+            cursor_customer_message.close()
+        if conn_customer_message is not None:
+            conn_customer_message.close()
 
 
 # ------------------------------------------------------------------------
@@ -4657,19 +4988,39 @@ def show_profile(chat_id: int, call=None) -> None:
     points = int(row[0]) if row else 0
     cursor_local.execute("SELECT COUNT(*) FROM orders WHERE chat_id = ?", (chat_id,))
     order_count = int(cursor_local.fetchone()[0])
+    cursor_local.execute(
+        "SELECT AVG(rating), COUNT(*) FROM reviews "
+        "WHERE order_id IS NOT NULL AND rating BETWEEN 1 AND 5"
+    )
+    review_row = cursor_local.fetchone() or (None, 0)
+    average_rating = float(review_row[0]) if review_row[0] is not None else None
+    review_count = int(review_row[1] or 0)
     cursor_local.close()
     conn_local.close()
+
+    rating_ru = (
+        f"⭐ Оценка магазина: <b>{average_rating:.1f}/5</b> · {review_count} оценок"
+        if average_rating is not None
+        else "⭐ Оценка магазина: пока нет оценок"
+    )
+    rating_en = (
+        f"⭐ Store rating: <b>{average_rating:.1f}/5</b> · {review_count} ratings"
+        if average_rating is not None
+        else "⭐ Store rating: no ratings yet"
+    )
 
     text = tr(
         chat_id,
         "<b>👤 Профиль</b>\n\n"
         f"🎁 Баллы: <b>{points}</b>\n"
         "1 балл = 1₺ скидки\n"
-        f"📦 Заказы: <b>{order_count}</b>",
+        f"📦 Заказы: <b>{order_count}</b>\n"
+        f"{rating_ru}",
         "<b>👤 Profile</b>\n\n"
         f"🎁 Points: <b>{points}</b>\n"
         "1 point = 1₺ discount\n"
-        f"📦 Orders: <b>{order_count}</b>",
+        f"📦 Orders: <b>{order_count}</b>\n"
+        f"{rating_en}",
     )
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
@@ -4682,6 +5033,10 @@ def show_profile(chat_id: int, call=None) -> None:
             callback_data="profile_history",
         ),
     )
+    kb.add(types.InlineKeyboardButton(
+        text=tr(chat_id, "⭐ Отзывы покупателей", "⭐ Customer reviews"),
+        callback_data="profile_reviews|0",
+    ))
     kb.add(types.InlineKeyboardButton(
         text=tr(chat_id, "🌐 Язык", "🌐 Language"),
         callback_data="profile_language",
@@ -4858,6 +5213,118 @@ def show_order_history(chat_id: int, call=None) -> None:
     )
 
 
+def review_date_text(timestamp: str) -> str:
+    """Дата отзыва по часовому поясу магазина."""
+    try:
+        parsed = datetime.datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+        local_time = parsed.astimezone(pytz.timezone("Europe/Istanbul"))
+        return local_time.strftime("%d.%m.%Y")
+    except (TypeError, ValueError):
+        return str(timestamp or "")[:10]
+
+
+def public_reviews_keyboard(chat_id: int, page: int, page_count: int) -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    navigation = []
+    if page > 0:
+        navigation.append(types.InlineKeyboardButton(
+            text="◀️",
+            callback_data=f"profile_reviews|{page - 1}",
+        ))
+    if page + 1 < page_count:
+        navigation.append(types.InlineKeyboardButton(
+            text="▶️",
+            callback_data=f"profile_reviews|{page + 1}",
+        ))
+    if navigation:
+        kb.row(*navigation)
+    kb.add(types.InlineKeyboardButton(
+        text=tr(chat_id, "⬅️ Назад в профиль", "⬅️ Back to profile"),
+        callback_data="profile",
+    ))
+    return kb
+
+
+def show_public_reviews(chat_id: int, page: int = 0, call=None) -> None:
+    """Показывает общий рейтинг и максимум 15 последних проверенных оценок."""
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    cursor_local.execute(
+        "SELECT AVG(rating), COUNT(*) FROM reviews "
+        "WHERE order_id IS NOT NULL AND rating BETWEEN 1 AND 5"
+    )
+    summary = cursor_local.fetchone() or (None, 0)
+    average_rating = float(summary[0]) if summary[0] is not None else None
+    review_count = int(summary[1] or 0)
+    cursor_local.execute(
+        """
+        SELECT r.rating, r.comment, r.comment_visible, r.timestamp,
+               COALESCE(NULLIF(TRIM(u.first_name), ''), '')
+          FROM reviews AS r
+          LEFT JOIN users AS u ON u.chat_id = r.chat_id
+         WHERE r.order_id IS NOT NULL
+           AND r.rating BETWEEN 1 AND 5
+         ORDER BY r.timestamp DESC, r.review_id DESC
+         LIMIT ?
+        """,
+        (PUBLIC_REVIEW_LIMIT,),
+    )
+    rows = cursor_local.fetchall()
+    cursor_local.execute(
+        "SELECT rating, COUNT(*) FROM reviews "
+        "WHERE order_id IS NOT NULL AND rating BETWEEN 1 AND 5 "
+        "GROUP BY rating"
+    )
+    distribution = {int(rating): int(count) for rating, count in cursor_local.fetchall()}
+    cursor_local.close()
+    conn_local.close()
+
+    page_count = max((len(rows) + REVIEWS_PER_PAGE - 1) // REVIEWS_PER_PAGE, 1)
+    page = max(0, min(int(page), page_count - 1))
+    visible = rows[page * REVIEWS_PER_PAGE:(page + 1) * REVIEWS_PER_PAGE]
+
+    if average_rating is None:
+        text = tr(
+            chat_id,
+            "<b>⭐ Отзывы покупателей</b>\n\nОценок пока нет.",
+            "<b>⭐ Customer reviews</b>\n\nThere are no ratings yet.",
+        )
+    else:
+        heading = tr(
+            chat_id,
+            f"<b>⭐ {average_rating:.1f} из 5 · {review_count} оценок</b>",
+            f"<b>⭐ {average_rating:.1f} out of 5 · {review_count} ratings</b>",
+        )
+        scale = "\n".join(
+            f"{'★' * rating}{'☆' * (5 - rating)} — {distribution.get(rating, 0)}"
+            for rating in range(5, 0, -1)
+        )
+        blocks = [heading, scale]
+        if visible:
+            blocks.append(tr(chat_id, "<b>Последние отзывы</b>", "<b>Recent reviews</b>"))
+        for rating, comment, comment_visible, timestamp, first_name in visible:
+            display_name = str(first_name or "").strip() or tr(chat_id, "Покупатель", "Customer")
+            safe_name = html.escape(display_name[:40])
+            stars = "★" * int(rating) + "☆" * (5 - int(rating))
+            block = f"<b>{stars} {safe_name} · {review_date_text(timestamp)}</b>"
+            if comment and int(comment_visible or 0):
+                compact_comment = re.sub(r"\s+", " ", str(comment)).strip()[:350]
+                if compact_comment:
+                    block += f"\n{html.escape(compact_comment)}"
+            blocks.append(block)
+        text = "\n\n".join(blocks)
+
+    render_inline_screen(
+        chat_id,
+        text,
+        public_reviews_keyboard(chat_id, page, page_count),
+        call,
+        allow_media_edit=False,
+    )
+
+
 def show_payment_info(chat_id: int, call=None) -> None:
     """Показывает владельцу его закрытые Railway-реквизиты."""
     blocks = ["<b>💳 Мои платёжные реквизиты</b>"]
@@ -4934,6 +5401,19 @@ def handle_profile_history(call):
     init_user(call.from_user.id)
     bot.answer_callback_query(call.id)
     show_order_history(call.from_user.id, call)
+
+
+@bot.callback_query_handler(
+    func=lambda call: call.data and call.data.startswith("profile_reviews|")
+)
+def handle_profile_reviews(call):
+    init_user(call.from_user.id)
+    try:
+        page = int(call.data.split("|", 1)[1])
+    except (ValueError, IndexError):
+        page = 0
+    bot.answer_callback_query(call.id)
+    show_public_reviews(call.from_user.id, page, call)
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "profile_payment")
@@ -5306,6 +5786,10 @@ def delivered_payment_keyboard(
 ) -> types.InlineKeyboardMarkup:
     """Кнопки под сообщением о доставке."""
     kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton(
+        text=tr(chat_id, "⭐ Оценить заказ", "⭐ Rate the order"),
+        callback_data=f"review_start|{order_id}",
+    ))
     if proof_required:
         kb.add(types.InlineKeyboardButton(
             text=tr(chat_id, "📎 Отправить чек", "📎 Upload payment proof"),
@@ -5368,6 +5852,401 @@ def send_delivered_customer_message(
         chat_id,
         text,
         reply_markup=delivered_payment_keyboard(chat_id, order_id, proof_required),
+    )
+
+
+def review_rating_keyboard(order_id: int) -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=5)
+    kb.row(*[
+        types.InlineKeyboardButton(
+            text=f"{rating}⭐",
+            callback_data=f"review_rate|{order_id}|{rating}",
+        )
+        for rating in range(1, 6)
+    ])
+    return kb
+
+
+def review_comment_choice_keyboard(chat_id: int, order_id: int) -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton(
+        text=tr(chat_id, "✍️ Добавить комментарий", "✍️ Add a comment"),
+        callback_data=f"review_comment|{order_id}",
+    ))
+    kb.add(types.InlineKeyboardButton(
+        text=tr(chat_id, "Без комментария", "No comment"),
+        callback_data=f"review_skip|{order_id}",
+    ))
+    return kb
+
+
+def review_skip_text(chat_id: int) -> str:
+    return tr(chat_id, "Без комментария", "No comment")
+
+
+def review_reply_keyboard(chat_id: int) -> types.ReplyKeyboardMarkup:
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    kb.add(review_skip_text(chat_id))
+    return kb
+
+
+def review_order_row(order_id: int, chat_id: int):
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    cursor_local.execute(
+        "SELECT order_id, delivered_at FROM orders "
+        "WHERE order_id = ? AND chat_id = ?",
+        (order_id, chat_id),
+    )
+    row = cursor_local.fetchone()
+    cursor_local.close()
+    conn_local.close()
+    return row
+
+
+def review_moderation_keyboard(review_id: int, visible: bool) -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    if visible:
+        kb.add(types.InlineKeyboardButton(
+            text="🚫 Скрыть текст комментария",
+            callback_data=f"review_hide|{review_id}",
+        ))
+    else:
+        kb.add(types.InlineKeyboardButton(
+            text="↩️ Показать текст комментария",
+            callback_data=f"review_show|{review_id}",
+        ))
+    return kb
+
+
+def notify_owner_about_review(review_id: int) -> None:
+    """Присылает владельцу комментарий; оценка остаётся в рейтинге при скрытии текста."""
+    target_chat_id = PERSONAL_CHAT_ID or ADMIN_ID
+    if not target_chat_id:
+        return
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    cursor_local.execute(
+        """
+        SELECT r.order_id, r.rating, r.comment, r.comment_visible,
+               COALESCE(NULLIF(TRIM(u.first_name), ''), 'Покупатель')
+          FROM reviews AS r
+          LEFT JOIN users AS u ON u.chat_id = r.chat_id
+         WHERE r.review_id = ?
+        """,
+        (review_id,),
+    )
+    row = cursor_local.fetchone()
+    cursor_local.close()
+    conn_local.close()
+    if not row or not str(row[2] or "").strip():
+        return
+    order_id, rating, comment, visible, first_name = row
+    stars = "★" * int(rating) + "☆" * (5 - int(rating))
+    text = (
+        f"<b>⭐ Новый отзыв к заказу №{int(order_id)}</b>\n\n"
+        f"{stars} · {html.escape(str(first_name)[:40])}\n"
+        f"{html.escape(str(comment))}"
+    )
+    try:
+        bot.send_message(
+            target_chat_id,
+            text,
+            reply_markup=review_moderation_keyboard(review_id, bool(visible)),
+        )
+    except Exception as exc:
+        print(f"Review notification failed for review {review_id}: {exc}", flush=True)
+
+
+@ensure_user
+@bot.callback_query_handler(
+    func=lambda call: call.data and call.data.startswith("review_start|")
+)
+def handle_review_start(call):
+    chat_id = call.from_user.id
+    init_user(chat_id)
+    try:
+        order_id = int(call.data.split("|", 1)[1])
+    except (ValueError, IndexError):
+        return bot.answer_callback_query(call.id, "Data error", show_alert=True)
+    order_row = review_order_row(order_id, chat_id)
+    if not order_row or not order_row[1]:
+        return bot.answer_callback_query(
+            call.id,
+            tr(chat_id, "Этот заказ нельзя оценить.", "This order cannot be rated."),
+            show_alert=True,
+        )
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    cursor_local.execute("SELECT 1 FROM reviews WHERE order_id = ?", (order_id,))
+    already_reviewed = cursor_local.fetchone() is not None
+    cursor_local.close()
+    conn_local.close()
+    if already_reviewed:
+        return bot.answer_callback_query(
+            call.id,
+            tr(chat_id, "Вы уже оценили этот заказ.", "You have already rated this order."),
+            show_alert=True,
+        )
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        chat_id,
+        tr(
+            chat_id,
+            f"<b>Как вы оцените заказ №{order_id}?</b>",
+            f"<b>How would you rate order #{order_id}?</b>",
+        ),
+        reply_markup=review_rating_keyboard(order_id),
+    )
+
+
+@ensure_user
+@bot.callback_query_handler(
+    func=lambda call: call.data and call.data.startswith("review_rate|")
+)
+def handle_review_rating(call):
+    chat_id = call.from_user.id
+    init_user(chat_id)
+    try:
+        _, order_raw, rating_raw = call.data.split("|", 2)
+        order_id = int(order_raw)
+        rating = int(rating_raw)
+    except (ValueError, IndexError):
+        return bot.answer_callback_query(call.id, "Data error", show_alert=True)
+    if rating < 1 or rating > 5:
+        return bot.answer_callback_query(call.id, "Data error", show_alert=True)
+
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    try:
+        cursor_local.execute("BEGIN IMMEDIATE")
+        cursor_local.execute(
+            "SELECT delivered_at FROM orders WHERE order_id = ? AND chat_id = ?",
+            (order_id, chat_id),
+        )
+        order_row = cursor_local.fetchone()
+        if not order_row or not order_row[0]:
+            conn_local.rollback()
+            return bot.answer_callback_query(
+                call.id,
+                tr(chat_id, "Этот заказ нельзя оценить.", "This order cannot be rated."),
+                show_alert=True,
+            )
+        cursor_local.execute("SELECT 1 FROM reviews WHERE order_id = ?", (order_id,))
+        if cursor_local.fetchone():
+            conn_local.rollback()
+            return bot.answer_callback_query(
+                call.id,
+                tr(chat_id, "Вы уже оценили этот заказ.", "You have already rated this order."),
+                show_alert=True,
+            )
+        cursor_local.execute(
+            "INSERT INTO reviews "
+            "(order_id, chat_id, rating, comment, comment_visible, timestamp) "
+            "VALUES (?, ?, ?, NULL, 1, ?)",
+            (order_id, chat_id, rating, utc_now_iso()),
+        )
+        conn_local.commit()
+    except sqlite3.IntegrityError:
+        conn_local.rollback()
+        return bot.answer_callback_query(
+            call.id,
+            tr(chat_id, "Вы уже оценили этот заказ.", "You have already rated this order."),
+            show_alert=True,
+        )
+    finally:
+        cursor_local.close()
+        conn_local.close()
+
+    bot.answer_callback_query(call.id)
+    render_inline_screen(
+        chat_id,
+        tr(
+            chat_id,
+            f"<b>Спасибо! Ваша оценка: {rating}/5.</b>\n\nХотите добавить комментарий?",
+            f"<b>Thank you! Your rating: {rating}/5.</b>\n\nWould you like to add a comment?",
+        ),
+        review_comment_choice_keyboard(chat_id, order_id),
+        call,
+        allow_media_edit=False,
+    )
+
+
+@ensure_user
+@bot.callback_query_handler(
+    func=lambda call: call.data and call.data.startswith("review_comment|")
+)
+def handle_review_comment_prompt(call):
+    chat_id = call.from_user.id
+    init_user(chat_id)
+    try:
+        order_id = int(call.data.split("|", 1)[1])
+    except (ValueError, IndexError):
+        return bot.answer_callback_query(call.id, "Data error", show_alert=True)
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    cursor_local.execute(
+        "SELECT review_id FROM reviews WHERE order_id = ? AND chat_id = ?",
+        (order_id, chat_id),
+    )
+    review_row = cursor_local.fetchone()
+    cursor_local.close()
+    conn_local.close()
+    if not review_row:
+        return bot.answer_callback_query(call.id, "Review not found", show_alert=True)
+    user_data[chat_id]["awaiting_review_order_id"] = order_id
+    bot.answer_callback_query(call.id)
+    disable_inline_keyboard(call)
+    bot.send_message(
+        chat_id,
+        tr(
+            chat_id,
+            "Напишите короткий комментарий к заказу (до 500 символов):",
+            "Write a short comment about the order (up to 500 characters):",
+        ),
+        reply_markup=review_reply_keyboard(chat_id),
+    )
+
+
+@ensure_user
+@bot.callback_query_handler(
+    func=lambda call: call.data and call.data.startswith("review_skip|")
+)
+def handle_review_skip(call):
+    chat_id = call.from_user.id
+    init_user(chat_id)
+    try:
+        order_id = int(call.data.split("|", 1)[1])
+    except (ValueError, IndexError):
+        return bot.answer_callback_query(call.id, "Data error", show_alert=True)
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    cursor_local.execute(
+        "SELECT 1 FROM reviews WHERE order_id = ? AND chat_id = ?",
+        (order_id, chat_id),
+    )
+    exists = cursor_local.fetchone() is not None
+    cursor_local.close()
+    conn_local.close()
+    if not exists:
+        return bot.answer_callback_query(call.id, "Review not found", show_alert=True)
+    user_data[chat_id].pop("awaiting_review_order_id", None)
+    bot.answer_callback_query(call.id)
+    render_inline_screen(
+        chat_id,
+        tr(chat_id, "<b>Спасибо за вашу оценку!</b>", "<b>Thank you for your rating!</b>"),
+        back_to_main_keyboard(chat_id),
+        call,
+        allow_media_edit=False,
+    )
+
+
+@ensure_user
+@bot.message_handler(
+    func=lambda message: bool(
+        user_data.get(message.chat.id, {}).get("awaiting_review_order_id")
+    ),
+    content_types=['text'],
+)
+def handle_review_comment(message):
+    chat_id = message.chat.id
+    init_user(chat_id)
+    data = user_data[chat_id]
+    try:
+        order_id = int(data.get("awaiting_review_order_id"))
+    except (TypeError, ValueError):
+        data.pop("awaiting_review_order_id", None)
+        return
+    comment = str(message.text or "").strip()
+    if comment == review_skip_text(chat_id):
+        comment = ""
+    elif len(comment) > 500:
+        bot.send_message(
+            chat_id,
+            tr(
+                chat_id,
+                "Комментарий слишком длинный. Сократите его до 500 символов.",
+                "The comment is too long. Please shorten it to 500 characters.",
+            ),
+            reply_markup=review_reply_keyboard(chat_id),
+        )
+        return
+
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    cursor_local.execute(
+        "UPDATE reviews SET comment = ?, comment_visible = 1 "
+        "WHERE order_id = ? AND chat_id = ?",
+        (comment or None, order_id, chat_id),
+    )
+    updated = cursor_local.rowcount == 1
+    review_id = None
+    if updated:
+        cursor_local.execute("SELECT review_id FROM reviews WHERE order_id = ?", (order_id,))
+        row = cursor_local.fetchone()
+        review_id = int(row[0]) if row else None
+    conn_local.commit()
+    cursor_local.close()
+    conn_local.close()
+    data.pop("awaiting_review_order_id", None)
+    if not updated:
+        bot.send_message(
+            chat_id,
+            tr(chat_id, "Отзыв не найден.", "Review not found."),
+            reply_markup=types.ReplyKeyboardRemove(),
+        )
+        return
+    bot.send_message(
+        chat_id,
+        tr(
+            chat_id,
+            "Спасибо! Отзыв сохранён.",
+            "Thank you! Your review has been saved.",
+        ),
+        reply_markup=types.ReplyKeyboardRemove(),
+    )
+    if review_id is not None and comment:
+        notify_owner_about_review(review_id)
+    show_profile(chat_id)
+
+
+@bot.callback_query_handler(
+    func=lambda call: call.data and (
+        call.data.startswith("review_hide|") or call.data.startswith("review_show|")
+    )
+)
+def handle_review_comment_visibility(call):
+    if not is_owner(call.from_user.id):
+        return bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
+    try:
+        action, review_raw = call.data.split("|", 1)
+        review_id = int(review_raw)
+    except (ValueError, IndexError):
+        return bot.answer_callback_query(call.id, "Data error", show_alert=True)
+    visible = action == "review_show"
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    cursor_local.execute(
+        "UPDATE reviews SET comment_visible = ? WHERE review_id = ? AND comment IS NOT NULL",
+        (1 if visible else 0, review_id),
+    )
+    changed = cursor_local.rowcount == 1
+    conn_local.commit()
+    cursor_local.close()
+    conn_local.close()
+    if not changed:
+        return bot.answer_callback_query(call.id, "Review not found", show_alert=True)
+    try:
+        bot.edit_message_reply_markup(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=review_moderation_keyboard(review_id, visible),
+        )
+    except Exception as exc:
+        print(f"Review moderation keyboard update failed for {review_id}: {exc}", flush=True)
+    bot.answer_callback_query(
+        call.id,
+        "Комментарий показан" if visible else "Текст комментария скрыт",
     )
 
 
@@ -6423,6 +7302,13 @@ def universal_handler(message):
                 actual_tastes_models_screen(chat_id)
                 return
 
+            if text == "❓ Flavor Information":
+                data['edit_phase'] = 'choose_action'
+                data.pop('edit_cat', None)
+                user_data[chat_id] = data
+                flavor_info_models_screen(chat_id)
+                return
+
             if text == "🖼️ Add Category Picture":
                 data['edit_phase'] = 'choose_category_for_picture'
                 kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -7081,6 +7967,105 @@ def universal_handler(message):
             user_data[chat_id] = data
             return
 
+        # Массовое редактирование описаний и шкал вкуса выбранной модели.
+        if phase == 'replace_flavor_info':
+            if text == "⬅️ Back":
+                data['edit_phase'] = 'choose_action'
+                data.pop('edit_cat', None)
+                bot.send_message(
+                    chat_id,
+                    "Select another model:",
+                    reply_markup=types.ReplyKeyboardRemove(),
+                )
+                flavor_info_models_screen(chat_id)
+                user_data[chat_id] = data
+                return
+            if text == "❌ Cancel":
+                data['edit_phase'] = None
+                data.pop('edit_cat', None)
+                bot.send_message(
+                    chat_id,
+                    "Editing cancelled.",
+                    reply_markup=types.ReplyKeyboardRemove(),
+                )
+                bot.send_message(
+                    chat_id,
+                    t(chat_id, "choose_category"),
+                    reply_markup=get_inline_main_menu(chat_id),
+                )
+                user_data[chat_id] = data
+                return
+
+            category = data.get('edit_cat')
+            if category not in menu:
+                data['edit_phase'] = 'choose_action'
+                data.pop('edit_cat', None)
+                bot.send_message(
+                    chat_id,
+                    "This model no longer exists. Select a model again:",
+                    reply_markup=types.ReplyKeyboardRemove(),
+                )
+                flavor_info_models_screen(chat_id)
+                user_data[chat_id] = data
+                return
+
+            updates, errors = parse_flavor_info_payload(category, text)
+            if errors:
+                shown_errors = "\n".join(f"• {error}" for error in errors[:8])
+                if len(errors) > 8:
+                    shown_errors += f"\n• ...and {len(errors) - 8} more"
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("⬅️ Back", "❌ Cancel")
+                bot.send_message(
+                    chat_id,
+                    "Nothing was saved. Correct these lines and send the full template again:\n\n"
+                    f"{html.escape(shown_errors)}",
+                    reply_markup=kb,
+                )
+                return
+
+            category_snapshot = json.loads(json.dumps(menu[category], ensure_ascii=False))
+            try:
+                with menu_lock:
+                    for item, description_ru, description_en, sweet, cooling, sour in updates:
+                        item["description_ru"] = description_ru
+                        item["description_en"] = description_en
+                        item["taste_sweetness"] = sweet
+                        item["taste_cooling"] = cooling
+                        item["taste_sourness"] = sour
+                        item["taste_info_ready"] = True
+                    save_menu_safely()
+            except Exception as exc:
+                with menu_lock:
+                    menu[category] = category_snapshot
+                    try:
+                        save_menu_safely()
+                    except Exception as restore_exc:
+                        print(
+                            f"Flavor information restore failed for {category}: {restore_exc}",
+                            flush=True,
+                        )
+                print(f"Flavor information save failed for {category}: {exc}", flush=True)
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.add("⬅️ Back", "❌ Cancel")
+                bot.send_message(
+                    chat_id,
+                    "Could not save flavor information. Please send the template again.",
+                    reply_markup=kb,
+                )
+                return
+
+            data['edit_phase'] = 'choose_action'
+            data.pop('edit_cat', None)
+            user_data[chat_id] = data
+            bot.send_message(
+                chat_id,
+                f"✅ Flavor information saved for {html.escape(category)}. "
+                f"Updated: {len(updates)}.",
+                reply_markup=edit_action_keyboard(),
+            )
+            return
+
         # Полный список одной выбранной модели: один вкус в строке.
         if phase == 'replace_category_flavor_list':
             if text == "⬅️ Back":
@@ -7272,6 +8257,368 @@ def callback_no_points(call):
     show_order_review(chat_id, call)
 
 
+class CustomerCancelError(Exception):
+    """Ожидаемый отказ в самостоятельной отмене заказа."""
+
+
+def parse_utc_timestamp(value: str) -> datetime.datetime | None:
+    try:
+        parsed = datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+        return parsed.astimezone(datetime.timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def customer_cancel_rejection(order_id: int, chat_id: int) -> str | None:
+    """Возвращает причину запрета либо None, не меняя заказ."""
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    cursor_local.execute(
+        "SELECT chat_id, timestamp, order_status FROM orders WHERE order_id = ?",
+        (order_id,),
+    )
+    row = cursor_local.fetchone()
+    cursor_local.close()
+    conn_local.close()
+    if not row or int(row[0]) != int(chat_id):
+        return "not_found"
+    status = str(row[2] or "active")
+    if status == "omw":
+        return "courier_left"
+    if status != "active":
+        return "not_active"
+    created_at = parse_utc_timestamp(row[1])
+    if created_at is None:
+        return "expired"
+    deadline = created_at + datetime.timedelta(minutes=CUSTOMER_CANCEL_WINDOW_MINUTES)
+    if datetime.datetime.now(datetime.timezone.utc) > deadline:
+        return "expired"
+    return None
+
+
+def customer_cancel_error_text(chat_id: int, reason: str) -> str:
+    if reason == "courier_left":
+        return tr(
+            chat_id,
+            "Курьер уже выехал, поэтому заказ нельзя отменить в боте.",
+            "The courier is already on the way, so the order can no longer be cancelled in the bot.",
+        )
+    if reason == "expired":
+        return tr(
+            chat_id,
+            f"Прошло больше {CUSTOMER_CANCEL_WINDOW_MINUTES} минут. Автоматическая отмена уже недоступна.",
+            f"More than {CUSTOMER_CANCEL_WINDOW_MINUTES} minutes have passed. Automatic cancellation is no longer available.",
+        )
+    if reason == "not_active":
+        return tr(
+            chat_id,
+            "Этот заказ уже нельзя отменить.",
+            "This order can no longer be cancelled.",
+        )
+    return tr(
+        chat_id,
+        "Заказ уже отменён или не найден.",
+        "The order has already been cancelled or was not found.",
+    )
+
+
+def cancel_order_by_customer(order_id: int, expected_chat_id: int) -> dict:
+    """Атомарно отменяет активный заказ и восстанавливает склад, баллы и промокод."""
+    conn_local = None
+    cursor_local = None
+    menu_snapshot = None
+    stock_warnings = []
+    with menu_lock:
+        try:
+            conn_local = get_db_connection()
+            cursor_local = conn_local.cursor()
+            cursor_local.execute("BEGIN IMMEDIATE")
+            cursor_local.execute(
+                "SELECT chat_id, items_json, points_spent, points_earned, "
+                "timestamp, order_status, order_group_message_id "
+                "FROM orders WHERE order_id = ?",
+                (order_id,),
+            )
+            row = cursor_local.fetchone()
+            if not row or int(row[0]) != int(expected_chat_id):
+                raise CustomerCancelError("not_found")
+            (
+                user_chat_id,
+                items_json,
+                pts_spent,
+                pts_earned,
+                created_raw,
+                order_status,
+                group_message_id,
+            ) = row
+            status = str(order_status or "active")
+            if status == "omw":
+                raise CustomerCancelError("courier_left")
+            if status != "active":
+                raise CustomerCancelError("not_active")
+            created_at = parse_utc_timestamp(created_raw)
+            if created_at is None or datetime.datetime.now(datetime.timezone.utc) > (
+                created_at + datetime.timedelta(minutes=CUSTOMER_CANCEL_WINDOW_MINUTES)
+            ):
+                raise CustomerCancelError("expired")
+
+            items = json.loads(items_json or "[]")
+            if not isinstance(items, list):
+                raise ValueError("items_json is not a list")
+            cursor_local.execute(
+                "SELECT promo_id FROM promo_redemptions WHERE order_id = ?",
+                (order_id,),
+            )
+            promo_redemption = cursor_local.fetchone()
+            promo_restored = False
+            pts_spent = int(pts_spent or 0)
+            pts_earned = int(pts_earned or 0)
+
+            menu_snapshot = json.loads(json.dumps(menu, ensure_ascii=False))
+            for item in items:
+                if not isinstance(item, dict):
+                    stock_warnings.append("некорректная позиция")
+                    continue
+                category = item.get("category")
+                flavor = item.get("flavor")
+                category_data = menu.get(category)
+                if not category_data or not isinstance(category_data.get("flavors"), list):
+                    stock_warnings.append(f"категория {category!r} не найдена")
+                    continue
+                if not flavor:
+                    stock_warnings.append(f"в позиции {category!r} нет вкуса")
+                    continue
+                try:
+                    quantity = max(int(item.get("quantity", item.get("qty", 1)) or 1), 1)
+                except (TypeError, ValueError):
+                    quantity = 1
+                found_item = next(
+                    (
+                        menu_item
+                        for menu_item in category_data["flavors"]
+                        if menu_item.get("flavor") == flavor
+                    ),
+                    None,
+                )
+                if found_item is not None:
+                    found_item["stock"] = int(found_item.get("stock", 0) or 0) + quantity
+                else:
+                    restored_item = blank_flavor_item(str(flavor))
+                    restored_item["stock"] = quantity
+                    restored_item["emoji"] = item.get("emoji", "")
+                    category_data["flavors"].append(restored_item)
+
+            save_menu_safely()
+            if pts_spent:
+                cursor_local.execute(
+                    "UPDATE users SET points = points + ? WHERE chat_id = ?",
+                    (pts_spent, user_chat_id),
+                )
+            if pts_earned:
+                cursor_local.execute(
+                    "UPDATE users SET points = points - ? WHERE chat_id = ?",
+                    (pts_earned, user_chat_id),
+                )
+            if promo_redemption:
+                promo_id = int(promo_redemption[0])
+                cursor_local.execute(
+                    "DELETE FROM promo_redemptions WHERE order_id = ?",
+                    (order_id,),
+                )
+                cursor_local.execute(
+                    "UPDATE promo_codes "
+                    "SET used_count = CASE WHEN used_count > 0 THEN used_count - 1 ELSE 0 END, "
+                    "active = CASE "
+                    "WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 0 "
+                    "WHEN (CASE WHEN used_count > 0 THEN used_count - 1 ELSE 0 END) >= usage_limit THEN 0 "
+                    "ELSE 1 END WHERE promo_id = ?",
+                    (utc_now_iso(), promo_id),
+                )
+                promo_restored = cursor_local.rowcount == 1
+            cursor_local.execute("DELETE FROM orders WHERE order_id = ?", (order_id,))
+            if cursor_local.rowcount != 1:
+                raise RuntimeError("order deletion did not affect exactly one row")
+            conn_local.commit()
+            return {
+                "chat_id": int(user_chat_id),
+                "points_spent": pts_spent,
+                "points_earned": pts_earned,
+                "promo_restored": promo_restored,
+                "group_message_id": int(group_message_id) if group_message_id else None,
+                "stock_warnings": stock_warnings,
+            }
+        except Exception:
+            if conn_local is not None:
+                try:
+                    conn_local.rollback()
+                except Exception:
+                    pass
+            if menu_snapshot is not None:
+                menu.clear()
+                menu.update(menu_snapshot)
+                try:
+                    save_menu_safely()
+                except Exception as restore_exc:
+                    print(
+                        f"Customer cancel {order_id}: menu rollback failed: {restore_exc}",
+                        flush=True,
+                    )
+            raise
+        finally:
+            if cursor_local is not None:
+                cursor_local.close()
+            if conn_local is not None:
+                conn_local.close()
+
+
+@ensure_user
+@bot.callback_query_handler(
+    func=lambda call: call.data and call.data.startswith("customer_cancel_request|")
+)
+def handle_customer_cancel_request(call):
+    chat_id = call.from_user.id
+    try:
+        order_id = int(call.data.split("|", 1)[1])
+    except (ValueError, IndexError):
+        return bot.answer_callback_query(call.id, "Data error", show_alert=True)
+    rejection = customer_cancel_rejection(order_id, chat_id)
+    if rejection:
+        try:
+            bot.edit_message_reply_markup(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=back_to_main_keyboard(chat_id),
+            )
+        except Exception:
+            pass
+        return bot.answer_callback_query(
+            call.id,
+            customer_cancel_error_text(chat_id, rejection),
+            show_alert=True,
+        )
+    bot.answer_callback_query(call.id)
+    bot.edit_message_reply_markup(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=customer_order_keyboard(chat_id, order_id, confirm_cancel=True),
+    )
+
+
+@ensure_user
+@bot.callback_query_handler(
+    func=lambda call: call.data and call.data.startswith("customer_cancel_back|")
+)
+def handle_customer_cancel_back(call):
+    chat_id = call.from_user.id
+    try:
+        order_id = int(call.data.split("|", 1)[1])
+    except (ValueError, IndexError):
+        return bot.answer_callback_query(call.id, "Data error", show_alert=True)
+    bot.answer_callback_query(call.id)
+    bot.edit_message_reply_markup(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=customer_order_keyboard(chat_id, order_id),
+    )
+
+
+@ensure_user
+@bot.callback_query_handler(
+    func=lambda call: call.data and call.data.startswith("customer_cancel_confirm|")
+)
+def handle_customer_cancel_confirm(call):
+    chat_id = call.from_user.id
+    try:
+        order_id = int(call.data.split("|", 1)[1])
+    except (ValueError, IndexError):
+        return bot.answer_callback_query(call.id, "Data error", show_alert=True)
+    try:
+        result = cancel_order_by_customer(order_id, chat_id)
+    except CustomerCancelError as exc:
+        try:
+            bot.edit_message_reply_markup(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=back_to_main_keyboard(chat_id),
+            )
+        except Exception:
+            pass
+        return bot.answer_callback_query(
+            call.id,
+            customer_cancel_error_text(chat_id, str(exc)),
+            show_alert=True,
+        )
+    except Exception as exc:
+        print(
+            f"Customer cancel order {order_id} failed: {type(exc).__name__}: {exc}",
+            flush=True,
+        )
+        return bot.answer_callback_query(
+            call.id,
+            tr(
+                chat_id,
+                "Не удалось отменить заказ. Попробуйте ещё раз.",
+                "The order could not be cancelled. Please try again.",
+            ),
+            show_alert=True,
+        )
+
+    try:
+        bot.edit_message_reply_markup(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=None,
+        )
+    except Exception:
+        pass
+    points_line = ""
+    if result["points_spent"]:
+        points_line = tr(
+            chat_id,
+            f"\nВозвращено баллов: {result['points_spent']}.",
+            f"\nPoints returned: {result['points_spent']}.",
+        )
+    promo_line = ""
+    if result["promo_restored"]:
+        promo_line = tr(
+            chat_id,
+            "\nИспользование промокода восстановлено.",
+            "\nThe promo-code use has been restored.",
+        )
+    bot.send_message(
+        chat_id,
+        tr(
+            chat_id,
+            f"<b>❌ Заказ №{order_id} отменён.</b>",
+            f"<b>❌ Order #{order_id} has been cancelled.</b>",
+        ) + points_line + promo_line,
+        reply_markup=back_to_main_keyboard(chat_id),
+    )
+    group_message_id = result.get("group_message_id")
+    if group_message_id:
+        try:
+            bot.edit_message_reply_markup(
+                chat_id=GROUP_CHAT_ID,
+                message_id=group_message_id,
+                reply_markup=None,
+            )
+        except Exception as exc:
+            print(f"Cancelled group keyboard cleanup failed for order {order_id}: {exc}", flush=True)
+    try:
+        bot.send_message(GROUP_CHAT_ID, f"❌ Order #{order_id} was cancelled by the customer.")
+    except Exception as exc:
+        print(f"Customer cancellation group notice failed for order {order_id}: {exc}", flush=True)
+    if result.get("stock_warnings"):
+        print(
+            f"Customer cancel order {order_id} stock warnings: "
+            f"{'; '.join(result['stock_warnings'])}",
+            flush=True,
+        )
+    bot.answer_callback_query(call.id, tr(chat_id, "Заказ отменён", "Order cancelled"))
+
+
 
 @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("cancel_order|"))
 def handle_cancel_order(call):
@@ -7298,7 +8645,8 @@ def handle_cancel_order(call):
         cursor = conn.cursor()
         cursor.execute("BEGIN IMMEDIATE")
         cursor.execute(
-            "SELECT chat_id, items_json, points_spent, points_earned "
+            "SELECT chat_id, items_json, points_spent, points_earned, "
+            "order_customer_message_id "
             "FROM orders WHERE order_id = ?",
             (order_id,),
         )
@@ -7311,7 +8659,7 @@ def handle_cancel_order(call):
                 show_alert=True,
             )
 
-        user_chat_id, items_json, pts_spent, pts_earned = row
+        user_chat_id, items_json, pts_spent, pts_earned, customer_message_id = row
         items = json.loads(items_json or "[]")
         if not isinstance(items, list):
             raise ValueError("items_json is not a list")
@@ -7356,15 +8704,10 @@ def handle_cancel_order(call):
             if found_item is not None:
                 found_item["stock"] = int(found_item.get("stock", 0) or 0) + quantity
             else:
-                category_data["flavors"].append({
-                    "flavor": flavor,
-                    "stock": quantity,
-                    "emoji": item.get("emoji", ""),
-                    "tags": [],
-                    "description_ru": "",
-                    "description_en": "",
-                    "photo_url": "",
-                })
+                restored_item = blank_flavor_item(str(flavor))
+                restored_item["stock"] = quantity
+                restored_item["emoji"] = item.get("emoji", "")
+                category_data["flavors"].append(restored_item)
 
         save_menu_safely()
 
@@ -7473,6 +8816,19 @@ def handle_cancel_order(call):
             f"Cancel order {order_id}: customer notification failed: {exc}",
             flush=True,
         )
+
+    if customer_message_id:
+        try:
+            bot.edit_message_reply_markup(
+                chat_id=user_chat_id,
+                message_id=int(customer_message_id),
+                reply_markup=None,
+            )
+        except Exception as exc:
+            print(
+                f"Cancel order {order_id}: customer keyboard cleanup failed: {exc}",
+                flush=True,
+            )
 
     try:
         bot.edit_message_reply_markup(
@@ -7589,7 +8945,8 @@ def handle_deliver_currency(call: types.CallbackQuery):
             )
 
         cur.execute(
-            "SELECT chat_id, items_json, total FROM orders WHERE order_id = ?",
+            "SELECT chat_id, items_json, total, order_customer_message_id "
+            "FROM orders WHERE order_id = ?",
             (order_id,),
         )
         row = cur.fetchone()
@@ -7599,6 +8956,7 @@ def handle_deliver_currency(call: types.CallbackQuery):
 
         customer_chat_id = int(row[0])
         items = json.loads(row[1] or "[]")
+        customer_order_message_id = int(row[3]) if row[3] else None
         if not isinstance(items, list):
             raise ValueError("items_json is not a list")
         qty = len(items)
@@ -7623,7 +8981,8 @@ def handle_deliver_currency(call: types.CallbackQuery):
             UPDATE orders
                SET delivery_currency = ?,
                    delivered_at = ?,
-                   payment_status = ?
+                   payment_status = ?,
+                   order_status = 'delivered'
              WHERE order_id = ?
             """,
             (currency, now, payment_status, order_id),
@@ -7642,6 +9001,19 @@ def handle_deliver_currency(call: types.CallbackQuery):
     finally:
         cur.close()
         conn.close()
+
+    if customer_order_message_id:
+        try:
+            bot.edit_message_reply_markup(
+                chat_id=customer_chat_id,
+                message_id=customer_order_message_id,
+                reply_markup=back_to_main_keyboard(customer_chat_id),
+            )
+        except Exception as exc:
+            print(
+                f"Delivered customer cancel button cleanup failed for order {order_id}: {exc}",
+                flush=True,
+            )
 
     # Обновляем текст и убираем старые статусы
     text = call.message.text or ""
@@ -7747,6 +9119,67 @@ def handle_courier_on_way(call):
 
     order_id = int(parts[1])
     user_chat_id = int(parts[2])
+
+    customer_order_message_id = None
+    conn_local = get_db_connection()
+    cursor_local = conn_local.cursor()
+    try:
+        cursor_local.execute("BEGIN IMMEDIATE")
+        cursor_local.execute(
+            "UPDATE orders SET order_status = 'omw' "
+            "WHERE order_id = ? AND chat_id = ? AND order_status = 'active'",
+            (order_id, user_chat_id),
+        )
+        if cursor_local.rowcount != 1:
+            cursor_local.execute(
+                "SELECT order_status FROM orders WHERE order_id = ? AND chat_id = ?",
+                (order_id, user_chat_id),
+            )
+            state_row = cursor_local.fetchone()
+            conn_local.rollback()
+            if not state_row:
+                return bot.answer_callback_query(call.id, "Order not found", show_alert=True)
+            if str(state_row[0]) == "omw":
+                return bot.answer_callback_query(
+                    call.id,
+                    "Courier notification was already sent.",
+                    show_alert=True,
+                )
+            return bot.answer_callback_query(
+                call.id,
+                "This order is no longer active.",
+                show_alert=True,
+            )
+        cursor_local.execute(
+            "SELECT order_customer_message_id FROM orders WHERE order_id = ?",
+            (order_id,),
+        )
+        message_row = cursor_local.fetchone()
+        customer_order_message_id = (
+            int(message_row[0]) if message_row and message_row[0] else None
+        )
+        conn_local.commit()
+    except Exception as exc:
+        conn_local.rollback()
+        print(f"OMW state update failed for order {order_id}: {exc}", flush=True)
+        return bot.answer_callback_query(
+            call.id,
+            "Could not update the order. Try again.",
+            show_alert=True,
+        )
+    finally:
+        cursor_local.close()
+        conn_local.close()
+
+    if customer_order_message_id:
+        try:
+            bot.edit_message_reply_markup(
+                chat_id=user_chat_id,
+                message_id=customer_order_message_id,
+                reply_markup=back_to_main_keyboard(user_chat_id),
+            )
+        except Exception as exc:
+            print(f"OMW customer cancel button cleanup failed for order {order_id}: {exc}", flush=True)
 
     # 1️⃣ Уведомляем клиента
     init_user(user_chat_id)
