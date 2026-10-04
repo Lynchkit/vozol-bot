@@ -64,7 +64,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.10.04-cancel-reviews-flavor-info-v25"
+BOT_VERSION = "2026.10.04-clean-flavor-cards-v26"
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
 print("BOT_VERSION =", BOT_VERSION, flush=True)
@@ -1490,16 +1490,10 @@ def get_inline_flavors(chat_id: int, cat: str) -> types.InlineKeyboardMarkup:
         stock_unit = tr(chat_id, "шт", "pcs")
         label = f"{emoji} {flavor}{rating_str} · {stock} {stock_unit}"
         token = product_token(cat, flavor)
-        kb.row(
-            types.InlineKeyboardButton(
-                text=label,
-                callback_data=f"product|{token}",
-            ),
-            types.InlineKeyboardButton(
-                text="❓",
-                callback_data=f"flavor_info|{token}",
-            ),
-        )
+        kb.add(types.InlineKeyboardButton(
+            text=label,
+            callback_data=f"product|{token}",
+        ))
 
     kb.add(types.InlineKeyboardButton(
         text=nav_text(chat_id, "models"),
@@ -2533,7 +2527,12 @@ def handle_flavor(call):
     in_cart = cart_quantity(chat_id, cat, flavor)
     bot.answer_callback_query(call.id)
 
-    desc = item.get(f"description_{user_data[chat_id]['lang']}", "")
+    language = user_data[chat_id]["lang"]
+    desc = str(item.get(f"description_{language}", "") or "").strip()
+    if not desc:
+        fallback_key = "description_en" if language == "ru" else "description_ru"
+        desc = str(item.get(fallback_key, "") or "").strip()
+    info_ready = bool(item.get("taste_info_ready")) or bool(desc)
     price_all = accepted_price_text(chat_id, price, 1)
     lines = [
         f"<b>{html.escape(str(flavor))}</b>",
@@ -2541,7 +2540,17 @@ def handle_flavor(call):
         "",
     ]
     if desc:
-        lines.extend([html.escape(str(desc)), ""])
+        lines.extend([html.escape(desc), ""])
+    if info_ready:
+        sweet = taste_scale_value(item, "taste_sweetness")
+        cooling = taste_scale_value(item, "taste_cooling")
+        sour = taste_scale_value(item, "taste_sourness")
+        lines.extend([
+            tr(chat_id, f"🍬 Сладость: {sweet}/5", f"🍬 Sweetness: {sweet}/5"),
+            tr(chat_id, f"🧊 Холодок: {cooling}/5", f"🧊 Cooling: {cooling}/5"),
+            tr(chat_id, f"🍋 Кислинка: {sour}/5", f"🍋 Sourness: {sour}/5"),
+            "",
+        ])
     lines.extend([
         tr(chat_id, f"Цена: <b>{price_all}</b>", f"Price: <b>{price_all}</b>"),
         tr(chat_id, f"В наличии: {stock} шт.", f"In stock: {stock} pcs"),
