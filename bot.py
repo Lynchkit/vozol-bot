@@ -64,7 +64,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.10.05-review-exit-v37"
+BOT_VERSION = "2026.10.05-clear-reviews-v38"
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
 print("BOT_VERSION =", BOT_VERSION, flush=True)
@@ -6089,6 +6089,99 @@ def review_reply_keyboard(chat_id: int) -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add(review_skip_text(chat_id))
     return kb
+
+
+def clear_reviews_confirmation_keyboard() -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton(
+            text="🗑 Да, удалить все",
+            callback_data="clear_reviews_confirm",
+        ),
+        types.InlineKeyboardButton(
+            text="❌ Отмена",
+            callback_data="clear_reviews_cancel",
+        ),
+    )
+    return kb
+
+
+@bot.message_handler(commands=["clearreviews"])
+def cmd_clear_reviews(message):
+    """Запрашивает подтверждение полного удаления оценок и комментариев."""
+    if not is_owner(message.from_user.id) or message.chat.type != "private":
+        return bot.reply_to(message, "У вас нет доступа к этой команде.")
+
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    cursor.execute("SELECT COUNT(*) FROM reviews")
+    review_count = int(cursor.fetchone()[0] or 0)
+    cursor.close()
+    connection.close()
+
+    if review_count == 0:
+        return bot.reply_to(message, "Отзывы уже отсутствуют.")
+
+    bot.send_message(
+        message.chat.id,
+        f"<b>Удалить все отзывы?</b>\n\n"
+        f"Будут безвозвратно удалены оценки и комментарии: <b>{review_count}</b>.",
+        reply_markup=clear_reviews_confirmation_keyboard(),
+    )
+
+
+def reject_clear_reviews_callback(call) -> bool:
+    if is_owner(call.from_user.id) and call.message.chat.type == "private":
+        return False
+    bot.answer_callback_query(call.id, "У вас нет доступа.", show_alert=True)
+    return True
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "clear_reviews_confirm")
+def handle_clear_reviews_confirm(call):
+    if reject_clear_reviews_callback(call):
+        return
+
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("BEGIN IMMEDIATE")
+        cursor.execute("SELECT COUNT(*) FROM reviews")
+        review_count = int(cursor.fetchone()[0] or 0)
+        cursor.execute("DELETE FROM reviews")
+        connection.commit()
+    except sqlite3.Error as exc:
+        connection.rollback()
+        print(f"Clear reviews failed: {exc}", flush=True)
+        return bot.answer_callback_query(
+            call.id,
+            "Не удалось удалить отзывы. Ошибка записана в Railway Logs.",
+            show_alert=True,
+        )
+    finally:
+        cursor.close()
+        connection.close()
+
+    bot.edit_message_text(
+        f"✅ Все отзывы удалены: <b>{review_count}</b>.",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=None,
+    )
+    bot.answer_callback_query(call.id, "Отзывы удалены")
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "clear_reviews_cancel")
+def handle_clear_reviews_cancel(call):
+    if reject_clear_reviews_callback(call):
+        return
+    bot.edit_message_text(
+        "Очистка отзывов отменена.",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=None,
+    )
+    bot.answer_callback_query(call.id, "Отменено")
 
 
 def review_order_row(order_id: int, chat_id: int):
