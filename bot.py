@@ -64,7 +64,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.10.05-saved-payment-method-v36"
+BOT_VERSION = "2026.10.05-review-exit-v37"
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
 print("BOT_VERSION =", BOT_VERSION, flush=True)
@@ -6052,7 +6052,7 @@ def send_delivered_customer_message(
     )
 
 
-def review_rating_keyboard(order_id: int) -> types.InlineKeyboardMarkup:
+def review_rating_keyboard(chat_id: int, order_id: int) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=5)
     kb.row(*[
         types.InlineKeyboardButton(
@@ -6061,6 +6061,10 @@ def review_rating_keyboard(order_id: int) -> types.InlineKeyboardMarkup:
         )
         for rating in range(1, 6)
     ])
+    kb.add(types.InlineKeyboardButton(
+        text=nav_text(chat_id, "menu"),
+        callback_data="go_back_to_categories",
+    ))
     return kb
 
 
@@ -6211,7 +6215,7 @@ def handle_review_start(call):
             f"<b>Как вы оцените заказ №{order_id}?</b>",
             f"<b>How would you rate order #{order_id}?</b>",
         ),
-        reply_markup=review_rating_keyboard(order_id),
+        reply_markup=review_rating_keyboard(chat_id, order_id),
     )
 
 
