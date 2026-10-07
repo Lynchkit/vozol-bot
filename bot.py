@@ -68,7 +68,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.10.07-live-delivery-eta-v41"
+BOT_VERSION = "2026.10.07-delivery-group-cleanup-v42"
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
@@ -428,6 +428,25 @@ cursor_init.executescript("""
         purpose TEXT NOT NULL,
         PRIMARY KEY(chat_id, message_id)
     );
+    CREATE TABLE IF NOT EXISTS delivery_group_messages (
+        chat_id INTEGER NOT NULL,
+        message_id INTEGER NOT NULL,
+        order_id INTEGER,
+        kind TEXT NOT NULL,
+        is_live INTEGER NOT NULL DEFAULT 0,
+        fulfilled INTEGER NOT NULL DEFAULT 0,
+        message_date REAL,
+        first_seen_at REAL NOT NULL,
+        delete_after REAL NOT NULL,
+        delete_status TEXT NOT NULL DEFAULT 'pending',
+        next_attempt_at REAL NOT NULL DEFAULT 0,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        lease_token TEXT,
+        lease_until REAL NOT NULL DEFAULT 0,
+        PRIMARY KEY(chat_id, message_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_delivery_group_cleanup
+        ON delivery_group_messages(delete_status, next_attempt_at, lease_until);
     CREATE TABLE IF NOT EXISTS delivery_api_gate (
         gate_id INTEGER PRIMARY KEY CHECK(gate_id = 1),
         lease_token TEXT,
@@ -450,6 +469,24 @@ cursor_init.executescript("""
     END;
 """)
 
+# Older v41 rows have known message IDs but no original send dates. Keep
+# unresolved prompts during delivery, and clean known messages on completion.
+cleanup_migration_now = time.time()
+cursor_init.execute(
+    "INSERT OR IGNORE INTO delivery_group_messages "
+    "(chat_id, message_id, order_id, kind, first_seen_at, delete_after) "
+    "SELECT p.chat_id, p.message_id, p.order_id, p.purpose || '_prompt', ?, ? "
+    "FROM delivery_tracking_prompts p WHERE p.chat_id = ?",
+    (cleanup_migration_now, cleanup_migration_now + 10, GROUP_CHAT_ID),
+)
+cursor_init.execute(
+    "INSERT OR IGNORE INTO delivery_group_messages "
+    "(chat_id, message_id, order_id, kind, is_live, first_seen_at, delete_after) "
+    "SELECT courier_chat_id, courier_message_id, order_id, 'courier_location', "
+    "CASE WHEN live_until IS NULL THEN 0 ELSE 1 END, ?, ? "
+    "FROM delivery_tracking WHERE courier_chat_id = ? AND courier_message_id IS NOT NULL",
+    (cleanup_migration_now, cleanup_migration_now + 10, GROUP_CHAT_ID),
+)
 
 conn_init.commit()
 cursor_init.close()
@@ -1103,6 +1140,7 @@ DELIVERY_MAX_ACCURACY = 100
 DELIVERY_ROUTE_LEASE_SECONDS = 90
 _delivery_worker_lock = threading.Lock()
 _delivery_lifecycle_lock = threading.RLock()
+_delivery_cleanup_lock = threading.Lock()
 
 
 def delivery_lifecycle_guard(handler):
@@ -1186,6 +1224,235 @@ def delivery_location_fresh(row: dict, now: float) -> bool:
     return accuracy is None or 0 <= float(accuracy) <= DELIVERY_MAX_ACCURACY
 
 
+def delivery_remember_group_message(order_id, message_id: int, kind: str,
+                                    message_date=None, is_live: bool = False) -> None:
+    """Register only delivery service messages; never scan/delete chat history."""
+    allowed = {'courier_prompt', 'destination_prompt', 'candidate_prompt', 'ack',
+               'courier_location', 'destination_location', 'notice', 'hint'}
+    if kind not in allowed:
+        return
+    now = time.time()
+    conn = None
+    try:
+        conn = get_db_connection()
+        # Refuse the order card even if a caller accidentally registers it.
+        card = conn.execute(
+            "SELECT 1 FROM delivery_tracking WHERE group_order_message_id = ? "
+            "UNION ALL SELECT 1 FROM orders WHERE order_group_message_id = ? LIMIT 1",
+            (message_id, message_id),
+        ).fetchone()
+        if card:
+            return
+        conn.execute(
+            "INSERT INTO delivery_group_messages "
+            "(chat_id, message_id, order_id, kind, is_live, message_date, first_seen_at, delete_after) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(chat_id, message_id) DO UPDATE SET is_live = excluded.is_live",
+            (GROUP_CHAT_ID, message_id, order_id, kind, int(is_live),
+             float(message_date) if message_date is not None else None, now, now + 10),
+        )
+        conn.commit()
+    except Exception as exc:
+        # Cleanup failures must not interrupt checkout or delivery tracking.
+        print(f"Delivery cleanup registration: {type(exc).__name__}", flush=True)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def delivery_group_send(order_id, text: str, kind: str, **kwargs):
+    message = bot.send_message(GROUP_CHAT_ID, text, **kwargs)
+    delivery_remember_group_message(order_id, message.message_id, kind, getattr(message, 'date', None))
+    return message
+
+
+def delivery_fulfill_group_prompts(order_id: int, purpose: str) -> None:
+    conn = None
+    try:
+        conn = get_db_connection()
+        conn.execute(
+            "UPDATE delivery_group_messages SET fulfilled = 1 "
+            "WHERE order_id = ? AND kind = ? AND delete_status = 'pending'",
+            (order_id, purpose + '_prompt'),
+        )
+        conn.commit()
+    except Exception as exc:
+        print(f"Delivery cleanup step: {type(exc).__name__}", flush=True)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def delivery_group_message_ready(message: dict, row: dict | None, now: float) -> bool:
+    if message['chat_id'] != GROUP_CHAT_ID or now < message['delete_after']:
+        return False
+    if message['kind'] == 'hint' and message['order_id'] is None:
+        return True
+    if row is None or message['message_id'] == row['group_order_message_id']:
+        return False
+    if row['state'] == 'stopped':
+        # Delivery failure warnings remain useful after completion.
+        return message['kind'] != 'notice'
+    if row['state'] == 'arrived' and row['arrival_notification_status'] == 'sent':
+        return message['kind'] != 'notice'
+    if message['kind'] == 'ack':
+        return True
+    if message['kind'] in ('destination_prompt', 'candidate_prompt', 'destination_location'):
+        return bool(row['destination_confirmed'])
+    started = any(row[column] == 'sent' for column in
+                  ('initial_notification_status', 'five_min_notification_status', 'arrival_notification_status'))
+    if message['kind'] == 'courier_prompt':
+        return bool(message['fulfilled']) and started
+    if message['kind'] == 'courier_location':
+        if message['message_id'] != row['courier_message_id']:
+            return True  # Superseded by a newer accepted courier message.
+        if row['live_until'] is not None and row['live_until'] > now:
+            return False  # Keep the message receiving edited_message updates.
+        return started
+    if message['kind'] == 'notice':
+        uncertain = any(row[column] in ('claimed', 'uncertain') for column in
+                        ('initial_notification_status', 'five_min_notification_status', 'arrival_notification_status'))
+        # A fresh location alone does not prove that a key/address/API error
+        # was resolved. Require a successful route computed after the warning.
+        recovered = (row['state'] == 'tracking' and row['destination_confirmed']
+                     and row['eta_at'] is not None and row['eta_at'] > message['first_seen_at']
+                     and delivery_location_fresh(row, now))
+        return started and recovered and row['last_admin_notice'] is None and not uncertain
+    return False
+
+
+def delivery_cleanup_warning() -> None:
+    key = f'delivery_cleanup_permission_notice_{GROUP_CHAT_ID}'
+    conn = get_db_connection()
+    try:
+        changed = conn.execute(
+            'INSERT OR IGNORE INTO bot_settings(setting_key, setting_value, updated_at) VALUES (?, ?, ?)',
+            (key, '1', utc_now_iso()),
+        ).rowcount
+        conn.commit()
+        if changed != 1:
+            return
+    finally:
+        conn.close()
+    try:
+        bot.send_message(
+            GROUP_CHAT_ID,
+            "⚠️ Telegram не разрешил удалить часть служебных сообщений. "
+            "Проверьте право администратора «Удалять сообщения» у бота. "
+            "Удаление сообщений старше 48 часов ограничено Telegram. "
+            "Отслеживание заказа продолжает работать.",
+            timeout=10,
+        )
+    except Exception as exc:
+        print(f"Delivery cleanup warning: {type(exc).__name__}", flush=True)
+
+
+def delivery_group_cleanup_tick() -> None:
+    """Separate job: persistent retry queue, bounded requests, protected live pin."""
+    if not _delivery_cleanup_lock.acquire(blocking=False):
+        return
+    try:
+        now = time.time()
+        pause_key = f'delivery_cleanup_pause_{GROUP_CHAT_ID}'
+        if float(get_bot_setting(pause_key) or 0) > now:
+            return
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        try:
+            pending = [dict(row) for row in conn.execute(
+                "SELECT * FROM delivery_group_messages WHERE chat_id = ? "
+                "AND delete_status = 'pending' AND next_attempt_at <= ? AND lease_until <= ? "
+                "ORDER BY first_seen_at, message_id", (GROUP_CHAT_ID, now, now),
+            ).fetchall()]
+        finally:
+            conn.close()
+        attempts = 0
+        for message in pending:
+            if attempts >= 10:
+                break
+            with _delivery_lifecycle_lock:
+                conn = get_db_connection()
+                conn.row_factory = sqlite3.Row
+                try:
+                    conn.execute('BEGIN IMMEDIATE')
+                    raw = conn.execute(
+                        'SELECT * FROM delivery_tracking WHERE order_id = ?', (message['order_id'],),
+                    ).fetchone()
+                    row = dict(raw) if raw else None
+                    card = conn.execute(
+                        'SELECT 1 FROM orders WHERE order_group_message_id = ? LIMIT 1',
+                        (message['message_id'],),
+                    ).fetchone()
+                    if card or (row and message['message_id'] == row['group_order_message_id']):
+                        conn.execute("UPDATE delivery_group_messages SET delete_status = 'protected' WHERE chat_id = ? AND message_id = ?",
+                                     (GROUP_CHAT_ID, message['message_id']))
+                        conn.commit()
+                        continue
+                    now = time.time()
+                    sent_at = message['message_date']
+                    # With unknown legacy dates, first_seen_at is an upper bound
+                    # on send time. The extra 30 s also covers accepted clock skew.
+                    age_limit = 48 * 3600 + (30 if sent_at is None else 0)
+                    too_old = now - (sent_at if sent_at is not None else message['first_seen_at']) >= age_limit
+                    if too_old:
+                        conn.execute("UPDATE delivery_group_messages SET delete_status = 'expired' WHERE chat_id = ? AND message_id = ?",
+                                     (GROUP_CHAT_ID, message['message_id']))
+                        conn.commit()
+                        continue
+                    if not delivery_group_message_ready(message, row, now):
+                        conn.rollback()
+                        continue
+                    token = uuid.uuid4().hex
+                    changed = conn.execute(
+                        "UPDATE delivery_group_messages SET lease_token = ?, lease_until = ?, attempts = attempts + 1 "
+                        "WHERE chat_id = ? AND message_id = ? AND delete_status = 'pending' "
+                        "AND next_attempt_at <= ? AND lease_until <= ?",
+                        (token, now + 45, GROUP_CHAT_ID, message['message_id'], now, now),
+                    ).rowcount
+                    conn.commit()
+                    if changed != 1:
+                        continue
+                finally:
+                    conn.close()
+                attempts += 1
+                deleted, retry_after, permission_error = False, 60, False
+                try:
+                    deleted = bot.delete_message(GROUP_CHAT_ID, message['message_id'], timeout=10) is True
+                except Exception as exc:
+                    result = getattr(exc, 'result_json', None) or {}
+                    if not isinstance(result, dict):
+                        result = {}
+                    code = getattr(exc, 'error_code', None) or result.get('error_code')
+                    description = str(getattr(exc, 'description', None) or result.get('description', '')).lower()
+                    if code == 400 and 'message to delete not found' in description:
+                        deleted = True  # A previous attempt or an admin already removed it.
+                    elif code == 429:
+                        retry_after = max(30, float(result.get('parameters', {}).get('retry_after', 60)))
+                        set_bot_setting(pause_key, str(time.time() + retry_after))
+                    elif code in (400, 403):
+                        retry_after, permission_error = 900, True
+                    print(f"Delivery cleanup {message['message_id']}: {type(exc).__name__}", flush=True)
+                conn = get_db_connection()
+                try:
+                    conn.execute(
+                        "UPDATE delivery_group_messages SET delete_status = ?, next_attempt_at = ?, "
+                        "lease_token = NULL, lease_until = 0 WHERE chat_id = ? AND message_id = ? AND lease_token = ?",
+                        ('deleted' if deleted else 'pending', 0 if deleted else time.time() + retry_after,
+                         GROUP_CHAT_ID, message['message_id'], token),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+                if permission_error:
+                    delivery_cleanup_warning()
+                if not deleted:
+                    break  # Avoid a burst of failures/rate-limit retries.
+    except Exception as exc:
+        print(f"Delivery cleanup worker: {type(exc).__name__}", flush=True)
+    finally:
+        _delivery_cleanup_lock.release()
+
+
 def delivery_admin_notice(order_id: int, code: str, text: str) -> None:
     """Persistently deduplicate errors; never send them to the customer."""
     conn = get_db_connection()
@@ -1203,13 +1470,13 @@ def delivery_admin_notice(order_id: int, code: str, text: str) -> None:
     finally:
         conn.close()
     try:
-        bot.send_message(GROUP_CHAT_ID, f"⚠️ Заказ №{order_id}: {text}")
+        delivery_group_send(order_id, f"⚠️ Заказ №{order_id}: {text}", 'notice')
     except Exception as exc:
         # Exception text can contain URLs/credentials; only log its class.
         print(f"Delivery admin notice {order_id}: {type(exc).__name__}", flush=True)
 
 
-def delivery_save_prompt(order_id: int, message_id: int, purpose: str) -> None:
+def delivery_save_prompt(order_id: int, message_id: int, purpose: str, message_date=None) -> None:
     conn = get_db_connection()
     try:
         conn.execute(
@@ -1220,6 +1487,7 @@ def delivery_save_prompt(order_id: int, message_id: int, purpose: str) -> None:
         conn.commit()
     finally:
         conn.close()
+    delivery_remember_group_message(order_id, message_id, purpose + '_prompt', message_date)
 
 
 def delivery_request_destination(order_id: int, reason: str = "", force: bool = False) -> None:
@@ -1246,7 +1514,7 @@ def delivery_request_destination(order_id: int, reason: str = "", force: bool = 
               "Здесь нужна точка КЛИЕНТА, а не геопозиция курьера.",
             reply_markup=types.ForceReply(selective=False),
         )
-        delivery_save_prompt(order_id, message.message_id, "destination")
+        delivery_save_prompt(order_id, message.message_id, "destination", getattr(message, 'date', None))
     except Exception as exc:
         print(f"Delivery destination prompt {order_id}: {type(exc).__name__}", flush=True)
 
@@ -1260,13 +1528,13 @@ def delivery_request_courier(order_id: int) -> None:
         f"🚗 Геопозиция курьера для заказа №{order_id}.\n"
         "Ответьте на ЭТО сообщение: 📎 → Геопозиция → «Транслировать геопозицию» "
         "(например, на 1 час).\n"
-        "Обычная геопозиция тоже принимается, но её нужно обновлять вручную "
-        "ответом на это сообщение.\n"
+        "Обычная геопозиция тоже принимается. Обновляйте её вручную ответом "
+        "на карточку заказа или новый запрос после OMW.\n"
         "После расчёта Google клиент получит время доставки в минутах. "
         "Геопозиция останется только в админской группе.",
         reply_markup=types.ForceReply(selective=False),
     )
-    delivery_save_prompt(order_id, message.message_id, "courier")
+    delivery_save_prompt(order_id, message.message_id, "courier", getattr(message, 'date', None))
     if not GOOGLE_MAPS_API_KEY:
         delivery_admin_notice(order_id, "missing_key", "В Railway не задан GOOGLE_MAPS_API_KEY.")
     address = str(row.get("destination_address") or "").strip()
@@ -1316,7 +1584,7 @@ def delivery_receive_location(message, edited: bool = False) -> None:
     target = delivery_find_location_order(message, edited)
     if target is None:
         if not edited:
-            bot.send_message(GROUP_CHAT_ID, "Для привязки к заказу отправьте геопозицию ответом на сообщение бота после 🚗 OMW.")
+            delivery_group_send(None, "Для привязки к заказу отправьте геопозицию ответом на сообщение бота после 🚗 OMW.", 'hint')
         return
     order_id, purpose = target
     row = delivery_read(order_id)
@@ -1390,14 +1658,23 @@ def delivery_receive_location(message, edited: bool = False) -> None:
         accepted = True
     finally:
         conn.close()
+    if accepted:
+        delivery_remember_group_message(
+            order_id, message.message_id,
+            'destination_location' if purpose == 'destination' else 'courier_location',
+            message.date, bool(live_period),
+        )
+        if not edited:
+            delivery_fulfill_group_prompts(order_id, purpose)
     if accepted and not edited:
         if purpose == "destination":
             text = f"✅ Точка клиента для заказа №{order_id} сохранена."
         else:
             text = f"✅ Геопозиция курьера привязана к заказу №{order_id}."
             if not live_period:
-                text += " Это обычная точка: для автоматического отслеживания отправьте Live Location ответом на тот же запрос."
-        bot.send_message(GROUP_CHAT_ID, text)
+                text += " Это обычная точка. Для автоматического отслеживания нажмите OMW и отправьте Live Location. "
+                text += "Следующую обычную точку можно отправить ответом на карточку заказа."
+        delivery_group_send(order_id, text, 'ack')
 
 
 @bot.message_handler(func=lambda m: m.chat.id == GROUP_CHAT_ID, content_types=['location', 'venue'])
@@ -1503,7 +1780,7 @@ def delivery_check_notifications(order_id: int) -> None:
         return
     if not delivery_location_fresh(row, now):
         if row.get("location_at") is not None:
-            delivery_admin_notice(order_id, "location_stale", "Геопозиция устарела или трансляция закончилась. Отправьте свежую Live Location ответом на запрос OMW.")
+            delivery_admin_notice(order_id, "location_stale", "Геопозиция устарела или трансляция закончилась. Нажмите OMW ещё раз и отправьте свежую Live Location ответом на новый запрос.")
         return
     distance = delivery_distance_m(row["courier_lat"], row["courier_lon"], row["destination_lat"], row["destination_lon"])
     # Requiring the uncertainty circle to fit inside 250 m prevents a noisy
@@ -1552,7 +1829,7 @@ def delivery_show_candidate(order_id: int) -> None:
             "До подтверждения клиенту не отправляются уведомления отслеживания.",
             reply_markup=keyboard,
         )
-        delivery_save_prompt(order_id, message.message_id, "candidate")
+        delivery_save_prompt(order_id, message.message_id, "candidate", getattr(message, 'date', None))
     except Exception as exc:
         print(f"Delivery candidate {order_id}: {type(exc).__name__}", flush=True)
 
@@ -10732,6 +11009,10 @@ if __name__ == "__main__":
     scheduler.add_job(
         delivery_tracking_tick, trigger="interval", seconds=5,
         id="delivery_tracking", max_instances=1, coalesce=True,
+    )
+    scheduler.add_job(
+        delivery_group_cleanup_tick, trigger="interval", seconds=10,
+        id="delivery_group_cleanup", max_instances=1, coalesce=True,
     )
     scheduler.start()
 
