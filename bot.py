@@ -64,7 +64,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.10.05-clear-reviews-v38"
+BOT_VERSION = "2026.10.07-google-maps-address-v39"
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
 print("BOT_VERSION =", BOT_VERSION, flush=True)
@@ -192,7 +192,8 @@ cursor_init.execute("""
         payment_status TEXT,
         order_status TEXT NOT NULL DEFAULT 'active',
         order_group_message_id INTEGER,
-        order_customer_message_id INTEGER
+        order_customer_message_id INTEGER,
+        delivery_address TEXT
     )
 """)
 
@@ -211,6 +212,7 @@ for column_name, column_type in (
     ("order_status", "TEXT NOT NULL DEFAULT 'active'"),
     ("order_group_message_id", "INTEGER"),
     ("order_customer_message_id", "INTEGER"),
+    ("delivery_address", "TEXT"),
 ):
     if column_name not in order_columns:
         cursor_init.execute(
@@ -1009,11 +1011,11 @@ def payment_copy_keyboard(chat_id: int, detail: str):
 
 
 def payment_order_target(order_id: int):
-    """Возвращает покупателя, сумму, состав и выбранный способ оплаты."""
+    """Возвращает покупателя, сумму, состав, способ оплаты и адрес."""
     connection = get_db_connection()
     cursor = connection.cursor()
     cursor.execute(
-        "SELECT chat_id, total, items_json, delivery_currency "
+        "SELECT chat_id, total, items_json, delivery_currency, delivery_address "
         "FROM orders WHERE order_id = ?",
         (order_id,),
     )
@@ -1021,6 +1023,26 @@ def payment_order_target(order_id: int):
     cursor.close()
     connection.close()
     return row
+
+
+def google_maps_url(address: str | None) -> str | None:
+    """Создаёт ссылку Google Maps для координат или обычного текстового адреса."""
+    value = str(address or "").strip()
+    if not value:
+        return None
+
+    existing_link = re.search(
+        r"https?://(?:www\.)?(?:maps\.google\.com|google\.com/maps|maps\.app\.goo\.gl)/?[^\s<]*",
+        value,
+        flags=re.IGNORECASE,
+    )
+    if existing_link:
+        return existing_link.group(0)
+
+    return "https://www.google.com/maps/search/?" + urlencode({
+        "api": "1",
+        "query": value,
+    })
 
 
 def admin_order_keyboard(
@@ -1049,6 +1071,13 @@ def admin_order_keyboard(
         text = f"✅ Реквизиты отправлены: {label} · отправить другие"
     else:
         text = "💳 Выслать реквизиты"
+    order_row = payment_order_target(order_id)
+    maps_url = google_maps_url(order_row[4] if order_row else None)
+    if maps_url:
+        kb.add(types.InlineKeyboardButton(
+            text="📍 Открыть в Google Maps",
+            url=maps_url,
+        ))
     kb.add(types.InlineKeyboardButton(
         text=text,
         callback_data=f"payment_menu|{order_id}",
@@ -1093,10 +1122,6 @@ def customer_order_keyboard(
                 f"❌ Cancel order ({CUSTOMER_CANCEL_WINDOW_MINUTES} min)",
             ),
             callback_data=f"customer_cancel_request|{order_id}",
-        ))
-        kb.add(types.InlineKeyboardButton(
-            text=tr(chat_id, "📢 Новости и акции", "📢 News and promotions"),
-            url="https://t.me/vozol_alanya",
         ))
     kb.add(types.InlineKeyboardButton(
         text=nav_text(chat_id, "menu"),
@@ -4620,7 +4645,7 @@ def finalize_order(call):
             cursor_local.execute(
                 "INSERT INTO orders "
                 "(chat_id, items_json, total, timestamp, points_spent, points_earned, "
-                "promo_code, promo_discount) VALUES (?,?,?,?,?,?,?,?)",
+                "promo_code, promo_discount, delivery_address) VALUES (?,?,?,?,?,?,?,?,?)",
                 (
                     chat_id,
                     items_json,
@@ -4630,6 +4655,7 @@ def finalize_order(call):
                     pts_earned,
                     promo_code or None,
                     promo_discount,
+                    address,
                 ),
             )
             order_id = cursor_local.lastrowid
@@ -4912,8 +4938,7 @@ def finalize_order(call):
             f"Total: {format_money(total_after)}₺{conversion_suffix}\n"
             f"📍 Address: {safe_address}\n"
             f"📱 Contact: {safe_contact}\n"
-            f"💬 Comment: {safe_comment}\n\n"
-            "📢 Follow our news channel for important updates and promotions."
+            f"💬 Comment: {safe_comment}"
         )
     else:
         user_order_summary = (
@@ -4923,8 +4948,7 @@ def finalize_order(call):
             f"Итог: {format_money(total_after)}₺{conversion_suffix}\n"
             f"📍 Адрес: {safe_address}\n"
             f"📱 Контакт: {safe_contact}\n"
-            f"💬 Комментарий: {safe_comment}\n\n"
-            "📢 Наш новостной канал: важные новости и акции."
+            f"💬 Комментарий: {safe_comment}"
         )
     customer_order_message = bot.send_message(
         chat_id,
