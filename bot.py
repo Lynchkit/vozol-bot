@@ -68,7 +68,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.10.08-checkout-card-cancel-notice-v44"
+BOT_VERSION = "2026.10.08-checkout-accepted-buttons-v45"
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
@@ -6065,28 +6065,24 @@ def finalize_order(call):
             f"📱 Контакт: {safe_contact}\n"
             f"💬 Комментарий: {safe_comment}"
         )
-    user_order_summary += tr(
-        chat_id,
-        "\n\n✅ Ваш заказ принят!\n"
-        "⏳ Мы сообщим здесь, когда курьер примет ваш заказ, и укажем примерное время доставки.",
-        "\n\n✅ Your order has been accepted!\n"
-        "⏳ We will notify you here when the courier accepts your order and let you know the estimated delivery time.",
-    )
-    customer_order_message = bot.send_message(
+    bot.send_message(
         chat_id,
         user_order_summary,
         reply_markup=types.ReplyKeyboardRemove(),
     )
-    # Remove the previous input keyboard using the same message, then attach
-    # the order controls; Telegram accepts only one reply_markup per send.
-    try:
-        bot.edit_message_reply_markup(
-            chat_id=chat_id,
-            message_id=customer_order_message.message_id,
-            reply_markup=customer_order_keyboard(chat_id, order_id),
-        )
-    except Exception as exc:
-        print(f"Customer order buttons {order_id}: {type(exc).__name__}", flush=True)
+    # Send the acceptance separately, with its inline controls already attached.
+    # Store this message's ID so cancellation/delivery updates address the controls.
+    customer_order_message = bot.send_message(
+        chat_id,
+        tr(
+            chat_id,
+            "✅ Ваш заказ принят!\n"
+            "⏳ Мы сообщим здесь, когда курьер примет ваш заказ, и укажем примерное время доставки.",
+            "✅ Your order has been accepted!\n"
+            "⏳ We will notify you here when the courier accepts your order and let you know the estimated delivery time.",
+        ),
+        reply_markup=customer_order_keyboard(chat_id, order_id),
+    )
     conn_customer_message = None
     cursor_customer_message = None
     try:
