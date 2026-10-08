@@ -68,7 +68,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.10.08-checkout-accepted-buttons-v45"
+BOT_VERSION = "2026.10.08-cancel-main-menu-v46"
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
@@ -10625,7 +10625,7 @@ def handle_cancel_order(call):
 
     notification_sent = True
     try:
-        bot.send_message(user_chat_id, msg)
+        bot.send_message(user_chat_id, msg, reply_markup=back_to_main_keyboard(user_chat_id))
     except Exception as exc:
         notification_sent = False
         print(
