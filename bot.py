@@ -68,7 +68,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.10.07-delivery-group-cleanup-v42"
+BOT_VERSION = "2026.10.08-cancel-delete-delivery-notice-v43"
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
@@ -1224,6 +1224,26 @@ def delivery_location_fresh(row: dict, now: float) -> bool:
     return accuracy is None or 0 <= float(accuracy) <= DELIVERY_MAX_ACCURACY
 
 
+def delivery_queue_cancelled_order_card(cursor, order_id: int, message_id,
+                                       message_date=None) -> None:
+    """Queue the known card in the cancellation transaction, before deleting the order."""
+    if not message_id:
+        return
+    now = time.time()
+    cursor.execute(
+        "INSERT INTO delivery_group_messages "
+        "(chat_id, message_id, order_id, kind, fulfilled, message_date, first_seen_at, delete_after) "
+        "VALUES (?, ?, ?, 'cancelled_order_card', 1, ?, ?, ?) "
+        "ON CONFLICT(chat_id, message_id) DO UPDATE SET "
+        "order_id = excluded.order_id, kind = excluded.kind, is_live = 0, fulfilled = 1, "
+        "message_date = COALESCE(excluded.message_date, delivery_group_messages.message_date), "
+        "delete_after = excluded.delete_after, delete_status = 'pending', "
+        "next_attempt_at = 0, lease_token = NULL, lease_until = 0",
+        (GROUP_CHAT_ID, int(message_id), int(order_id),
+         float(message_date) if message_date is not None else None, now, now),
+    )
+
+
 def delivery_remember_group_message(order_id, message_id: int, kind: str,
                                     message_date=None, is_live: bool = False) -> None:
     """Register only delivery service messages; never scan/delete chat history."""
@@ -1286,6 +1306,8 @@ def delivery_fulfill_group_prompts(order_id: int, purpose: str) -> None:
 def delivery_group_message_ready(message: dict, row: dict | None, now: float) -> bool:
     if message['chat_id'] != GROUP_CHAT_ID or now < message['delete_after']:
         return False
+    if message['kind'] == 'cancelled_order_card':
+        return message['order_id'] is not None and (row is None or row['state'] == 'stopped')
     if message['kind'] == 'hint' and message['order_id'] is None:
         return True
     if row is None or message['message_id'] == row['group_order_message_id']:
@@ -1337,17 +1359,17 @@ def delivery_cleanup_warning() -> None:
     try:
         bot.send_message(
             GROUP_CHAT_ID,
-            "⚠️ Telegram не разрешил удалить часть служебных сообщений. "
+            "⚠️ Telegram не разрешил удалить часть сообщений в админской группе. "
             "Проверьте право администратора «Удалять сообщения» у бота. "
             "Удаление сообщений старше 48 часов ограничено Telegram. "
-            "Отслеживание заказа продолжает работать.",
+            "Бот продолжает обработку заказов.",
             timeout=10,
         )
     except Exception as exc:
         print(f"Delivery cleanup warning: {type(exc).__name__}", flush=True)
 
 
-def delivery_group_cleanup_tick() -> None:
+def delivery_group_cleanup_tick(cancelled_order_id: int | None = None) -> None:
     """Separate job: persistent retry queue, bounded requests, protected live pin."""
     if not _delivery_cleanup_lock.acquire(blocking=False):
         return
@@ -1362,7 +1384,9 @@ def delivery_group_cleanup_tick() -> None:
             pending = [dict(row) for row in conn.execute(
                 "SELECT * FROM delivery_group_messages WHERE chat_id = ? "
                 "AND delete_status = 'pending' AND next_attempt_at <= ? AND lease_until <= ? "
-                "ORDER BY first_seen_at, message_id", (GROUP_CHAT_ID, now, now),
+                "AND (? IS NULL OR (order_id = ? AND kind = 'cancelled_order_card')) "
+                "ORDER BY CASE WHEN kind = 'cancelled_order_card' THEN 0 ELSE 1 END, first_seen_at, message_id",
+                (GROUP_CHAT_ID, now, now, cancelled_order_id, cancelled_order_id),
             ).fetchall()]
         finally:
             conn.close()
@@ -1383,7 +1407,15 @@ def delivery_group_cleanup_tick() -> None:
                         'SELECT 1 FROM orders WHERE order_group_message_id = ? LIMIT 1',
                         (message['message_id'],),
                     ).fetchone()
-                    if card or (row and message['message_id'] == row['group_order_message_id']):
+                    cancelled_card = (
+                        message['kind'] == 'cancelled_order_card'
+                        and message['order_id'] is not None
+                        and (row is None or row['state'] == 'stopped')
+                        and conn.execute('SELECT 1 FROM orders WHERE order_id = ?',
+                                         (message['order_id'],)).fetchone() is None
+                    )
+                    if card or (message['kind'] == 'cancelled_order_card' and not cancelled_card) or (
+                            row and message['message_id'] == row['group_order_message_id'] and not cancelled_card):
                         conn.execute("UPDATE delivery_group_messages SET delete_status = 'protected' WHERE chat_id = ? AND message_id = ?",
                                      (GROUP_CHAT_ID, message['message_id']))
                         conn.commit()
@@ -1398,6 +1430,8 @@ def delivery_group_cleanup_tick() -> None:
                         conn.execute("UPDATE delivery_group_messages SET delete_status = 'expired' WHERE chat_id = ? AND message_id = ?",
                                      (GROUP_CHAT_ID, message['message_id']))
                         conn.commit()
+                        if cancelled_card:
+                            delivery_cleanup_warning()
                         continue
                     if not delivery_group_message_ready(message, row, now):
                         conn.rollback()
@@ -6007,7 +6041,11 @@ def finalize_order(call):
     # --- сообщение пользователю ---
     bot.send_message(
         chat_id,
-        t(chat_id, "order_accepted"),
+        t(chat_id, "order_accepted") + tr(
+            chat_id,
+            "\n\n🚗 Мы сообщим, когда курьер примет ваш заказ, и укажем примерное время доставки.",
+            "\n\n🚗 We will notify you when the courier accepts your order and let you know the estimated delivery time.",
+        ),
         reply_markup=types.ReplyKeyboardRemove(),
     )
     if user_data.get(chat_id, {}).get("lang") == "en":
@@ -10206,6 +10244,7 @@ def cancel_order_by_customer(order_id: int, expected_chat_id: int) -> dict:
                     (utc_now_iso(), promo_id),
                 )
                 promo_restored = cursor_local.rowcount == 1
+            delivery_queue_cancelled_order_card(cursor_local, order_id, group_message_id)
             cursor_local.execute("DELETE FROM orders WHERE order_id = ?", (order_id,))
             if cursor_local.rowcount != 1:
                 raise RuntimeError("order deletion did not affect exactly one row")
@@ -10334,6 +10373,7 @@ def handle_customer_cancel_confirm(call):
             show_alert=True,
         )
 
+    delivery_group_cleanup_tick(cancelled_order_id=order_id)
     try:
         bot.edit_message_reply_markup(
             chat_id=call.message.chat.id,
@@ -10365,16 +10405,6 @@ def handle_customer_cancel_confirm(call):
         ) + points_line + promo_line,
         reply_markup=back_to_main_keyboard(chat_id),
     )
-    group_message_id = result.get("group_message_id")
-    if group_message_id:
-        try:
-            bot.edit_message_reply_markup(
-                chat_id=GROUP_CHAT_ID,
-                message_id=group_message_id,
-                reply_markup=None,
-            )
-        except Exception as exc:
-            print(f"Cancelled group keyboard cleanup failed for order {order_id}: {exc}", flush=True)
     try:
         bot.send_message(GROUP_CHAT_ID, f"❌ Order #{order_id} was cancelled by the customer.")
     except Exception as exc:
@@ -10416,7 +10446,7 @@ def handle_cancel_order(call):
         cursor.execute("BEGIN IMMEDIATE")
         cursor.execute(
             "SELECT chat_id, items_json, points_spent, points_earned, "
-            "order_customer_message_id "
+            "order_customer_message_id, order_group_message_id "
             "FROM orders WHERE order_id = ?",
             (order_id,),
         )
@@ -10429,7 +10459,8 @@ def handle_cancel_order(call):
                 show_alert=True,
             )
 
-        user_chat_id, items_json, pts_spent, pts_earned, customer_message_id = row
+        user_chat_id, items_json, pts_spent, pts_earned, customer_message_id, group_message_id = row
+        group_message_id = int(group_message_id or call.message.message_id)
         items = json.loads(items_json or "[]")
         if not isinstance(items, list):
             raise ValueError("items_json is not a list")
@@ -10510,6 +10541,10 @@ def handle_cancel_order(call):
             )
             promo_restored = cursor.rowcount == 1
 
+        delivery_queue_cancelled_order_card(
+            cursor, order_id, group_message_id,
+            getattr(call.message, 'date', None) if group_message_id == call.message.message_id else None,
+        )
         cursor.execute("DELETE FROM orders WHERE order_id = ?", (order_id,))
         if cursor.rowcount != 1:
             raise RuntimeError("order deletion did not affect exactly one row")
@@ -10547,6 +10582,7 @@ def handle_cancel_order(call):
         if conn is not None:
             conn.close()
 
+    delivery_group_cleanup_tick(cancelled_order_id=order_id)
     if stock_warnings:
         print(
             f"Cancel order {order_id} stock warnings: {'; '.join(stock_warnings)}",
@@ -10599,15 +10635,6 @@ def handle_cancel_order(call):
                 f"Cancel order {order_id}: customer keyboard cleanup failed: {exc}",
                 flush=True,
             )
-
-    try:
-        bot.edit_message_reply_markup(
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-            reply_markup=None,
-        )
-    except Exception as exc:
-        print(f"Cancel order {order_id}: keyboard cleanup failed: {exc}", flush=True)
 
     callback_text = "Заказ отменён"
     if not notification_sent:
