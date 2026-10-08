@@ -68,7 +68,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.10.08-cancel-delete-delivery-notice-v43"
+BOT_VERSION = "2026.10.08-checkout-card-cancel-notice-v44"
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
@@ -1248,7 +1248,7 @@ def delivery_remember_group_message(order_id, message_id: int, kind: str,
                                     message_date=None, is_live: bool = False) -> None:
     """Register only delivery service messages; never scan/delete chat history."""
     allowed = {'courier_prompt', 'destination_prompt', 'candidate_prompt', 'ack',
-               'courier_location', 'destination_location', 'notice', 'hint'}
+               'courier_location', 'destination_location', 'notice', 'hint', 'cancellation_notice'}
     if kind not in allowed:
         return
     now = time.time()
@@ -1263,13 +1263,16 @@ def delivery_remember_group_message(order_id, message_id: int, kind: str,
         ).fetchone()
         if card:
             return
+        # Leave ten seconds for the cleanup job to meet the five-minute limit.
+        delete_after = ((float(message_date) if message_date is not None else now) + 290
+                        if kind == 'cancellation_notice' else now + 10)
         conn.execute(
             "INSERT INTO delivery_group_messages "
             "(chat_id, message_id, order_id, kind, is_live, message_date, first_seen_at, delete_after) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(chat_id, message_id) DO UPDATE SET is_live = excluded.is_live",
             (GROUP_CHAT_ID, message_id, order_id, kind, int(is_live),
-             float(message_date) if message_date is not None else None, now, now + 10),
+             float(message_date) if message_date is not None else None, now, delete_after),
         )
         conn.commit()
     except Exception as exc:
@@ -1308,6 +1311,8 @@ def delivery_group_message_ready(message: dict, row: dict | None, now: float) ->
         return False
     if message['kind'] == 'cancelled_order_card':
         return message['order_id'] is not None and (row is None or row['state'] == 'stopped')
+    if message['kind'] == 'cancellation_notice':
+        return True
     if message['kind'] == 'hint' and message['order_id'] is None:
         return True
     if row is None or message['message_id'] == row['group_order_message_id']:
@@ -1385,8 +1390,9 @@ def delivery_group_cleanup_tick(cancelled_order_id: int | None = None) -> None:
                 "SELECT * FROM delivery_group_messages WHERE chat_id = ? "
                 "AND delete_status = 'pending' AND next_attempt_at <= ? AND lease_until <= ? "
                 "AND (? IS NULL OR (order_id = ? AND kind = 'cancelled_order_card')) "
-                "ORDER BY CASE WHEN kind = 'cancelled_order_card' THEN 0 ELSE 1 END, first_seen_at, message_id",
-                (GROUP_CHAT_ID, now, now, cancelled_order_id, cancelled_order_id),
+                "ORDER BY CASE WHEN kind = 'cancelled_order_card' THEN 0 "
+                "WHEN kind = 'cancellation_notice' AND delete_after <= ? THEN 1 ELSE 2 END, first_seen_at, message_id",
+                (GROUP_CHAT_ID, now, now, cancelled_order_id, cancelled_order_id, now),
             ).fetchall()]
         finally:
             conn.close()
@@ -6039,15 +6045,6 @@ def finalize_order(call):
                 conn_message.close()
 
     # --- сообщение пользователю ---
-    bot.send_message(
-        chat_id,
-        t(chat_id, "order_accepted") + tr(
-            chat_id,
-            "\n\n🚗 Мы сообщим, когда курьер примет ваш заказ, и укажем примерное время доставки.",
-            "\n\n🚗 We will notify you when the courier accepts your order and let you know the estimated delivery time.",
-        ),
-        reply_markup=types.ReplyKeyboardRemove(),
-    )
     if user_data.get(chat_id, {}).get("lang") == "en":
         user_order_summary = (
             f"📋 Your order #{order_id}:\n\n"
@@ -6068,11 +6065,28 @@ def finalize_order(call):
             f"📱 Контакт: {safe_contact}\n"
             f"💬 Комментарий: {safe_comment}"
         )
+    user_order_summary += tr(
+        chat_id,
+        "\n\n✅ Ваш заказ принят!\n"
+        "⏳ Мы сообщим здесь, когда курьер примет ваш заказ, и укажем примерное время доставки.",
+        "\n\n✅ Your order has been accepted!\n"
+        "⏳ We will notify you here when the courier accepts your order and let you know the estimated delivery time.",
+    )
     customer_order_message = bot.send_message(
         chat_id,
         user_order_summary,
-        reply_markup=customer_order_keyboard(chat_id, order_id),
+        reply_markup=types.ReplyKeyboardRemove(),
     )
+    # Remove the previous input keyboard using the same message, then attach
+    # the order controls; Telegram accepts only one reply_markup per send.
+    try:
+        bot.edit_message_reply_markup(
+            chat_id=chat_id,
+            message_id=customer_order_message.message_id,
+            reply_markup=customer_order_keyboard(chat_id, order_id),
+        )
+    except Exception as exc:
+        print(f"Customer order buttons {order_id}: {type(exc).__name__}", flush=True)
     conn_customer_message = None
     cursor_customer_message = None
     try:
@@ -10406,7 +10420,7 @@ def handle_customer_cancel_confirm(call):
         reply_markup=back_to_main_keyboard(chat_id),
     )
     try:
-        bot.send_message(GROUP_CHAT_ID, f"❌ Order #{order_id} was cancelled by the customer.")
+        delivery_group_send(order_id, f"❌ Order #{order_id} was cancelled by the customer.", 'cancellation_notice')
     except Exception as exc:
         print(f"Customer cancellation group notice failed for order {order_id}: {exc}", flush=True)
     if result.get("stock_warnings"):
