@@ -68,7 +68,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.10.15-admin-delivery-notifications-v47"
+BOT_VERSION = "2026.10.15-compact-admin-points-v48"
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
@@ -1261,48 +1261,44 @@ def delivery_notification_error(exc) -> tuple[str, str]:
 
 
 def delivery_admin_status(row: dict, receipts: dict) -> str:
-    """Report confirmed sends, never infer a receipt from the current ETA."""
+    """Compact send history; ETA comes only from the message actually sent."""
     lines = ['<b>' + DELIVERY_CARD_HEADING + '</b>']
     state = row['state']
-    if state == 'arrived':
-        lines.append('📍 Курьер у точки доставки. Отслеживание завершено.')
-    elif state == 'await_destination':
-        lines.append('⏳ Нужна точная точка клиента; отправка времени доставки приостановлена.')
+    finished = state in ('arrived', 'stopped')
+    attention = ''
+    if state == 'await_destination':
+        attention = '📍 Укажите точную точку клиента.'
     elif state == 'confirm_destination':
-        lines.append('⏳ Подтвердите адрес клиента; новые уведомления приостановлены.')
-    else:
+        attention = '📍 Подтвердите адрес клиента.'
+    elif not finished:
         problems = {
-            'missing_key': 'Не задан GOOGLE_MAPS_API_KEY.',
-            'authorization': 'Google отклонил ключ Routes API.',
-            'quota': 'Достигнут лимит Google Routes; ожидается повтор расчёта.',
-            'network': 'Google Routes недоступен; ожидается повтор расчёта.',
-            'address_ambiguous': 'Не распознан точный адрес клиента.',
-            'no_route': 'Google не нашёл маршрут.',
-            'invalid_request': 'Google отклонил расчёт маршрута.',
-            'google_error': 'Ошибка Google Routes; ожидается повтор расчёта.',
-            'bad_location': 'Получена некорректная геопозиция.',
-            'inaccurate_location': 'Точность геопозиции недостаточна.',
-            'old_location': 'Получена старая геопозиция.',
-            'location_stale': 'Геопозиция устарела или трансляция закончилась.',
-            'courier_prompt': 'Запрос геопозиции не отправлен; нажмите OMW ещё раз.',
+            'missing_key': 'Настройте ключ Google Maps.',
+            'authorization': 'Проверьте доступ ключа к Routes API.',
+            'quota': 'Лимит расчёта маршрутов. Ждём повторной попытки.',
+            'network': 'Нет связи с Google Maps. Повторим расчёт.',
+            'address_ambiguous': 'Уточните адрес клиента.',
+            'no_route': 'Маршрут не найден. Проверьте адрес.',
+            'invalid_request': 'Не удалось рассчитать маршрут.',
+            'google_error': 'Ошибка Google Maps. Повторим расчёт.',
+            'bad_location': 'Отправьте геопозицию заново.',
+            'inaccurate_location': 'Нужна более точная геопозиция.',
+            'old_location': 'Отправьте свежую геопозицию.',
+            'location_stale': 'Обновите геопозицию курьера.',
+            'courier_prompt': 'Нажмите OMW ещё раз для запроса геопозиции.',
         }
         problem = problems.get(row.get('last_admin_notice'))
         if problem:
-            lines.append('⚠️ ' + problem)
+            attention = '⚠️ ' + problem
         elif row.get('courier_lat') is None:
-            lines.append('⏳ Ожидается геопозиция курьера.')
+            attention = '⏳ Ожидаем геопозицию курьера.'
         elif not delivery_location_fresh(row, time.time()):
-            lines.append('⚠️ Нужна свежая геопозиция курьера.')
-        elif row.get('five_min_notified'):
-            lines.append('📍 Прибытие отслеживается по геопозиции курьера.')
-        elif row.get('eta_seconds') is None:
-            lines.append('⏳ Геопозиция получена. Ожидается расчёт Google Routes.')
-        else:
-            lines.append('🚗 Отслеживание активно.')
+            attention = '⚠️ Обновите геопозицию курьера.'
+        elif not row.get('five_min_notified') and row.get('eta_seconds') is None:
+            attention = '⏳ Рассчитываем время доставки.'
     for kind, label, column in (
-        ('initial', 'Курьер принял заказ', 'initial_notification_status'),
-        ('five_min', '5 минут', 'five_min_notification_status'),
-        ('arrival', 'Курьер прибыл', 'arrival_notification_status'),
+        ('initial', 'Выезд', 'initial_notification_status'),
+        ('five_min', 'За 5 минут', 'five_min_notification_status'),
+        ('arrival', 'Прибытие', 'arrival_notification_status'),
     ):
         status = row.get(column)
         flag = {'initial': 'initial_notified', 'five_min': 'five_min_notified', 'arrival': 'arrival_notified'}[kind]
@@ -1313,31 +1309,33 @@ def delivery_admin_status(row: dict, receipts: dict) -> str:
             sent_at = receipt.get('sent_at')
             stamp = (datetime.datetime.fromtimestamp(sent_at, datetime.timezone.utc)
                      .astimezone(pytz.timezone('Europe/Istanbul')).strftime('%H:%M')) if sent_at is not None else ''
-            lines.append(f'✅ «{label}»: отправлено' + (f' в {stamp}.' if stamp else ' ранее.'))
-            if receipt.get('message_text'):
-                lines.append('    ' + html.escape(receipt['message_text']))
+            # Never use the changing route ETA to describe an earlier notification.
+            minutes = re.search(r'(?:примерно через|approximately)\s+(\d+)\s+(?:минут[уы]?|minutes?)\b',
+                                receipt.get('message_text') or '') if kind == 'initial' else None
+            detail = f' · ≈{minutes.group(1)} мин' if minutes else ''
+            lines.append(f'✅ {label}{detail} · ' + (stamp or 'отправлено'))
         elif status == 'failed':
-            lines.append(f'❌ «{label}»: не отправлено. ' + html.escape(receipt.get('error_text') or 'Telegram отклонил отправку.'))
+            lines.append(f'❌ {label} · <b>не отправлено</b>')
         elif status == 'uncertain':
-            lines.append(f'⚠️ «{label}»: отправка не подтверждена. Повтор отключён, чтобы избежать дубля.')
+            lines.append(f'⚠️ {label} · <b>не подтверждено</b>')
         elif status == 'claimed':
-            lines.append(f'⏳ «{label}»: выполняется отправка.')
+            lines.append(f'⏳ {label} · отправляется')
         elif status == 'covered_by_initial':
             if row.get('initial_notification_status') == 'sent':
-                lines.append('ℹ️ «5 минут»: включено в первое уведомление.')
+                lines.append('↳ За 5 минут · учтено при выезде')
             else:
-                lines.append('⏸ «5 минут»: отдельно не отправляется; первое уведомление не подтверждено.')
-        elif state == 'arrived':
-            lines.append(f'— «{label}»: не отправлялось до прибытия.')
-        else:
-            lines.append(f'⏳ «{label}»: ещё не отправлено.')
-    return '\n'.join(lines)
+                lines.append('— За 5 минут · отдельной отправки нет')
+        elif not finished:
+            lines.append(f'◦ {label} · ожидается')
+    if attention:
+        lines.extend(['', attention])
+    return '\n'.join(lines) if len(lines) > 1 else ''
 
 
 def delivery_admin_card_text(row: dict, receipts: dict) -> str:
     if row.get('final_html') is not None:
         return row['final_html']
-    section = '\n\n🚗 In Delivery\n\n' + delivery_admin_status(row, receipts)
+    section = '\n\n' + delivery_admin_status(row, receipts)
     result = row['body_html'] + section
     # For unusually long orders, retain valid HTML and reserve room for statuses.
     # The complete original text stays in SQLite; no order data is changed.
@@ -1349,6 +1347,30 @@ def delivery_admin_card_text(row: dict, receipts: dict) -> str:
             plain = units[:limit * 2].decode('utf-16-le', errors='ignore').rstrip() + '…'
         result = html.escape(plain) + section
     return result
+
+
+def delivery_completed_card_text(order_id: int, current_html: str) -> str:
+    """Keep sent/failed history on completion, remove pending tracking prompts."""
+    marker = '\n\n<b>' + DELIVERY_CARD_HEADING + '</b>'
+    body = current_html.split(marker, 1)[0].rstrip()
+    conn = None
+    try:
+        row = delivery_read(order_id)
+        if row:
+            conn = get_db_connection()
+            conn.row_factory = sqlite3.Row
+            receipts = {item['kind']: dict(item) for item in conn.execute(
+                'SELECT * FROM delivery_notification_receipts WHERE order_id = ?', (order_id,),
+            )}
+            section = delivery_admin_status(row, receipts)
+            if section:
+                return body + '\n\n' + section
+    except Exception as exc:
+        print(f'Delivery history {order_id}: {type(exc).__name__}', flush=True)
+    finally:
+        if conn is not None:
+            conn.close()
+    return body
 
 
 def delivery_admin_cards_tick(order_id: int | None = None) -> None:
@@ -1364,7 +1386,7 @@ def delivery_admin_cards_tick(order_id: int | None = None) -> None:
         try:
             ids = [item[0] for item in conn.execute(
                 'SELECT c.order_id FROM delivery_admin_cards c JOIN orders o ON o.order_id = c.order_id '
-                'JOIN delivery_tracking d ON d.order_id = c.order_id '
+                'LEFT JOIN delivery_tracking d ON d.order_id = c.order_id '
                 "WHERE c.chat_id = ? AND ((o.order_status = 'omw' AND d.state != 'stopped' AND c.final_html IS NULL) "
                 "OR (o.order_status = 'delivered' AND c.final_html IS NOT NULL)) "
                 'AND c.disabled = 0 AND c.next_attempt_at <= ? AND c.edit_lease_until <= ? '
@@ -1385,7 +1407,7 @@ def delivery_admin_cards_tick(order_id: int | None = None) -> None:
                     now = time.time()
                     raw = conn.execute(
                         'SELECT c.*, d.*, o.order_status FROM delivery_admin_cards c '
-                        'JOIN delivery_tracking d ON d.order_id = c.order_id '
+                        'LEFT JOIN delivery_tracking d ON d.order_id = c.order_id '
                         'JOIN orders o ON o.order_id = c.order_id '
                         "WHERE c.order_id = ? AND c.chat_id = ? AND ((o.order_status = 'omw' "
                         "AND d.state != 'stopped' AND c.final_html IS NULL) "
@@ -1397,6 +1419,24 @@ def delivery_admin_cards_tick(order_id: int | None = None) -> None:
                         conn.rollback()
                         continue
                     row = dict(raw)
+                    # Upgrade older saved keyboards too. Final cards retain only
+                    # points; active cards keep the currently open payment menu.
+                    if row['order_status'] == 'delivered':
+                        markup = delivered_order_keyboard(current_id)
+                    else:
+                        markup = (types.InlineKeyboardMarkup.de_json(row['keyboard_json'])
+                                  if row['keyboard_json'] != 'null' else types.InlineKeyboardMarkup())
+                        if not any(button.get('callback_data') == f'credit_points|{current_id}'
+                                   for buttons in markup.to_dict().get('inline_keyboard', [])
+                                   for button in buttons):
+                            markup.add(order_points_button(current_id))
+                    keyboard_json = delivery_keyboard_json(markup)
+                    if keyboard_json != row['keyboard_json']:
+                        conn.execute(
+                            "UPDATE delivery_admin_cards SET keyboard_json = ?, rendered_html = '' WHERE order_id = ?",
+                            (keyboard_json, current_id),
+                        )
+                        row['keyboard_json'], row['rendered_html'] = keyboard_json, ''
                     receipts = {item['kind']: dict(item) for item in conn.execute(
                         'SELECT * FROM delivery_notification_receipts WHERE order_id = ?', (current_id,),
                     )}
@@ -1462,11 +1502,13 @@ def delivery_edit_order_markup(chat_id: int, message_id: int, reply_markup):
         conn = get_db_connection()
         try:
             row = conn.execute(
-                'SELECT c.order_id FROM delivery_admin_cards c JOIN orders o ON o.order_id = c.order_id '
-                "WHERE c.chat_id = ? AND c.message_id = ? AND o.order_status = 'omw' AND c.disabled = 0",
+                'SELECT c.order_id, o.order_status FROM delivery_admin_cards c JOIN orders o ON o.order_id = c.order_id '
+                "WHERE c.chat_id = ? AND c.message_id = ? AND o.order_status IN ('omw', 'delivered') AND c.disabled = 0",
                 (chat_id, message_id),
             ).fetchone()
             if row:
+                if row[1] == 'delivered':
+                    reply_markup = delivered_order_keyboard(int(row[0]))
                 conn.execute(
                     "UPDATE delivery_admin_cards SET keyboard_json = ?, rendered_html = '', next_attempt_at = 0 "
                     'WHERE order_id = ?', (delivery_keyboard_json(reply_markup), row[0]),
@@ -1493,10 +1535,10 @@ def delivery_finalize_admin_card(order_id: int, text: str, confirmed: bool = Fal
             )
         else:
             conn.execute(
-                "UPDATE delivery_admin_cards SET final_html = ?, keyboard_json = 'null', "
+                "UPDATE delivery_admin_cards SET final_html = ?, keyboard_json = ?, "
                 "rendered_html = '', next_attempt_at = 0 WHERE order_id = ? "
                 "AND EXISTS (SELECT 1 FROM orders WHERE order_id = ? AND order_status = 'delivered')",
-                (text, order_id, order_id),
+                (text, delivery_keyboard_json(delivered_order_keyboard(order_id)), order_id, order_id),
             )
         conn.commit()
     except Exception as exc:
@@ -2577,16 +2619,21 @@ def admin_order_keyboard(
         text=text,
         callback_data=f"payment_menu|{order_id}",
     ))
+    kb.add(order_points_button(order_id))
     return kb
 
 
-def personal_order_keyboard(order_id: int) -> types.InlineKeyboardMarkup:
-    """Действия под копией нового заказа в личном чате владельца с ботом."""
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.add(types.InlineKeyboardButton(
+def order_points_button(order_id: int) -> types.InlineKeyboardButton:
+    return types.InlineKeyboardButton(
         text="🎁 Начислить баллы",
         callback_data=f"credit_points|{order_id}",
-    ))
+    )
+
+
+def delivered_order_keyboard(order_id: int) -> types.InlineKeyboardMarkup:
+    """Ручное начисление остаётся доступным после завершения доставки."""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(order_points_button(order_id))
     return kb
 
 
@@ -2725,6 +2772,7 @@ def payment_methods_keyboard(order_id: int) -> types.InlineKeyboardMarkup:
         text="⬅️ Назад к управлению заказом",
         callback_data=f"payment_back|{order_id}",
     ))
+    kb.add(order_points_button(order_id))
     return kb
 
 
@@ -6351,7 +6399,6 @@ def finalize_order(call):
             bot.send_message(
                 PERSONAL_CHAT_ID,
                 full_rus,
-                reply_markup=personal_order_keyboard(order_id),
             )
         except Exception as exc:
             print(f"Personal order notification failed for order {order_id}: {exc}")
@@ -9178,10 +9225,10 @@ def handle_manual_point_credit_prompt(call):
     """Запрашивает у владельца количество баллов для выбранного заказа."""
     if not is_owner(call.from_user.id):
         return bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
-    if not PERSONAL_CHAT_ID or call.message.chat.id != PERSONAL_CHAT_ID:
+    if call.message.chat.id != GROUP_CHAT_ID:
         return bot.answer_callback_query(
             call.id,
-            "Кнопка доступна только в вашем личном чате с ботом",
+            "Начисление баллов доступно в админ-группе",
             show_alert=True,
         )
 
@@ -9202,12 +9249,12 @@ def handle_manual_point_credit_prompt(call):
     try:
         prompt = bot.send_message(
             call.message.chat.id,
-            f"<b>🎁 Заказ №{order_id}</b>\n\n"
-            "Введите количество баллов, которое нужно начислить клиенту.\n"
-            "Только целое число больше 0. Для отмены отправьте <code>0</code>.",
+            f"<b>🎁 Баллы · заказ №{order_id}</b>\n\n"
+            f'<a href="tg://user?id={call.from_user.id}">Администратор</a>, сколько начислить?\n'
+            "Ответьте целым числом. <code>0</code> — отмена.",
             reply_to_message_id=call.message.message_id,
             reply_markup=types.ForceReply(
-                selective=False,
+                selective=True,
                 input_field_placeholder="Например: 200",
             ),
         )
@@ -9236,8 +9283,7 @@ def is_manual_point_credit_reply(message) -> bool:
     """Принимает только ответ владельца на последний запрос начисления."""
     if (
         not is_owner(message.from_user.id)
-        or not PERSONAL_CHAT_ID
-        or message.chat.id != PERSONAL_CHAT_ID
+        or message.chat.id != GROUP_CHAT_ID
     ):
         return False
     replied_message = getattr(message, "reply_to_message", None)
@@ -9255,6 +9301,8 @@ def is_manual_point_credit_reply(message) -> bool:
 @bot.message_handler(func=is_manual_point_credit_reply, content_types=["text"])
 def handle_manual_point_credit_input(message):
     """Начисляет введённые баллы сразу после валидного ответа владельца."""
+    if not is_manual_point_credit_reply(message):
+        return
     admin_id = message.from_user.id
     raw_value = (message.text or "").strip()
 
@@ -9272,6 +9320,8 @@ def handle_manual_point_credit_input(message):
 
     if raw_value.casefold() in {"0", "отмена", "cancel"}:
         with pending_manual_point_credits_lock:
+            if pending_manual_point_credits.get(admin_id) is not pending:
+                return
             pending_manual_point_credits.pop(admin_id, None)
         bot.reply_to(message, "Начисление отменено.")
         return
@@ -9281,7 +9331,7 @@ def handle_manual_point_credit_input(message):
             message,
             "Введите целое число больше 0. Для отмены отправьте <code>0</code>.",
             reply_markup=types.ForceReply(
-                selective=False,
+                selective=True,
                 input_field_placeholder="Например: 200",
             ),
         )
@@ -9296,6 +9346,8 @@ def handle_manual_point_credit_input(message):
 
     amount = int(raw_value)
     with pending_manual_point_credits_lock:
+        if pending_manual_point_credits.get(admin_id) is not pending:
+            return
         pending = pending_manual_point_credits.pop(admin_id, None)
     if not pending:
         return
@@ -11040,6 +11092,7 @@ def delivery_method_keyboard(
         text="⏪ Back",
         callback_data=f"back_to_group|{order_id}",
     ))
+    kb.add(order_points_button(order_id))
     return kb
 
 
@@ -11215,6 +11268,7 @@ def handle_deliver_currency(call: types.CallbackQuery):
     text = text.replace("🚗 In Delivery", "")
     text = text.replace("❌ Cancelled", "")
     text = text.replace("✅ Delivered", "")
+    text = delivery_completed_card_text(order_id, text)
 
     new_text = (
         f"{text.strip()}\n\n"
@@ -11224,16 +11278,18 @@ def handle_deliver_currency(call: types.CallbackQuery):
         f"✅ Delivered"
     )
 
+    # Persist final edits even when delivery was completed without OMW.
+    delivery_remember_admin_card(order_id, call.message)
     delivery_finalize_admin_card(order_id, new_text)
     admin_message_updated = True
     try:
-        # Финально убираем ВСЕ кнопки
+        # После доставки остаётся ручное начисление баллов.
         bot.edit_message_text(
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
             text=new_text,
             parse_mode="HTML",
-            reply_markup=None,
+            reply_markup=delivered_order_keyboard(order_id),
         )
         delivery_finalize_admin_card(order_id, new_text, confirmed=True)
     except Exception as exc:
