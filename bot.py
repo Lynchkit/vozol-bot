@@ -68,7 +68,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.10.08-cancel-main-menu-v46"
+BOT_VERSION = "2026.10.15-admin-delivery-notifications-v47"
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
@@ -454,6 +454,32 @@ cursor_init.executescript("""
         next_allowed_at REAL NOT NULL DEFAULT 0
     );
     INSERT OR IGNORE INTO delivery_api_gate(gate_id) VALUES (1);
+    CREATE TABLE IF NOT EXISTS delivery_notification_receipts (
+        order_id INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        message_text TEXT NOT NULL,
+        attempted_at REAL NOT NULL,
+        sent_at REAL,
+        telegram_message_id INTEGER,
+        error_text TEXT,
+        PRIMARY KEY(order_id, kind)
+    );
+    CREATE TABLE IF NOT EXISTS delivery_admin_cards (
+        order_id INTEGER PRIMARY KEY,
+        chat_id INTEGER NOT NULL,
+        message_id INTEGER NOT NULL,
+        body_html TEXT NOT NULL,
+        body_text TEXT NOT NULL,
+        keyboard_json TEXT NOT NULL,
+        rendered_html TEXT NOT NULL DEFAULT '',
+        final_html TEXT,
+        edit_attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at REAL NOT NULL DEFAULT 0,
+        edit_lease_token TEXT,
+        edit_lease_until REAL NOT NULL DEFAULT 0,
+        disabled INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(chat_id, message_id)
+    );
     CREATE TRIGGER IF NOT EXISTS stop_delivery_on_order_delete
     AFTER DELETE ON orders BEGIN
         UPDATE delivery_tracking
@@ -1141,6 +1167,8 @@ DELIVERY_ROUTE_LEASE_SECONDS = 90
 _delivery_worker_lock = threading.Lock()
 _delivery_lifecycle_lock = threading.RLock()
 _delivery_cleanup_lock = threading.Lock()
+_delivery_card_worker_lock = threading.Lock()
+DELIVERY_CARD_HEADING = "📨 Уведомления клиенту"
 
 
 def delivery_lifecycle_guard(handler):
@@ -1170,6 +1198,312 @@ def delivery_read(order_id: int) -> dict | None:
         return dict(row) if row else None
     finally:
         conn.close()
+
+
+def delivery_keyboard_json(markup) -> str:
+    if markup is None:
+        return 'null'
+    if isinstance(markup, str):
+        return json.dumps(json.loads(markup), ensure_ascii=False, sort_keys=True)
+    value = markup if isinstance(markup, dict) else markup.to_dict()
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def delivery_remember_admin_card(order_id: int, message) -> None:
+    """Keep the original card, including HTML and buttons, across restarts."""
+    conn = None
+    try:
+        if message.chat.id != GROUP_CHAT_ID:
+            return
+        plain = str(message.text or '').split('\n\n' + DELIVERY_CARD_HEADING, 1)[0]
+        body_html = str(getattr(message, 'html_text', None) or html.escape(plain))
+        body_html = body_html.split('\n\n<b>' + DELIVERY_CARD_HEADING + '</b>', 1)[0]
+        plain = re.sub(r'\n\n🚗 In Delivery\s*$', '', plain)
+        body_html = re.sub(r'\n\n🚗 In Delivery\s*$', '', body_html)
+        conn = get_db_connection()
+        conn.execute(
+            'INSERT INTO delivery_admin_cards '
+            '(order_id, chat_id, message_id, body_html, body_text, keyboard_json) '
+            'VALUES (?, ?, ?, ?, ?, ?) '
+            'ON CONFLICT(order_id) DO UPDATE SET keyboard_json = excluded.keyboard_json, '
+            "rendered_html = '', next_attempt_at = 0, disabled = 0 "
+            'WHERE delivery_admin_cards.chat_id = excluded.chat_id '
+            'AND delivery_admin_cards.message_id = excluded.message_id',
+            (order_id, GROUP_CHAT_ID, message.message_id, body_html, plain,
+             delivery_keyboard_json(message.reply_markup)),
+        )
+        conn.commit()
+    except Exception as exc:
+        print(f'Delivery card capture {order_id}: {type(exc).__name__}', flush=True)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def delivery_telegram_error(exc) -> tuple[int | None, str]:
+    result = getattr(exc, 'result_json', None)
+    result = result if isinstance(result, dict) else {}
+    code = getattr(exc, 'error_code', None) or result.get('error_code')
+    try:
+        code = int(code)
+    except (TypeError, ValueError):
+        code = None
+    description = str(getattr(exc, 'description', None) or result.get('description', '')).lower()
+    return code, description
+
+
+def delivery_notification_error(exc) -> tuple[str, str]:
+    code, _ = delivery_telegram_error(exc)
+    if code in (400, 401, 403, 404, 429):
+        reason = 'Telegram ограничил отправку' if code == 429 else 'Telegram отклонил отправку'
+        return 'failed', f'{reason} (код {code}).'
+    return 'uncertain', 'Ответ Telegram не получен; результат отправки неизвестен.'
+
+
+def delivery_admin_status(row: dict, receipts: dict) -> str:
+    """Report confirmed sends, never infer a receipt from the current ETA."""
+    lines = ['<b>' + DELIVERY_CARD_HEADING + '</b>']
+    state = row['state']
+    if state == 'arrived':
+        lines.append('📍 Курьер у точки доставки. Отслеживание завершено.')
+    elif state == 'await_destination':
+        lines.append('⏳ Нужна точная точка клиента; отправка времени доставки приостановлена.')
+    elif state == 'confirm_destination':
+        lines.append('⏳ Подтвердите адрес клиента; новые уведомления приостановлены.')
+    else:
+        problems = {
+            'missing_key': 'Не задан GOOGLE_MAPS_API_KEY.',
+            'authorization': 'Google отклонил ключ Routes API.',
+            'quota': 'Достигнут лимит Google Routes; ожидается повтор расчёта.',
+            'network': 'Google Routes недоступен; ожидается повтор расчёта.',
+            'address_ambiguous': 'Не распознан точный адрес клиента.',
+            'no_route': 'Google не нашёл маршрут.',
+            'invalid_request': 'Google отклонил расчёт маршрута.',
+            'google_error': 'Ошибка Google Routes; ожидается повтор расчёта.',
+            'bad_location': 'Получена некорректная геопозиция.',
+            'inaccurate_location': 'Точность геопозиции недостаточна.',
+            'old_location': 'Получена старая геопозиция.',
+            'location_stale': 'Геопозиция устарела или трансляция закончилась.',
+            'courier_prompt': 'Запрос геопозиции не отправлен; нажмите OMW ещё раз.',
+        }
+        problem = problems.get(row.get('last_admin_notice'))
+        if problem:
+            lines.append('⚠️ ' + problem)
+        elif row.get('courier_lat') is None:
+            lines.append('⏳ Ожидается геопозиция курьера.')
+        elif not delivery_location_fresh(row, time.time()):
+            lines.append('⚠️ Нужна свежая геопозиция курьера.')
+        elif row.get('five_min_notified'):
+            lines.append('📍 Прибытие отслеживается по геопозиции курьера.')
+        elif row.get('eta_seconds') is None:
+            lines.append('⏳ Геопозиция получена. Ожидается расчёт Google Routes.')
+        else:
+            lines.append('🚗 Отслеживание активно.')
+    for kind, label, column in (
+        ('initial', 'Курьер принял заказ', 'initial_notification_status'),
+        ('five_min', '5 минут', 'five_min_notification_status'),
+        ('arrival', 'Курьер прибыл', 'arrival_notification_status'),
+    ):
+        status = row.get(column)
+        flag = {'initial': 'initial_notified', 'five_min': 'five_min_notified', 'arrival': 'arrival_notified'}[kind]
+        if status is None and row.get(flag):
+            status = 'uncertain'  # A legacy attempt flag alone is not a confirmed send.
+        receipt = receipts.get(kind) or {}
+        if status == 'sent':
+            sent_at = receipt.get('sent_at')
+            stamp = (datetime.datetime.fromtimestamp(sent_at, datetime.timezone.utc)
+                     .astimezone(pytz.timezone('Europe/Istanbul')).strftime('%H:%M')) if sent_at is not None else ''
+            lines.append(f'✅ «{label}»: отправлено' + (f' в {stamp}.' if stamp else ' ранее.'))
+            if receipt.get('message_text'):
+                lines.append('    ' + html.escape(receipt['message_text']))
+        elif status == 'failed':
+            lines.append(f'❌ «{label}»: не отправлено. ' + html.escape(receipt.get('error_text') or 'Telegram отклонил отправку.'))
+        elif status == 'uncertain':
+            lines.append(f'⚠️ «{label}»: отправка не подтверждена. Повтор отключён, чтобы избежать дубля.')
+        elif status == 'claimed':
+            lines.append(f'⏳ «{label}»: выполняется отправка.')
+        elif status == 'covered_by_initial':
+            if row.get('initial_notification_status') == 'sent':
+                lines.append('ℹ️ «5 минут»: включено в первое уведомление.')
+            else:
+                lines.append('⏸ «5 минут»: отдельно не отправляется; первое уведомление не подтверждено.')
+        elif state == 'arrived':
+            lines.append(f'— «{label}»: не отправлялось до прибытия.')
+        else:
+            lines.append(f'⏳ «{label}»: ещё не отправлено.')
+    return '\n'.join(lines)
+
+
+def delivery_admin_card_text(row: dict, receipts: dict) -> str:
+    if row.get('final_html') is not None:
+        return row['final_html']
+    section = '\n\n🚗 In Delivery\n\n' + delivery_admin_status(row, receipts)
+    result = row['body_html'] + section
+    # For unusually long orders, retain valid HTML and reserve room for statuses.
+    # The complete original text stays in SQLite; no order data is changed.
+    if len(result.encode('utf-16-le')) > 8000:
+        plain = row['body_text']
+        limit = max(0, 3900 - len(html.unescape(re.sub(r'<[^>]+>', '', section)).encode('utf-16-le')) // 2)
+        units = plain.encode('utf-16-le')
+        if len(units) > limit * 2:
+            plain = units[:limit * 2].decode('utf-16-le', errors='ignore').rstrip() + '…'
+        result = html.escape(plain) + section
+    return result
+
+
+def delivery_admin_cards_tick(order_id: int | None = None) -> None:
+    """Edit only changed cards; persist retries and leases, without Google calls."""
+    if not _delivery_card_worker_lock.acquire(blocking=False):
+        return
+    try:
+        now = time.time()
+        pause_key = f'delivery_card_pause_{GROUP_CHAT_ID}'
+        if float(get_bot_setting(pause_key) or 0) > now:
+            return
+        conn = get_db_connection()
+        try:
+            ids = [item[0] for item in conn.execute(
+                'SELECT c.order_id FROM delivery_admin_cards c JOIN orders o ON o.order_id = c.order_id '
+                'JOIN delivery_tracking d ON d.order_id = c.order_id '
+                "WHERE c.chat_id = ? AND ((o.order_status = 'omw' AND d.state != 'stopped' AND c.final_html IS NULL) "
+                "OR (o.order_status = 'delivered' AND c.final_html IS NOT NULL)) "
+                'AND c.disabled = 0 AND c.next_attempt_at <= ? AND c.edit_lease_until <= ? '
+                'AND (? IS NULL OR c.order_id = ?) ORDER BY c.next_attempt_at, c.order_id',
+                (GROUP_CHAT_ID, now, now, order_id, order_id),
+            ).fetchall()]
+        finally:
+            conn.close()
+        attempts = 0
+        for current_id in ids:
+            if attempts >= 3:
+                break
+            with _delivery_lifecycle_lock:
+                conn = get_db_connection()
+                conn.row_factory = sqlite3.Row
+                try:
+                    conn.execute('BEGIN IMMEDIATE')
+                    now = time.time()
+                    raw = conn.execute(
+                        'SELECT c.*, d.*, o.order_status FROM delivery_admin_cards c '
+                        'JOIN delivery_tracking d ON d.order_id = c.order_id '
+                        'JOIN orders o ON o.order_id = c.order_id '
+                        "WHERE c.order_id = ? AND c.chat_id = ? AND ((o.order_status = 'omw' "
+                        "AND d.state != 'stopped' AND c.final_html IS NULL) "
+                        "OR (o.order_status = 'delivered' AND c.final_html IS NOT NULL)) AND c.disabled = 0 "
+                        'AND c.next_attempt_at <= ? AND c.edit_lease_until <= ?',
+                        (current_id, GROUP_CHAT_ID, now, now),
+                    ).fetchone()
+                    if raw is None:
+                        conn.rollback()
+                        continue
+                    row = dict(raw)
+                    receipts = {item['kind']: dict(item) for item in conn.execute(
+                        'SELECT * FROM delivery_notification_receipts WHERE order_id = ?', (current_id,),
+                    )}
+                    text = delivery_admin_card_text(row, receipts)
+                    if text == row['rendered_html']:
+                        conn.rollback()
+                        continue
+                    token = uuid.uuid4().hex
+                    conn.execute(
+                        'UPDATE delivery_admin_cards SET edit_lease_token = ?, edit_lease_until = ?, '
+                        'edit_attempts = edit_attempts + 1 WHERE order_id = ?', (token, now + 45, current_id),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+                attempts += 1
+                updated, disabled, delay = False, False, min(300, 10 * 2 ** min(row['edit_attempts'], 5))
+                try:
+                    markup = (types.InlineKeyboardMarkup.de_json(row['keyboard_json'])
+                              if row['keyboard_json'] != 'null' else None)
+                    bot.edit_message_text(text, chat_id=GROUP_CHAT_ID, message_id=row['message_id'],
+                                          parse_mode='HTML', reply_markup=markup, timeout=10)
+                    updated = True
+                except Exception as exc:
+                    code, description = delivery_telegram_error(exc)
+                    if code == 400 and 'message is not modified' in description:
+                        updated = True
+                    elif code == 400 and 'message to edit not found' in description:
+                        disabled = True
+                    elif code == 429:
+                        result = getattr(exc, 'result_json', {}) or {}
+                        delay = max(5, float(result.get('parameters', {}).get('retry_after', 60)))
+                        set_bot_setting(pause_key, str(time.time() + delay))
+                    if not updated:
+                        print(f'Delivery card update {current_id}: {type(exc).__name__}', flush=True)
+                conn = get_db_connection()
+                try:
+                    # A menu callback may have queued a newer keyboard during this edit.
+                    conn.execute(
+                        'UPDATE delivery_admin_cards SET '
+                        "rendered_html = CASE WHEN final_html IS NOT NULL AND final_html != ? THEN '' "
+                        'WHEN ? AND keyboard_json = ? THEN ? ELSE rendered_html END, '
+                        'edit_attempts = CASE WHEN ? THEN 0 ELSE edit_attempts END, '
+                        'next_attempt_at = ?, disabled = ?, edit_lease_token = NULL, edit_lease_until = 0 '
+                        'WHERE order_id = ? AND edit_lease_token = ?',
+                        (text, updated, row['keyboard_json'], text, updated, 0 if updated else time.time() + delay,
+                         int(disabled), current_id, token),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+                if not updated:
+                    break
+    except Exception as exc:
+        print(f'Delivery card worker: {type(exc).__name__}', flush=True)
+    finally:
+        _delivery_card_worker_lock.release()
+
+
+def delivery_edit_order_markup(chat_id: int, message_id: int, reply_markup):
+    """Keep payment/delivery menus when an automatic status edit follows."""
+    with _delivery_lifecycle_lock:
+        conn = get_db_connection()
+        try:
+            row = conn.execute(
+                'SELECT c.order_id FROM delivery_admin_cards c JOIN orders o ON o.order_id = c.order_id '
+                "WHERE c.chat_id = ? AND c.message_id = ? AND o.order_status = 'omw' AND c.disabled = 0",
+                (chat_id, message_id),
+            ).fetchone()
+            if row:
+                conn.execute(
+                    "UPDATE delivery_admin_cards SET keyboard_json = ?, rendered_html = '', next_attempt_at = 0 "
+                    'WHERE order_id = ?', (delivery_keyboard_json(reply_markup), row[0]),
+                )
+                conn.commit()
+        finally:
+            conn.close()
+        if row:
+            delivery_admin_cards_tick(order_id=int(row[0]))
+            return
+        return bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=reply_markup)
+
+
+def delivery_finalize_admin_card(order_id: int, text: str, confirmed: bool = False) -> None:
+    """A late edit from another process must not restore an in-delivery card."""
+    conn = None
+    try:
+        conn = get_db_connection()
+        if confirmed:
+            conn.execute(
+                'UPDATE delivery_admin_cards SET rendered_html = ? '
+                'WHERE order_id = ? AND final_html = ? AND edit_lease_until <= ?',
+                (text, order_id, text, time.time()),
+            )
+        else:
+            conn.execute(
+                "UPDATE delivery_admin_cards SET final_html = ?, keyboard_json = 'null', "
+                "rendered_html = '', next_attempt_at = 0 WHERE order_id = ? "
+                "AND EXISTS (SELECT 1 FROM orders WHERE order_id = ? AND order_status = 'delivered')",
+                (text, order_id, order_id),
+            )
+        conn.commit()
+    except Exception as exc:
+        print(f'Delivery final card {order_id}: {type(exc).__name__}', flush=True)
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def delivery_coordinates(lat, lon) -> tuple[float, float] | None:
@@ -1769,6 +2103,7 @@ def delivery_send_once(order_id: int, kind: str, ru_text: str, en_text: str) -> 
             # If tracking starts inside five minutes, the initial ETA already
             # covers this threshold; avoid two contradictory messages at once.
             additional_state += ", five_min_notified = 1, five_min_notification_status = 'covered_by_initial'"
+        message_text = tr(row["customer_chat_id"], ru_text, en_text)
         conn = get_db_connection()
         try:
             result = conn.execute(
@@ -1777,25 +2112,41 @@ def delivery_send_once(order_id: int, kind: str, ru_text: str, en_text: str) -> 
                 f"AND {flag} = 0 AND EXISTS (SELECT 1 FROM orders WHERE order_id = ? AND order_status = 'omw')",
                 (now, order_id, order_id),
             )
-            conn.commit()
             if result.rowcount != 1:
+                conn.rollback()
                 return False
+            conn.execute(
+                'INSERT INTO delivery_notification_receipts '
+                '(order_id, kind, message_text, attempted_at) VALUES (?, ?, ?, ?)',
+                (order_id, kind, message_text, now),
+            )
+            conn.commit()
         finally:
             conn.close()
         outcome = "sent"
+        sent_at, telegram_message_id, error_text = None, None, None
         try:
-            bot.send_message(row["customer_chat_id"], tr(row["customer_chat_id"], ru_text, en_text), timeout=15)
+            message = bot.send_message(row["customer_chat_id"], message_text, timeout=15)
+            telegram_message_id = int(getattr(message, 'message_id', 0) or 0)
+            if telegram_message_id <= 0:
+                raise RuntimeError('Telegram did not return a message identifier')
+            sent_at = float(getattr(message, 'date', None) or time.time())
         except Exception as exc:
-            outcome = "uncertain"
+            outcome, error_text = delivery_notification_error(exc)
             print(f"Delivery notification {order_id}/{kind}: {type(exc).__name__}", flush=True)
             delivery_admin_notice(
                 order_id, f"notification_{kind}",
-                "Не удалось подтвердить отправку уведомления клиенту. "
+                error_text + ' ' +
                 "Автоматического повтора не будет, чтобы избежать дубля.",
             )
         conn = get_db_connection()
         try:
             conn.execute(f"UPDATE delivery_tracking SET {status} = ? WHERE order_id = ?", (outcome, order_id))
+            conn.execute(
+                'UPDATE delivery_notification_receipts SET sent_at = ?, telegram_message_id = ?, '
+                'error_text = ? WHERE order_id = ? AND kind = ?',
+                (sent_at, telegram_message_id, error_text, order_id, kind),
+            )
             if kind == "arrival":
                 conn.execute(
                     "UPDATE delivery_tracking SET state = 'arrived', lease_token = NULL, lease_until = 0 "
@@ -6975,7 +7326,7 @@ def handle_payment_menu(call):
         return bot.answer_callback_query(call.id, "Некорректный заказ.", show_alert=True)
     if not payment_order_target(order_id):
         return bot.answer_callback_query(call.id, "Заказ не найден или отменён.", show_alert=True)
-    bot.edit_message_reply_markup(
+    delivery_edit_order_markup(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         reply_markup=payment_methods_keyboard(order_id),
@@ -6996,7 +7347,7 @@ def handle_payment_back(call):
     order_row = payment_order_target(order_id)
     if not order_row:
         return bot.answer_callback_query(call.id, "Заказ не найден или отменён.", show_alert=True)
-    bot.edit_message_reply_markup(
+    delivery_edit_order_markup(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         reply_markup=admin_order_keyboard(
@@ -7101,7 +7452,7 @@ def handle_payment_send(call):
         cursor.close()
         connection.close()
 
-    bot.edit_message_reply_markup(
+    delivery_edit_order_markup(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         reply_markup=admin_order_keyboard(order_id, customer_chat_id, method_key),
@@ -10713,7 +11064,7 @@ def handle_order_delivered(call: types.CallbackQuery):
         return bot.answer_callback_query(call.id, "Order not found", show_alert=True)
     preferred_method = order_row[3]
 
-    bot.edit_message_reply_markup(
+    delivery_edit_order_markup(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         reply_markup=delivery_method_keyboard(order_id, preferred_method),
@@ -10735,7 +11086,7 @@ def handle_delivery_other_method(call: types.CallbackQuery):
         return bot.answer_callback_query(call.id, "Data error", show_alert=True)
     if not payment_order_target(order_id):
         return bot.answer_callback_query(call.id, "Order not found", show_alert=True)
-    bot.edit_message_reply_markup(
+    delivery_edit_order_markup(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         reply_markup=delivery_method_keyboard(order_id, show_all=True),
@@ -10860,7 +11211,7 @@ def handle_deliver_currency(call: types.CallbackQuery):
             )
 
     # Обновляем текст и убираем старые статусы
-    text = call.message.text or ""
+    text = getattr(call.message, 'html_text', None) or html.escape(call.message.text or "")
     text = text.replace("🚗 In Delivery", "")
     text = text.replace("❌ Cancelled", "")
     text = text.replace("✅ Delivered", "")
@@ -10873,6 +11224,7 @@ def handle_deliver_currency(call: types.CallbackQuery):
         f"✅ Delivered"
     )
 
+    delivery_finalize_admin_card(order_id, new_text)
     admin_message_updated = True
     try:
         # Финально убираем ВСЕ кнопки
@@ -10883,6 +11235,7 @@ def handle_deliver_currency(call: types.CallbackQuery):
             parse_mode="HTML",
             reply_markup=None,
         )
+        delivery_finalize_admin_card(order_id, new_text, confirmed=True)
     except Exception as exc:
         admin_message_updated = False
         print(f"Delivered order card update failed for {order_id}: {exc}", flush=True)
@@ -10925,7 +11278,7 @@ def handle_back_to_options(call: types.CallbackQuery):
         return bot.answer_callback_query(call.id, "Order not found", show_alert=True)
     kb = admin_order_keyboard(order_id, int(order_row[0]), order_row[3])
 
-    bot.edit_message_reply_markup(
+    delivery_edit_order_markup(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         reply_markup=kb
@@ -10944,7 +11297,7 @@ def handle_back_to_group(call: types.CallbackQuery):
     if not order_row:
         return bot.answer_callback_query(call.id, "Order not found", show_alert=True)
     kb = admin_order_keyboard(order_id, int(order_row[0]), order_row[3])
-    bot.edit_message_reply_markup(
+    delivery_edit_order_markup(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         reply_markup=kb
@@ -10995,8 +11348,11 @@ def handle_courier_on_way(call):
     finally:
         conn.close()
 
+    delivery_remember_admin_card(order_id, call.message)
     if state in ("arrived", "stopped"):
-        return bot.answer_callback_query(call.id, "Отслеживание уже завершено", show_alert=True)
+        bot.answer_callback_query(call.id, "Отслеживание уже завершено", show_alert=True)
+        delivery_admin_cards_tick(order_id=order_id)
+        return
     bot.answer_callback_query(call.id, "Отправьте Live Location ответом на запрос бота 🚗")
     if customer_order_message_id:
         try:
@@ -11006,15 +11362,6 @@ def handle_courier_on_way(call):
             )
         except Exception as exc:
             print(f"OMW customer keyboard {order_id}: {type(exc).__name__}", flush=True)
-    text = call.message.text or ""
-    if "🚗 In Delivery" not in text:
-        try:
-            bot.edit_message_text(
-                text + "\n\n🚗 In Delivery", chat_id=GROUP_CHAT_ID,
-                message_id=call.message.message_id, reply_markup=call.message.reply_markup,
-            )
-        except Exception as exc:
-            print(f"OMW admin card {order_id}: {type(exc).__name__}", flush=True)
     # The first customer message now contains Google ETA and is sent only
     # after the courier location and delivery destination are known.
     try:
@@ -11022,6 +11369,7 @@ def handle_courier_on_way(call):
     except Exception as exc:
         print(f"OMW courier prompt {order_id}: {type(exc).__name__}", flush=True)
         delivery_admin_notice(order_id, "courier_prompt", "Не удалось запросить геопозицию. Нажмите OMW ещё раз.")
+    delivery_admin_cards_tick(order_id=order_id)
 
 # ------------------------------------------------------------------------
 #   36. Запуск бота
@@ -11050,6 +11398,10 @@ if __name__ == "__main__":
     scheduler.add_job(
         delivery_group_cleanup_tick, trigger="interval", seconds=10,
         id="delivery_group_cleanup", max_instances=1, coalesce=True,
+    )
+    scheduler.add_job(
+        delivery_admin_cards_tick, trigger="interval", seconds=5,
+        id="delivery_admin_cards", max_instances=1, coalesce=True,
     )
     scheduler.start()
 
