@@ -68,8 +68,11 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.10.15-compact-admin-points-v48"
+BOT_VERSION = "2026.10.18-places-address-search-v49"
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
+# Search context for this Alanya delivery shop; the customer's original text is retained.
+DELIVERY_SEARCH_CONTEXT = os.getenv("DELIVERY_SEARCH_CONTEXT", "Alanya, Antalya, Türkiye").strip()
+GOOGLE_MAPS_REGION_CODE = os.getenv("GOOGLE_MAPS_REGION_CODE", "tr").strip().lower()
 
 print("GROUP_CHAT_ID =", GROUP_CHAT_ID, flush=True)
 print("BOT_VERSION =", BOT_VERSION, flush=True)
@@ -382,6 +385,8 @@ cursor_init.executescript("""
         group_order_message_id INTEGER,
         state TEXT NOT NULL DEFAULT 'await_location',
         destination_address TEXT,
+        destination_revision INTEGER NOT NULL DEFAULT 0,
+        places_search_attempted INTEGER NOT NULL DEFAULT 0,
         destination_source TEXT NOT NULL DEFAULT 'address',
         destination_place_id TEXT,
         destination_lat REAL,
@@ -426,6 +431,7 @@ cursor_init.executescript("""
         message_id INTEGER NOT NULL,
         order_id INTEGER NOT NULL,
         purpose TEXT NOT NULL,
+        destination_revision INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY(chat_id, message_id)
     );
     CREATE TABLE IF NOT EXISTS delivery_group_messages (
@@ -494,6 +500,17 @@ cursor_init.executescript("""
          WHERE order_id = NEW.order_id;
     END;
 """)
+
+# Additive v49 migration: preserve orders, coordinates and notification flags.
+for delivery_table, delivery_columns in (
+    ("delivery_tracking", (("destination_revision", "INTEGER NOT NULL DEFAULT 0"),
+                           ("places_search_attempted", "INTEGER NOT NULL DEFAULT 0"))),
+    ("delivery_tracking_prompts", (("destination_revision", "INTEGER NOT NULL DEFAULT 0"),)),
+):
+    existing_delivery_columns = {row[1] for row in cursor_init.execute(f"PRAGMA table_info({delivery_table})")}
+    for delivery_column, delivery_sql_type in delivery_columns:
+        if delivery_column not in existing_delivery_columns:
+            cursor_init.execute(f"ALTER TABLE {delivery_table} ADD COLUMN {delivery_column} {delivery_sql_type}")
 
 # Older v41 rows have known message IDs but no original send dates. Keep
 # unresolved prompts during delivery, and clean known messages on completion.
@@ -1158,7 +1175,8 @@ def payment_copy_keyboard(chat_id: int, detail: str):
 
 # ------------------------------------------------------------------------
 # Automatic delivery tracking. All coordinates and flags stay in SQLite.
-# Routes is the only Google API used; no Geocoding/Places key is required.
+# Routes computes ETA; Places API (New) is a bounded text-search fallback.
+# Only the place ID is requested/stored from Places, not cached place details.
 # ------------------------------------------------------------------------
 DELIVERY_LOCATION_MAX_AGE = 180
 DELIVERY_ARRIVAL_METERS = 250
@@ -1267,7 +1285,7 @@ def delivery_admin_status(row: dict, receipts: dict) -> str:
     finished = state in ('arrived', 'stopped')
     attention = ''
     if state == 'await_destination':
-        attention = '📍 Укажите точную точку клиента.'
+        attention = '📍 Уточните адрес текстом или отправьте точку клиента.'
     elif state == 'confirm_destination':
         attention = '📍 Подтвердите адрес клиента.'
     elif not finished:
@@ -1280,6 +1298,11 @@ def delivery_admin_status(row: dict, receipts: dict) -> str:
             'no_route': 'Маршрут не найден. Проверьте адрес.',
             'invalid_request': 'Не удалось рассчитать маршрут.',
             'google_error': 'Ошибка Google Maps. Повторим расчёт.',
+            'places_authorization': 'Разрешите ключу доступ к Places API (New).',
+            'places_quota': 'Лимит поиска мест. Уточните адрес позже или отправьте точку.',
+            'places_network': 'Поиск места прерван. Уточните адрес или отправьте точку.',
+            'places_not_found': 'Место не найдено. Уточните адрес клиента.',
+            'places_retry': 'Для повторного поиска отправьте адрес ещё раз.',
             'bad_location': 'Отправьте геопозицию заново.',
             'inaccurate_location': 'Нужна более точная геопозиция.',
             'old_location': 'Отправьте свежую геопозицию.',
@@ -1700,8 +1723,8 @@ def delivery_group_message_ready(message: dict, row: dict | None, now: float) ->
         return message['kind'] != 'notice'
     if message['kind'] == 'ack':
         return True
-    if message['kind'] in ('destination_prompt', 'candidate_prompt', 'destination_location'):
-        return bool(row['destination_confirmed'])
+    if message['kind'] in ('destination_prompt', 'candidate_prompt', 'destination_location', 'destination_text'):
+        return bool(message['fulfilled']) or bool(row['destination_confirmed'])
     started = any(row[column] == 'sent' for column in
                   ('initial_notification_status', 'five_min_notification_status', 'arrival_notification_status'))
     if message['kind'] == 'courier_prompt':
@@ -1892,13 +1915,53 @@ def delivery_admin_notice(order_id: int, code: str, text: str) -> None:
         print(f"Delivery admin notice {order_id}: {type(exc).__name__}", flush=True)
 
 
-def delivery_save_prompt(order_id: int, message_id: int, purpose: str, message_date=None) -> None:
+def delivery_search_query(address: str, with_context: bool = True) -> str:
+    query = re.sub(r"\s+", " ", str(address or "")).strip()
+    query = query.translate(str.maketrans({"–": "-", "—": "-", "‑": "-"}))
+    context = DELIVERY_SEARCH_CONTEXT[:160]
+    city = context.split(",", 1)[0].strip().casefold()
+    has_city = bool(city and city in query.casefold())
+    if city == "alanya" and re.search(r"алан(?:ья|ия|ии|ье|ию|ью)", query, re.I):
+        has_city = True
+    if with_context and context and not has_city:
+        query += ", " + context
+    return query
+
+
+def delivery_clear_destination_prompts(conn, order_id: int) -> None:
+    # Retire old buttons/replies before accepting a changed destination.
+    conn.execute(
+        "UPDATE delivery_group_messages SET fulfilled = 1 WHERE order_id = ? "
+        "AND kind IN ('destination_prompt', 'candidate_prompt', 'destination_text', 'destination_location')",
+        (order_id,),
+    )
+    conn.execute(
+        "DELETE FROM delivery_tracking_prompts WHERE order_id = ? AND purpose IN ('destination', 'candidate')",
+        (order_id,),
+    )
+
+
+def delivery_destination_reply_current(conn, message, order_id: int) -> bool:
+    reply = getattr(message, "reply_to_message", None)
+    if reply is None:
+        return False
+    return conn.execute(
+        "SELECT 1 FROM delivery_tracking_prompts p JOIN delivery_tracking d ON d.order_id = p.order_id "
+        "WHERE p.chat_id = ? AND p.message_id = ? AND p.order_id = ? "
+        "AND p.purpose IN ('destination', 'candidate') AND p.destination_revision = d.destination_revision "
+        "AND d.state IN ('await_destination', 'confirm_destination')",
+        (message.chat.id, reply.message_id, order_id),
+    ).fetchone() is not None
+
+
+def delivery_save_prompt(order_id: int, message_id: int, purpose: str, message_date=None,
+                         destination_revision: int = 0) -> None:
     conn = get_db_connection()
     try:
         conn.execute(
             "INSERT OR IGNORE INTO delivery_tracking_prompts "
-            "(chat_id, message_id, order_id, purpose) VALUES (?, ?, ?, ?)",
-            (GROUP_CHAT_ID, message_id, order_id, purpose),
+            "(chat_id, message_id, order_id, purpose, destination_revision) VALUES (?, ?, ?, ?, ?)",
+            (GROUP_CHAT_ID, message_id, order_id, purpose, destination_revision),
         )
         conn.commit()
     finally:
@@ -1906,15 +1969,16 @@ def delivery_save_prompt(order_id: int, message_id: int, purpose: str, message_d
     delivery_remember_group_message(order_id, message_id, purpose + '_prompt', message_date)
 
 
+@delivery_lifecycle_guard
 def delivery_request_destination(order_id: int, reason: str = "", force: bool = False) -> None:
     row = delivery_read(order_id)
-    if not row or row["order_status"] != "omw" or row["state"] in ("stopped", "arrived"):
+    if not row or row["order_status"] != "omw" or row["state"] != "await_destination":
         return
     conn = get_db_connection()
     try:
         existing = conn.execute(
-            "SELECT 1 FROM delivery_tracking_prompts WHERE order_id = ? AND purpose = 'destination'",
-            (order_id,),
+            "SELECT 1 FROM delivery_tracking_prompts WHERE order_id = ? AND purpose = 'destination' "
+            "AND destination_revision = ?", (order_id, row["destination_revision"]),
         ).fetchone()
     finally:
         conn.close()
@@ -1923,14 +1987,17 @@ def delivery_request_destination(order_id: int, reason: str = "", force: bool = 
     try:
         message = bot.send_message(
             GROUP_CHAT_ID,
-            f"📍 Точка доставки для заказа №{order_id}.\n"
-            + (f"{reason}\n" if reason else "")
-            + "Ответьте на ЭТО сообщение обычной геопозицией адреса клиента: "
-              "📎 → Геопозиция → выбрать точку на карте.\n"
-              "Здесь нужна точка КЛИЕНТА, а не геопозиция курьера.",
+            f"✏️ <b>Уточните адрес · заказ №{order_id}</b>\n\n"
+            f"Сейчас: {html.escape(str(row['destination_address'] or 'не указан')[:512])}\n\n"
+            + (f"{html.escape(reason)}\n\n" if reason else "")
+            + "Ответьте на ЭТО сообщение уточнённым названием ЖК, отеля или адресом с городом. "
+              "Бот повторит поиск.\n\n"
+              "Также можно отправить обычную точку КЛИЕНТА: 📎 → Геопозиция → выбрать точку на карте. "
+              "Геопозицию курьера отправляйте ответом на отдельный запрос после OMW.",
             reply_markup=types.ForceReply(selective=False),
         )
-        delivery_save_prompt(order_id, message.message_id, "destination", getattr(message, 'date', None))
+        delivery_save_prompt(order_id, message.message_id, "destination", getattr(message, 'date', None),
+                             row["destination_revision"])
     except Exception as exc:
         print(f"Delivery destination prompt {order_id}: {type(exc).__name__}", flush=True)
 
@@ -1978,11 +2045,14 @@ def delivery_find_location_order(message, edited: bool) -> tuple[int, str] | Non
         if not reply:
             return None
         row = conn.execute(
-            "SELECT order_id, purpose FROM delivery_tracking_prompts WHERE chat_id = ? AND message_id = ?",
+            "SELECT p.order_id, p.purpose FROM delivery_tracking_prompts p "
+            "JOIN delivery_tracking d ON d.order_id = p.order_id "
+            "WHERE p.chat_id = ? AND p.message_id = ? "
+            "AND (p.purpose = 'courier' OR p.destination_revision = d.destination_revision)",
             (message.chat.id, reply.message_id),
         ).fetchone()
         if row:
-            return int(row[0]), row[1]
+            return int(row[0]), "destination" if row[1] == "candidate" else row[1]
         row = conn.execute(
             "SELECT order_id FROM delivery_tracking WHERE group_order_message_id = ? "
             "OR (courier_chat_id = ? AND courier_message_id = ? AND courier_user_id = ?)",
@@ -2040,8 +2110,12 @@ def delivery_receive_location(message, edited: bool = False) -> None:
             conn.rollback()
             return
         if purpose == "destination":
+            if not delivery_destination_reply_current(conn, message, order_id):
+                conn.rollback()
+                return
             conn.execute(
                 "UPDATE delivery_tracking SET destination_lat = ?, destination_lon = ?, "
+                "destination_revision = destination_revision + 1, places_search_attempted = 0, "
                 "destination_confirmed = 1, destination_source = 'admin_pin', destination_place_id = NULL, "
                 "state = CASE WHEN courier_lat IS NULL THEN 'await_location' ELSE 'tracking' END, "
                 "eta_seconds = NULL, eta_at = NULL, eta_location_revision = NULL, "
@@ -2049,6 +2123,7 @@ def delivery_receive_location(message, edited: bool = False) -> None:
                 "last_admin_notice = NULL, updated_at = ? WHERE order_id = ?",
                 (*coords, now, now, order_id),
             )
+            delivery_clear_destination_prompts(conn, order_id)
         else:
             # Edits must belong to the courier message already bound in SQLite.
             if edited and (current[1] != message.message_id or current[2] != message.from_user.id):
@@ -2101,6 +2176,65 @@ def handle_delivery_location(message):
 @bot.edited_message_handler(func=lambda m: m.chat.id == GROUP_CHAT_ID, content_types=['location'])
 def handle_delivery_live_update(message):
     delivery_receive_location(message, edited=True)
+
+
+@bot.message_handler(func=lambda m: m.chat.id == GROUP_CHAT_ID and bool(getattr(m, 'reply_to_message', None)),
+                     content_types=['text'])
+@delivery_lifecycle_guard
+def handle_delivery_address_reply(message):
+    conn = get_db_connection()
+    try:
+        target = conn.execute(
+            "SELECT order_id FROM delivery_tracking_prompts WHERE chat_id = ? AND message_id = ? "
+            "AND purpose = 'destination'", (message.chat.id, message.reply_to_message.message_id),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not target:
+        return ContinueHandling()
+    if not is_delivery_operator(message.from_user.id):
+        return
+    address = str(message.text or '').strip()
+    if address.startswith('/'):
+        return ContinueHandling()
+    order_id = int(target[0])
+    coords = delivery_address_coordinates(address)
+    if not address or len(address) > 512 or ('http' in address.lower() and coords is None):
+        delivery_group_send(order_id, "Отправьте название места или адрес текстом (до 512 символов), "
+                            "либо точку клиента. Ссылка без координат для этого поиска не подходит.", 'ack')
+        return
+    conn = get_db_connection()
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        if not delivery_destination_reply_current(conn, message, order_id):
+            conn.rollback()
+            return
+        now = time.time()
+        changed = conn.execute(
+            "UPDATE delivery_tracking SET destination_address = ?, destination_revision = destination_revision + 1, "
+            "places_search_attempted = 0, destination_place_id = NULL, destination_source = ?, "
+            "destination_lat = ?, destination_lon = ?, destination_confirmed = ?, "
+            "state = CASE WHEN courier_lat IS NULL THEN 'await_location' ELSE 'tracking' END, "
+            "eta_seconds = NULL, eta_at = NULL, eta_location_revision = NULL, "
+            "lease_token = NULL, lease_until = 0, next_route_at = MAX(?, last_route_at + 60), "
+            "last_admin_notice = NULL, error_count = 0, updated_at = ? "
+            "WHERE order_id = ? AND state = 'await_destination' "
+            "AND initial_notified = 0 AND five_min_notified = 0 AND arrival_notified = 0 "
+            "AND EXISTS (SELECT 1 FROM orders WHERE order_id = ? AND order_status = 'omw')",
+            (address, 'admin_pin' if coords else 'address', coords[0] if coords else None,
+             coords[1] if coords else None, int(coords is not None), now, now, order_id, order_id),
+        ).rowcount
+        if changed:
+            delivery_clear_destination_prompts(conn, order_id)
+        conn.commit()
+    finally:
+        conn.close()
+    if changed:
+        delivery_remember_group_message(order_id, message.message_id, 'destination_text', message.date)
+        delivery_group_send(order_id, f"✅ Адрес заказа №{order_id} уточнён.\n"
+                            f"{html.escape(address)}\n\nПоиск продолжится при свежей геопозиции курьера.", 'ack')
+    else:
+        delivery_group_send(order_id, "Этот запрос адреса уже закрыт.", 'ack')
 
 
 def delivery_eta_fresh(row: dict, now: float) -> bool:
@@ -2235,84 +2369,107 @@ def delivery_check_notifications(order_id: int) -> None:
         delivery_send_once(order_id, "five_min", "🚗 Курьер будет у вас примерно через 5 минут.", "🚗 The courier will arrive in approximately 5 minutes.")
 
 
+@delivery_lifecycle_guard
 def delivery_show_candidate(order_id: int) -> None:
     row = delivery_read(order_id)
-    if not row or row["state"] != "confirm_destination":
+    if not row or row["order_status"] != "omw" or row["state"] != "confirm_destination":
         return
     conn = get_db_connection()
     try:
         existing = conn.execute(
-            "SELECT 1 FROM delivery_tracking_prompts WHERE order_id = ? AND purpose = 'candidate'", (order_id,),
+            "SELECT 1 FROM delivery_tracking_prompts WHERE order_id = ? AND purpose = 'candidate' "
+            "AND destination_revision = ?", (order_id, row["destination_revision"]),
         ).fetchone()
     finally:
         conn.close()
     if existing:
         return
+    if row["destination_source"] == "places_candidate":
+        url = "https://www.google.com/maps/search/?" + urlencode({
+            "api": 1, "query": delivery_search_query(row["destination_address"])[:100],
+            "query_place_id": row["destination_place_id"],
+        })
+        explanation = "Google Maps нашёл вариант по названию. Откройте место и проверьте, что это адрес клиента."
+    else:
+        url = google_maps_url(f"{row['destination_lat']},{row['destination_lon']}")
+        explanation = "Google Maps вернул конец автомобильного маршрута. Проверьте, что это место встречи с клиентом."
     keyboard = types.InlineKeyboardMarkup(row_width=1)
-    keyboard.add(types.InlineKeyboardButton("📍 Проверить точку в Google Maps", url=google_maps_url(f"{row['destination_lat']},{row['destination_lon']}")))
-    keyboard.add(types.InlineKeyboardButton("✅ Это правильная точка", callback_data=f"delivery_confirm|{order_id}"))
-    keyboard.add(types.InlineKeyboardButton("📌 Указать другую точку", callback_data=f"delivery_pin|{order_id}"))
+    keyboard.add(types.InlineKeyboardButton("📍 Посмотреть в Google Maps", url=url))
+    revision = row["destination_revision"]
+    keyboard.add(types.InlineKeyboardButton("✅ Верная точка", callback_data=f"delivery_confirm|{order_id}|{revision}"))
+    keyboard.add(types.InlineKeyboardButton("✏️ Уточнить адрес", callback_data=f"delivery_edit|{order_id}|{revision}"))
+    keyboard.add(types.InlineKeyboardButton("📌 Выбрать точку вручную", callback_data=f"delivery_pin|{order_id}|{revision}"))
     try:
         message = bot.send_message(
             GROUP_CHAT_ID,
-            f"📍 Заказ №{order_id}: Google нашёл адрес.\n"
-            f"{html.escape(str(row['destination_address'] or ''))}\n\n"
-            "Проверьте точку на карте и подтвердите её. Google возвращает конец автомобильного маршрута; "
-            "если это не место встречи с клиентом, укажите правильную точку. "
-            "До подтверждения клиенту не отправляются уведомления отслеживания.",
+            f"📍 <b>Проверьте место · заказ №{order_id}</b>\n\n"
+            f"Запрос: {html.escape(str(row['destination_address'] or '')[:512])}\n\n"
+            f"{explanation}\n\nДо подтверждения уведомления клиенту не отправляются.",
             reply_markup=keyboard,
         )
-        delivery_save_prompt(order_id, message.message_id, "candidate", getattr(message, 'date', None))
+        delivery_save_prompt(order_id, message.message_id, "candidate", getattr(message, 'date', None), revision)
     except Exception as exc:
         print(f"Delivery candidate {order_id}: {type(exc).__name__}", flush=True)
 
 
-@bot.callback_query_handler(func=lambda call: bool(call.data) and call.data.startswith(("delivery_confirm|", "delivery_pin|")))
+@bot.callback_query_handler(func=lambda call: bool(call.data) and call.data.startswith(
+    ("delivery_confirm|", "delivery_pin|", "delivery_edit|")))
 @delivery_lifecycle_guard
 def handle_delivery_destination_callback(call):
     if call.message.chat.id != GROUP_CHAT_ID or not is_delivery_operator(call.from_user.id):
         return bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
     try:
-        action, value = call.data.split("|", 1)
-        order_id = int(value)
-    except (TypeError, ValueError):
+        parts = call.data.split("|")
+        if len(parts) not in (2, 3):
+            raise ValueError()
+        action, order_id = parts[0], int(parts[1])
+        revision = int(parts[2]) if len(parts) == 3 else 0  # v48 buttons remain usable.
+    except (AttributeError, TypeError, ValueError):
         return bot.answer_callback_query(call.id, "Некорректный заказ", show_alert=True)
-    row = delivery_read(order_id)
-    if not row or row["order_status"] != "omw" or row["state"] in ("stopped", "arrived"):
-        return bot.answer_callback_query(call.id, "Отслеживание этого заказа завершено", show_alert=True)
-    if action == "delivery_pin":
-        conn = get_db_connection()
-        try:
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT d.* FROM delivery_tracking d JOIN orders o ON o.order_id = d.order_id "
+            "JOIN delivery_tracking_prompts p ON p.order_id = d.order_id "
+            "WHERE d.order_id = ? AND o.order_status = 'omw' AND d.state = 'confirm_destination' "
+            "AND d.destination_revision = ? AND p.destination_revision = d.destination_revision "
+            "AND p.chat_id = ? AND p.message_id = ? AND p.purpose = 'candidate' "
+            "AND d.initial_notified = 0 AND d.five_min_notified = 0 AND d.arrival_notified = 0",
+            (order_id, revision, GROUP_CHAT_ID, call.message.message_id),
+        ).fetchone()
+        if not row or row['destination_source'] not in ('google_candidate', 'places_candidate'):
+            conn.rollback()
+            return bot.answer_callback_query(call.id, "Этот вариант уже подтверждён, изменён или заказ завершён.", show_alert=True)
+        now = time.time()
+        if action in ('delivery_pin', 'delivery_edit'):
             conn.execute(
                 "UPDATE delivery_tracking SET state = 'await_destination', destination_confirmed = 0, "
-                "eta_seconds = NULL, eta_at = NULL, eta_location_revision = NULL, "
-                "lease_token = NULL, lease_until = 0 WHERE order_id = ? "
-                "AND state NOT IN ('stopped', 'arrived') "
-                "AND EXISTS (SELECT 1 FROM orders WHERE order_id = ? AND order_status = 'omw')",
-                (order_id, order_id),
+                "destination_revision = destination_revision + 1, places_search_attempted = 0, "
+                "destination_source = 'address', destination_place_id = NULL, destination_lat = NULL, destination_lon = NULL, "
+                "eta_seconds = NULL, eta_at = NULL, eta_location_revision = NULL, last_admin_notice = NULL, "
+                "lease_token = NULL, lease_until = 0, updated_at = ? WHERE order_id = ?", (now, order_id),
             )
-            conn.commit()
-        finally:
-            conn.close()
-        bot.answer_callback_query(call.id, "Отправьте точку клиента ответом на запрос бота")
-        delivery_request_destination(order_id, force=True)
-        return
-    if row["state"] != "confirm_destination" or row["destination_source"] != "google_candidate":
-        return bot.answer_callback_query(call.id, "Точка уже подтверждена или изменена", show_alert=True)
-    conn = get_db_connection()
-    try:
-        conn.execute(
-            "UPDATE delivery_tracking SET destination_confirmed = 1, destination_source = 'confirmed_google', "
-            "state = 'tracking', next_route_at = MAX(?, last_route_at + 60), last_admin_notice = NULL, updated_at = ? "
-            "WHERE order_id = ? AND state = 'confirm_destination' AND destination_source = 'google_candidate' "
-            "AND EXISTS (SELECT 1 FROM orders WHERE order_id = ? AND order_status = 'omw')",
-            (time.time(), time.time(), order_id, order_id),
-        )
+        else:
+            places = row['destination_source'] == 'places_candidate'
+            conn.execute(
+                "UPDATE delivery_tracking SET destination_confirmed = ?, destination_source = ?, "
+                "state = CASE WHEN courier_lat IS NULL THEN 'await_location' ELSE 'tracking' END, "
+                "next_route_at = MAX(?, last_route_at + ?), last_admin_notice = NULL, updated_at = ? WHERE order_id = ?",
+                (0 if places else 1, 'confirmed_places' if places else 'confirmed_google', now,
+                 5 if places else 60, now, order_id),
+            )
+        delivery_clear_destination_prompts(conn, order_id)
         conn.commit()
     finally:
         conn.close()
-    bot.answer_callback_query(call.id, "Точка подтверждена")
-    delivery_check_notifications(order_id)
+    if action in ('delivery_pin', 'delivery_edit'):
+        bot.answer_callback_query(call.id, "Ответьте на новый запрос бота")
+        delivery_request_destination(order_id, force=True)
+    else:
+        bot.answer_callback_query(call.id, "Место подтверждено. Рассчитываем время доставки.")
+        delivery_check_notifications(order_id)
 
 
 class DeliveryRoutesError(Exception):
@@ -2321,14 +2478,16 @@ class DeliveryRoutesError(Exception):
         super().__init__(code)
 
 
-def delivery_compute_route(row: dict) -> dict:
+def delivery_compute_google_route(row: dict) -> dict:
     if not GOOGLE_MAPS_API_KEY:
         raise DeliveryRoutesError("missing_key")
     origin = {"location": {"latLng": {"latitude": row["courier_lat"], "longitude": row["courier_lon"]}}}
-    if row["destination_confirmed"]:
+    if row["destination_source"] == "confirmed_places" and row.get("destination_place_id"):
+        destination = {"placeId": row["destination_place_id"]}
+    elif row["destination_confirmed"]:
         destination = {"location": {"latLng": {"latitude": row["destination_lat"], "longitude": row["destination_lon"]}}}
     else:
-        destination = {"address": row["destination_address"]}
+        destination = {"address": delivery_search_query(row["destination_address"], with_context=False)}
     try:
         response = requests.post(
             "https://routes.googleapis.com/directions/v2:computeRoutes",
@@ -2337,7 +2496,8 @@ def delivery_compute_route(row: dict) -> dict:
                 "X-Goog-FieldMask": "routes.duration,routes.distanceMeters,routes.legs.endLocation,geocodingResults.destination",
                 "Content-Type": "application/json",
             },
-            json={"origin": origin, "destination": destination, "travelMode": "DRIVE", "routingPreference": "TRAFFIC_AWARE", "computeAlternativeRoutes": False},
+            json={"origin": origin, "destination": destination, "travelMode": "DRIVE", "routingPreference": "TRAFFIC_AWARE", "computeAlternativeRoutes": False,
+                  **({"regionCode": GOOGLE_MAPS_REGION_CODE} if re.fullmatch(r"[a-z]{2}", GOOGLE_MAPS_REGION_CODE) else {})},
             timeout=(5, 15),
             allow_redirects=False,
         )
@@ -2359,18 +2519,101 @@ def delivery_compute_route(row: dict) -> dict:
         if not row["destination_confirmed"]:
             geocoded = body.get("geocodingResults", {}).get("destination", {})
             exact_types = {"street_address", "premise", "subpremise", "establishment", "point_of_interest"}
-            if geocoded.get("geocoderStatus", {}).get("code", 0) != 0 or geocoded.get("partialMatch") or not exact_types.intersection(geocoded.get("type", [])) or not geocoded.get("placeId"):
+            if row["destination_source"] != "confirmed_places" and (geocoded.get("geocoderStatus", {}).get("code", 0) != 0 or geocoded.get("partialMatch") or not exact_types.intersection(geocoded.get("type", [])) or not geocoded.get("placeId")):
                 raise DeliveryRoutesError("address_ambiguous")
             endpoint = route["legs"][-1]["endLocation"]["latLng"]
             coords = delivery_coordinates(endpoint.get("latitude", 0), endpoint.get("longitude", 0))
             if coords is None or not endpoint:
                 raise DeliveryRoutesError("address_ambiguous")
-            result.update({"coordinates": coords, "place_id": geocoded["placeId"]})
+            result.update({"coordinates": coords, "place_id": row["destination_place_id"] if row["destination_source"] == "confirmed_places" else geocoded["placeId"]})
         return result
     except DeliveryRoutesError:
         raise
     except (ValueError, TypeError, KeyError, IndexError, AttributeError):
         raise DeliveryRoutesError("no_route") from None
+
+
+def delivery_api_claim_current(row: dict) -> bool:
+    conn = get_db_connection()
+    try:
+        return conn.execute(
+            "SELECT 1 FROM delivery_tracking d JOIN orders o ON o.order_id = d.order_id "
+            "JOIN delivery_api_gate g ON g.gate_id = 1 WHERE d.order_id = ? AND o.order_status = 'omw' "
+            "AND d.state = 'tracking' AND d.lease_token = ? AND g.lease_token = d.lease_token "
+            "AND d.lease_until > ? AND g.lease_until > ? AND d.destination_revision = ? "
+            "AND d.five_min_notified = 0 AND d.arrival_notified = 0",
+            (row['order_id'], row['lease_token'], time.time() + 20, time.time() + 20,
+             row['destination_revision']),
+        ).fetchone() is not None
+    finally:
+        conn.close()
+
+
+def delivery_search_place(row: dict) -> dict:
+    # Claim BEFORE the external call. A crash/timeout requires an explicit retry,
+    # not another billable search on every location edit or Railway restart.
+    if not delivery_api_claim_current(row):
+        raise DeliveryRoutesError('superseded')
+    conn = get_db_connection()
+    try:
+        changed = conn.execute(
+            "UPDATE delivery_tracking SET places_search_attempted = 1 WHERE order_id = ? AND lease_token = ? "
+            "AND destination_revision = ? AND places_search_attempted = 0 AND state = 'tracking' "
+            "AND destination_confirmed = 0 AND five_min_notified = 0 AND arrival_notified = 0 "
+            "AND EXISTS (SELECT 1 FROM orders WHERE order_id = ? AND order_status = 'omw')",
+            (row['order_id'], row['lease_token'], row['destination_revision'], row['order_id']),
+        ).rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    if not changed:
+        raise DeliveryRoutesError('superseded')
+    try:
+        response = requests.post(
+            'https://places.googleapis.com/v1/places:searchText',
+            headers={'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY, 'X-Goog-FieldMask': 'places.id',
+                     'Content-Type': 'application/json'},
+            json={'textQuery': delivery_search_query(row['destination_address']), 'pageSize': 1,
+                  'languageCode': 'tr',
+                  **({'regionCode': GOOGLE_MAPS_REGION_CODE.upper()} if re.fullmatch(r'[a-z]{2}', GOOGLE_MAPS_REGION_CODE) else {})},
+            timeout=(5, 15), allow_redirects=False,
+        )
+    except requests.exceptions.RequestException:
+        raise DeliveryRoutesError('places_network') from None
+    if response.status_code != 200:
+        code = ('places_authorization' if response.status_code in (401, 403) else
+                'places_quota' if response.status_code == 429 else
+                'places_invalid_request' if response.status_code == 400 else 'places_unavailable')
+        raise DeliveryRoutesError(code)
+    try:
+        body = response.json()
+        places = body.get('places', [])
+        if not isinstance(places, list):
+            raise ValueError()
+        if not places:
+            raise DeliveryRoutesError('places_not_found')
+        place_id = places[0].get('id')
+        if not isinstance(place_id, str) or not place_id.strip() or len(place_id) > 512:
+            raise ValueError()
+        return {'places_candidate': True, 'place_id': place_id}
+    except (ValueError, TypeError, KeyError, AttributeError):
+        raise DeliveryRoutesError('places_unavailable') from None
+
+
+def delivery_compute_route(row: dict) -> dict:
+    if not delivery_api_claim_current(row):
+        raise DeliveryRoutesError('superseded')
+    search_eligible = not row['destination_confirmed'] and row['destination_source'] != 'confirmed_places'
+    if search_eligible and row['places_search_attempted']:
+        raise DeliveryRoutesError('places_retry')
+    if search_eligible and (not str(row['destination_address'] or '').strip() or len(row['destination_address']) > 512):
+        raise DeliveryRoutesError('address_ambiguous')
+    try:
+        return delivery_compute_google_route(row)
+    except DeliveryRoutesError as exc:
+        if not search_eligible or exc.code not in ('address_ambiguous', 'no_route', 'invalid_request'):
+            raise
+    return delivery_search_place(row)
 
 
 def delivery_claim_route() -> dict | None:
@@ -2431,13 +2674,22 @@ def delivery_finish_route(claim: dict, result: dict | None, error: str | None) -
         conn.execute("BEGIN IMMEDIATE")
         current = conn.execute(
             "SELECT error_count FROM delivery_tracking WHERE order_id = ? AND lease_token = ? "
+            "AND destination_revision = ? AND lease_until > ? "
             "AND state = 'tracking' AND five_min_notified = 0 AND arrival_notified = 0 "
             "AND EXISTS (SELECT 1 FROM orders WHERE order_id = ? AND order_status = 'omw')",
-            (order_id, token, order_id),
+            (order_id, token, claim['destination_revision'], now, order_id),
         ).fetchone()
-        if current:
+        if current and error != 'superseded':
             actionable = True
-            if result is not None:
+            if result is not None and result.get('places_candidate'):
+                conn.execute(
+                    "UPDATE delivery_tracking SET state = 'confirm_destination', destination_source = 'places_candidate', "
+                    "destination_place_id = ?, destination_lat = NULL, destination_lon = NULL, destination_confirmed = 0, "
+                    "eta_seconds = NULL, eta_at = NULL, eta_location_revision = NULL, "
+                    "lease_token = NULL, lease_until = 0, error_count = 0, last_admin_notice = NULL, updated_at = ? "
+                    "WHERE order_id = ?", (result['place_id'], now, order_id),
+                )
+            elif result is not None:
                 eta = result["eta"]
                 interval = 180 if eta > 600 else 60
                 conn.execute(
@@ -2447,15 +2699,18 @@ def delivery_finish_route(claim: dict, result: dict | None, error: str | None) -
                     (eta, claim["location_revision"], claim["courier_lat"], claim["courier_lon"], now, now + interval, order_id),
                 )
                 if not claim["destination_confirmed"]:
+                    places = claim['destination_source'] == 'confirmed_places'
                     conn.execute(
-                        "UPDATE delivery_tracking SET state = 'confirm_destination', destination_source = 'google_candidate', "
+                        "UPDATE delivery_tracking SET state = ?, destination_source = ?, destination_confirmed = ?, "
                         "destination_lat = ?, destination_lon = ?, destination_place_id = ? WHERE order_id = ?",
-                        (*result["coordinates"], result["place_id"], order_id),
+                        ('tracking' if places else 'confirm_destination', 'confirmed_places' if places else 'google_candidate',
+                         int(places), *result['coordinates'], result['place_id'], order_id),
                     )
             else:
                 errors = int(current[0]) + 1
                 backoff = min(1800, 60 * (2 ** min(errors, 5)))
-                needs_pin = error in ("address_ambiguous", "no_route", "invalid_request") and not claim["destination_confirmed"]
+                needs_pin = (error in ('address_ambiguous', 'no_route', 'invalid_request') or
+                             str(error).startswith('places_')) and not claim['destination_confirmed']
                 conn.execute(
                     "UPDATE delivery_tracking SET lease_token = NULL, lease_until = 0, error_count = ?, next_route_at = ?, "
                     "state = CASE WHEN ? THEN 'await_destination' ELSE state END WHERE order_id = ?",
@@ -2464,7 +2719,7 @@ def delivery_finish_route(claim: dict, result: dict | None, error: str | None) -
         conn.execute(
             "UPDATE delivery_api_gate SET lease_token = NULL, lease_until = 0, "
             "next_allowed_at = MAX(next_allowed_at, ?) WHERE gate_id = 1 AND lease_token = ?",
-            (now + (60 if error in ("quota", "authorization", "missing_key") else 5), token),
+            (now + (60 if error in ('quota', 'authorization', 'missing_key', 'places_quota', 'places_authorization') else 5), token),
         )
         conn.commit()
     finally:
@@ -2476,18 +2731,26 @@ def delivery_finish_route(claim: dict, result: dict | None, error: str | None) -
         delivery_check_notifications(order_id)
     else:
         errors_text = {
-            "missing_key": "В Railway не задан GOOGLE_MAPS_API_KEY.",
-            "authorization": "Google отклонил ключ. Проверьте Routes API, ограничения ключа и Billing.",
-            "quota": "Достигнут лимит Google Routes. Запросы временно замедлены.",
-            "network": "Google Routes временно недоступен. Повтор будет с задержкой.",
-            "address_ambiguous": "Google не распознал точный адрес. Клиенту уведомления не отправлены.",
-            "no_route": "Google не нашёл маршрут. Клиенту уведомления не отправлены.",
-            "invalid_request": "Google отклонил расчёт маршрута. Проверьте адрес доставки.",
-            "google_error": "Ошибка Google Routes. Повтор будет с задержкой.",
+            'missing_key': 'В Railway не задан GOOGLE_MAPS_API_KEY.',
+            'authorization': 'Google отклонил ключ. Проверьте Routes API, ограничения ключа и Billing.',
+            'quota': 'Достигнут лимит Google Routes. Запросы временно замедлены.',
+            'network': 'Google Routes временно недоступен. Повтор будет с задержкой.',
+            'address_ambiguous': 'Точный адрес не подтверждён. Уточните его текстом или отправьте точку клиента.',
+            'no_route': 'Google не нашёл маршрут. Клиенту уведомления не отправлены.',
+            'invalid_request': 'Google отклонил расчёт маршрута. Проверьте адрес и настройки запроса.',
+            'google_error': 'Ошибка Google Routes. Повтор будет с задержкой.',
+            'places_authorization': 'Поиск мест недоступен. Включите Places API (New) и разрешите его для ключа. '
+                                    'Затем ответьте на запрос адреса тем же названием.',
+            'places_quota': 'Лимит поиска мест. Повторите адрес позже или отправьте точку клиента.',
+            'places_network': 'Не удалось получить ответ поиска мест. Для повтора отправьте адрес ещё раз.',
+            'places_not_found': 'Место по этому названию не найдено. Уточните название и город или отправьте точку клиента.',
+            'places_invalid_request': 'Google отклонил поиск места. Уточните адрес или отправьте точку клиента.',
+            'places_unavailable': 'Поиск мест временно недоступен. Для повтора отправьте адрес ещё раз.',
+            'places_retry': 'Предыдущая попытка поиска не завершилась подтверждением. Для повтора отправьте адрес ещё раз.',
         }
-        delivery_admin_notice(order_id, str(error), errors_text.get(error, "Не удалось рассчитать маршрут."))
+        delivery_admin_notice(order_id, str(error), errors_text.get(error, 'Не удалось рассчитать маршрут.'))
         row = delivery_read(order_id)
-        if row and row["state"] == "await_destination":
+        if row and row['state'] == 'await_destination':
             delivery_request_destination(order_id)
 
 
