@@ -68,7 +68,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.10.18-places-address-search-v49"
+BOT_VERSION = "2026.10.18-saved-address-retry-v50"
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
 # Search context for this Alanya delivery shop; the customer's original text is retained.
 DELIVERY_SEARCH_CONTEXT = os.getenv("DELIVERY_SEARCH_CONTEXT", "Alanya, Antalya, Türkiye").strip()
@@ -1285,7 +1285,7 @@ def delivery_admin_status(row: dict, receipts: dict) -> str:
     finished = state in ('arrived', 'stopped')
     attention = ''
     if state == 'await_destination':
-        attention = '📍 Уточните адрес текстом или отправьте точку клиента.'
+        attention = '📍 Проверьте адрес или нажмите «Повторить поиск» под ним.'
     elif state == 'confirm_destination':
         attention = '📍 Подтвердите адрес клиента.'
     elif not finished:
@@ -1299,10 +1299,10 @@ def delivery_admin_status(row: dict, receipts: dict) -> str:
             'invalid_request': 'Не удалось рассчитать маршрут.',
             'google_error': 'Ошибка Google Maps. Повторим расчёт.',
             'places_authorization': 'Разрешите ключу доступ к Places API (New).',
-            'places_quota': 'Лимит поиска мест. Уточните адрес позже или отправьте точку.',
-            'places_network': 'Поиск места прерван. Уточните адрес или отправьте точку.',
+            'places_quota': 'Лимит поиска мест. Повторите поиск позже.',
+            'places_network': 'Поиск места прерван. Нажмите «Повторить поиск».',
             'places_not_found': 'Место не найдено. Уточните адрес клиента.',
-            'places_retry': 'Для повторного поиска отправьте адрес ещё раз.',
+            'places_retry': 'Нажмите «Повторить поиск» под сохранённым адресом.',
             'bad_location': 'Отправьте геопозицию заново.',
             'inaccurate_location': 'Нужна более точная геопозиция.',
             'old_location': 'Отправьте свежую геопозицию.',
@@ -1970,36 +1970,157 @@ def delivery_save_prompt(order_id: int, message_id: int, purpose: str, message_d
 
 
 @delivery_lifecycle_guard
-def delivery_request_destination(order_id: int, reason: str = "", force: bool = False) -> None:
+def delivery_request_destination(order_id: int, reason: str = "", force: bool = False,
+                                 refresh_existing: bool = False) -> None:
     row = delivery_read(order_id)
     if not row or row["order_status"] != "omw" or row["state"] != "await_destination":
         return
     conn = get_db_connection()
     try:
         existing = conn.execute(
-            "SELECT 1 FROM delivery_tracking_prompts WHERE order_id = ? AND purpose = 'destination' "
-            "AND destination_revision = ?", (order_id, row["destination_revision"]),
+            "SELECT message_id FROM delivery_tracking_prompts WHERE order_id = ? AND purpose = 'destination' "
+            "AND destination_revision = ? ORDER BY message_id DESC LIMIT 1",
+            (order_id, row["destination_revision"]),
         ).fetchone()
     finally:
         conn.close()
-    if existing and not force:
+    if existing and not force and not refresh_existing:
         return
+    address = str(row['destination_address'] or '').strip()
+    keyboard = types.InlineKeyboardMarkup(row_width=1)
+    if address and len(address) <= 512 and 'http' not in address.lower():
+        keyboard.add(types.InlineKeyboardButton(
+            "🔄 Повторить поиск",
+            callback_data=f"delivery_retry|{order_id}|{row['destination_revision']}",
+        ))
+        instruction = "Повторный поиск использует сохранённый адрес.\n\n"
+    else:
+        instruction = ''
+    text = (
+        f"📍 <b>Адрес доставки · заказ №{order_id}</b>\n\n"
+        f"{html.escape(address[:512] or 'Адрес не указан')}\n\n"
+        + (f"{html.escape(reason)}\n\n" if reason else '')
+        + instruction
+        + "Для уточнения ответьте на это сообщение новым адресом или обычной точкой КЛИЕНТА."
+    )
+    if existing and not force:
+        # Refresh once at startup. Telegram may refuse to edit old ForceReply messages;
+        # only a definite rejection permits replacing them with a new prompt.
+        try:
+            bot.edit_message_text(text, chat_id=GROUP_CHAT_ID, message_id=existing[0],
+                                  reply_markup=keyboard)
+        except Exception as exc:
+            code, description = delivery_telegram_error(exc)
+            if code == 400 and 'message is not modified' in description:
+                return
+            if not (code == 400 and any(part in description for part in (
+                    "message can't be edited", 'message can not be edited',
+                    'message cannot be edited', 'message to edit not found'))):
+                print(f"Delivery destination controls {order_id}: {type(exc).__name__}", flush=True)
+                return
+        else:
+            return
     try:
         message = bot.send_message(
-            GROUP_CHAT_ID,
-            f"✏️ <b>Уточните адрес · заказ №{order_id}</b>\n\n"
-            f"Сейчас: {html.escape(str(row['destination_address'] or 'не указан')[:512])}\n\n"
-            + (f"{html.escape(reason)}\n\n" if reason else "")
-            + "Ответьте на ЭТО сообщение уточнённым названием ЖК, отеля или адресом с городом. "
-              "Бот повторит поиск.\n\n"
-              "Также можно отправить обычную точку КЛИЕНТА: 📎 → Геопозиция → выбрать точку на карте. "
-              "Геопозицию курьера отправляйте ответом на отдельный запрос после OMW.",
-            reply_markup=types.ForceReply(selective=False),
+            GROUP_CHAT_ID, text, reply_markup=keyboard,
         )
         delivery_save_prompt(order_id, message.message_id, "destination", getattr(message, 'date', None),
                              row["destination_revision"])
+        if existing:
+            conn = get_db_connection()
+            try:
+                # Save the new prompt first: a failed send must leave the old one usable.
+                conn.execute(
+                    "UPDATE delivery_group_messages SET fulfilled = 1 WHERE order_id = ? "
+                    "AND kind = 'destination_prompt' AND message_id != ?",
+                    (order_id, message.message_id),
+                )
+                conn.execute(
+                    "DELETE FROM delivery_tracking_prompts WHERE order_id = ? AND purpose = 'destination' "
+                    "AND message_id != ?", (order_id, message.message_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
     except Exception as exc:
         print(f"Delivery destination prompt {order_id}: {type(exc).__name__}", flush=True)
+
+
+def delivery_restore_destination_controls() -> None:
+    """Refresh existing waiting prompts after an upgrade; do not restart searches."""
+    conn = get_db_connection()
+    try:
+        orders = conn.execute(
+            "SELECT d.order_id FROM delivery_tracking d JOIN orders o ON o.order_id = d.order_id "
+            "WHERE o.order_status = 'omw' AND d.state = 'await_destination' "
+            "AND d.initial_notified = 0 AND d.five_min_notified = 0 AND d.arrival_notified = 0",
+        ).fetchall()
+    finally:
+        conn.close()
+    for (order_id,) in orders:
+        delivery_request_destination(order_id, refresh_existing=True)
+
+
+@bot.callback_query_handler(func=lambda call: bool(call.data) and call.data.startswith('delivery_retry|'))
+@delivery_lifecycle_guard
+def handle_delivery_search_retry(call):
+    if not getattr(call, 'message', None) or call.message.chat.id != GROUP_CHAT_ID or not is_delivery_operator(call.from_user.id):
+        return bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
+    try:
+        _, order_value, revision_value = call.data.split('|')
+        order_id, revision = int(order_value), int(revision_value)
+    except (AttributeError, TypeError, ValueError):
+        return bot.answer_callback_query(call.id, "Некорректный заказ", show_alert=True)
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        row = conn.execute(
+            "SELECT d.* FROM delivery_tracking d JOIN orders o ON o.order_id = d.order_id "
+            "JOIN delivery_tracking_prompts p ON p.order_id = d.order_id "
+            "WHERE d.order_id = ? AND o.order_status = 'omw' AND d.state = 'await_destination' "
+            "AND d.destination_confirmed = 0 AND d.destination_revision = ? "
+            "AND p.destination_revision = d.destination_revision AND p.purpose = 'destination' "
+            "AND p.chat_id = ? AND p.message_id = ? "
+            "AND d.initial_notified = 0 AND d.five_min_notified = 0 AND d.arrival_notified = 0",
+            (order_id, revision, GROUP_CHAT_ID, call.message.message_id),
+        ).fetchone()
+        if not row:
+            conn.rollback()
+            return bot.answer_callback_query(call.id, "Поиск уже запущен, адрес изменён или заказ завершён.", show_alert=True)
+        address = str(row['destination_address'] or '').strip()
+        if not address or len(address) > 512 or 'http' in address.lower():
+            conn.rollback()
+            return bot.answer_callback_query(call.id, "Для поиска нужен текстовый адрес. Ответьте адресом или точкой клиента.", show_alert=True)
+        now = time.time()
+        # The saved search text (including any earlier correction) stays unchanged.
+        # A new revision consumes ALL old buttons/replies, even across workers/restarts.
+        conn.execute(
+            "UPDATE delivery_tracking SET destination_revision = destination_revision + 1, "
+            "places_search_attempted = 0, destination_place_id = NULL, destination_source = 'address', "
+            "destination_lat = NULL, destination_lon = NULL, destination_confirmed = 0, "
+            "state = CASE WHEN courier_lat IS NULL THEN 'await_location' ELSE 'tracking' END, "
+            "eta_seconds = NULL, eta_at = NULL, eta_location_revision = NULL, "
+            "lease_token = NULL, lease_until = 0, next_route_at = MAX(?, last_route_at + 60), "
+            "last_admin_notice = NULL, error_count = 0, updated_at = ? WHERE order_id = ?",
+            (now, now, order_id),
+        )
+        delivery_clear_destination_prompts(conn, order_id)
+        conn.commit()
+    finally:
+        conn.close()
+    fresh = delivery_location_fresh(dict(row), now)
+    bot.answer_callback_query(
+        call.id,
+        "Повторный поиск запланирован по сохранённому адресу." if fresh else
+        "Адрес сохранён. Для поиска нужна свежая геопозиция курьера — отправьте её после OMW.",
+        show_alert=not fresh,
+    )
+    try:
+        bot.edit_message_reply_markup(chat_id=GROUP_CHAT_ID, message_id=call.message.message_id,
+                                      reply_markup=None)
+    except Exception as exc:
+        print(f"Delivery retry controls {order_id}: {type(exc).__name__}", flush=True)
 
 
 def delivery_request_courier(order_id: int) -> None:
@@ -2740,13 +2861,13 @@ def delivery_finish_route(claim: dict, result: dict | None, error: str | None) -
             'invalid_request': 'Google отклонил расчёт маршрута. Проверьте адрес и настройки запроса.',
             'google_error': 'Ошибка Google Routes. Повтор будет с задержкой.',
             'places_authorization': 'Поиск мест недоступен. Включите Places API (New) и разрешите его для ключа. '
-                                    'Затем ответьте на запрос адреса тем же названием.',
-            'places_quota': 'Лимит поиска мест. Повторите адрес позже или отправьте точку клиента.',
-            'places_network': 'Не удалось получить ответ поиска мест. Для повтора отправьте адрес ещё раз.',
+                                    'Затем нажмите «Повторить поиск» под сохранённым адресом.',
+            'places_quota': 'Лимит поиска мест. Нажмите «Повторить поиск» позже или отправьте точку клиента.',
+            'places_network': 'Не удалось получить ответ поиска мест. Нажмите «Повторить поиск».',
             'places_not_found': 'Место по этому названию не найдено. Уточните название и город или отправьте точку клиента.',
             'places_invalid_request': 'Google отклонил поиск места. Уточните адрес или отправьте точку клиента.',
-            'places_unavailable': 'Поиск мест временно недоступен. Для повтора отправьте адрес ещё раз.',
-            'places_retry': 'Предыдущая попытка поиска не завершилась подтверждением. Для повтора отправьте адрес ещё раз.',
+            'places_unavailable': 'Поиск мест временно недоступен. Нажмите «Повторить поиск».',
+            'places_retry': 'Предыдущая попытка поиска не завершилась подтверждением. Нажмите «Повторить поиск».',
         }
         delivery_admin_notice(order_id, str(error), errors_text.get(error, 'Не удалось рассчитать маршрут.'))
         row = delivery_read(order_id)
@@ -11695,6 +11816,7 @@ def handle_courier_on_way(call):
 # ------------------------------------------------------------------------
 if __name__ == "__main__":
     delivery_recover_notifications()
+    delivery_restore_destination_controls()
     # 1) Определяем московскую зону
     moscow_tz = pytz.timezone("Europe/Moscow")
 
