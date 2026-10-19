@@ -68,7 +68,7 @@ PROOF_REQUIRED_DELIVERY_METHODS = {
     "rub", "dollar", "euro", "uah", "iban", "crypto",
 }
 
-BOT_VERSION = "2026.10.18-saved-address-retry-v50"
+BOT_VERSION = "2026.10.19-order-points-cleanup-v51"
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
 # Search context for this Alanya delivery shop; the customer's original text is retained.
 DELIVERY_SEARCH_CONTEXT = os.getenv("DELIVERY_SEARCH_CONTEXT", "Alanya, Antalya, Türkiye").strip()
@@ -1227,32 +1227,43 @@ def delivery_keyboard_json(markup) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
-def delivery_remember_admin_card(order_id: int, message) -> None:
+def delivery_remember_admin_card(order_id: int, message) -> bool:
     """Keep the original card, including HTML and buttons, across restarts."""
     conn = None
     try:
         if message.chat.id != GROUP_CHAT_ID:
-            return
+            return False
         plain = str(message.text or '').split('\n\n' + DELIVERY_CARD_HEADING, 1)[0]
         body_html = str(getattr(message, 'html_text', None) or html.escape(plain))
         body_html = body_html.split('\n\n<b>' + DELIVERY_CARD_HEADING + '</b>', 1)[0]
         plain = re.sub(r'\n\n🚗 In Delivery\s*$', '', plain)
         body_html = re.sub(r'\n\n🚗 In Delivery\s*$', '', body_html)
         conn = get_db_connection()
-        conn.execute(
+        order = conn.execute(
+            'SELECT order_status, order_group_message_id FROM orders WHERE order_id = ?',
+            (order_id,),
+        ).fetchone()
+        if not order or (order[1] and int(order[1]) != int(message.message_id)):
+            return False
+        final_html = (str(getattr(message, 'html_text', None) or html.escape(message.text or ''))
+                      if order[0] == 'delivered' else None)
+        saved = conn.execute(
             'INSERT INTO delivery_admin_cards '
-            '(order_id, chat_id, message_id, body_html, body_text, keyboard_json) '
-            'VALUES (?, ?, ?, ?, ?, ?) '
+            '(order_id, chat_id, message_id, body_html, body_text, keyboard_json, final_html) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?) '
             'ON CONFLICT(order_id) DO UPDATE SET keyboard_json = excluded.keyboard_json, '
+            'final_html = COALESCE(delivery_admin_cards.final_html, excluded.final_html), '
             "rendered_html = '', next_attempt_at = 0, disabled = 0 "
             'WHERE delivery_admin_cards.chat_id = excluded.chat_id '
             'AND delivery_admin_cards.message_id = excluded.message_id',
             (order_id, GROUP_CHAT_ID, message.message_id, body_html, plain,
-             delivery_keyboard_json(message.reply_markup)),
-        )
+             delivery_keyboard_json(message.reply_markup), final_html),
+        ).rowcount
         conn.commit()
+        return saved == 1
     except Exception as exc:
         print(f'Delivery card capture {order_id}: {type(exc).__name__}', flush=True)
+        return False
     finally:
         if conn is not None:
             conn.close()
@@ -1355,10 +1366,27 @@ def delivery_admin_status(row: dict, receipts: dict) -> str:
     return '\n'.join(lines) if len(lines) > 1 else ''
 
 
+def order_card_points_text(text: str, total: int) -> str:
+    """One cumulative, ledger-backed line; never add points while rendering."""
+    text = re.sub(r'\n\n🎁 Начислено баллов: (?:<b>)?\d+(?:</b>)?(?=\n\n|$)', '', text).rstrip()
+    if total <= 0:
+        return text
+    section = f'\n\n🎁 Начислено баллов: <b>{int(total)}</b>'
+    result = text + section
+    if len(result.encode('utf-16-le')) > 8000:
+        # Reserve space for the credit even on a Telegram-length order card.
+        plain = html.unescape(re.sub(r'<[^>]+>', '', text))
+        room = max(0, 3900 - len(section.encode('utf-16-le')) // 2)
+        plain = plain.encode('utf-16-le')[:room * 2].decode('utf-16-le', errors='ignore')
+        result = html.escape(plain.rstrip()) + '…' + section
+    return result
+
+
 def delivery_admin_card_text(row: dict, receipts: dict) -> str:
     if row.get('final_html') is not None:
-        return row['final_html']
-    section = '\n\n' + delivery_admin_status(row, receipts)
+        return order_card_points_text(row['final_html'], int(row.get('manual_points_total') or 0))
+    status = delivery_admin_status(row, receipts) if row.get('state') is not None else ''
+    section = '\n\n' + status if status else ''
     result = row['body_html'] + section
     # For unusually long orders, retain valid HTML and reserve room for statuses.
     # The complete original text stays in SQLite; no order data is changed.
@@ -1369,7 +1397,7 @@ def delivery_admin_card_text(row: dict, receipts: dict) -> str:
         if len(units) > limit * 2:
             plain = units[:limit * 2].decode('utf-16-le', errors='ignore').rstrip() + '…'
         result = html.escape(plain) + section
-    return result
+    return order_card_points_text(result, int(row.get('manual_points_total') or 0))
 
 
 def delivery_completed_card_text(order_id: int, current_html: str) -> str:
@@ -1411,7 +1439,9 @@ def delivery_admin_cards_tick(order_id: int | None = None) -> None:
                 'SELECT c.order_id FROM delivery_admin_cards c JOIN orders o ON o.order_id = c.order_id '
                 'LEFT JOIN delivery_tracking d ON d.order_id = c.order_id '
                 "WHERE c.chat_id = ? AND ((o.order_status = 'omw' AND d.state != 'stopped' AND c.final_html IS NULL) "
-                "OR (o.order_status = 'delivered' AND c.final_html IS NOT NULL)) "
+                "OR (o.order_status = 'delivered' AND c.final_html IS NOT NULL) "
+                "OR (o.order_status = 'active' AND c.final_html IS NULL AND EXISTS "
+                "(SELECT 1 FROM manual_point_credits p WHERE p.order_id = c.order_id))) "
                 'AND c.disabled = 0 AND c.next_attempt_at <= ? AND c.edit_lease_until <= ? '
                 'AND (? IS NULL OR c.order_id = ?) ORDER BY c.next_attempt_at, c.order_id',
                 (GROUP_CHAT_ID, now, now, order_id, order_id),
@@ -1429,12 +1459,16 @@ def delivery_admin_cards_tick(order_id: int | None = None) -> None:
                     conn.execute('BEGIN IMMEDIATE')
                     now = time.time()
                     raw = conn.execute(
-                        'SELECT c.*, d.*, o.order_status FROM delivery_admin_cards c '
+                        'SELECT c.*, d.*, o.order_status, '
+                        '(SELECT COALESCE(SUM(p.points), 0) FROM manual_point_credits p '
+                        'WHERE p.order_id = c.order_id) AS manual_points_total FROM delivery_admin_cards c '
                         'LEFT JOIN delivery_tracking d ON d.order_id = c.order_id '
                         'JOIN orders o ON o.order_id = c.order_id '
                         "WHERE c.order_id = ? AND c.chat_id = ? AND ((o.order_status = 'omw' "
                         "AND d.state != 'stopped' AND c.final_html IS NULL) "
-                        "OR (o.order_status = 'delivered' AND c.final_html IS NOT NULL)) AND c.disabled = 0 "
+                        "OR (o.order_status = 'delivered' AND c.final_html IS NOT NULL) "
+                        "OR (o.order_status = 'active' AND c.final_html IS NULL AND EXISTS "
+                        "(SELECT 1 FROM manual_point_credits p WHERE p.order_id = c.order_id))) AND c.disabled = 0 "
                         'AND c.next_attempt_at <= ? AND c.edit_lease_until <= ?',
                         (current_id, GROUP_CHAT_ID, now, now),
                     ).fetchone()
@@ -1500,12 +1534,12 @@ def delivery_admin_cards_tick(order_id: int | None = None) -> None:
                     # A menu callback may have queued a newer keyboard during this edit.
                     conn.execute(
                         'UPDATE delivery_admin_cards SET '
-                        "rendered_html = CASE WHEN final_html IS NOT NULL AND final_html != ? THEN '' "
+                        "rendered_html = CASE WHEN final_html IS NOT ? THEN '' "
                         'WHEN ? AND keyboard_json = ? THEN ? ELSE rendered_html END, '
                         'edit_attempts = CASE WHEN ? THEN 0 ELSE edit_attempts END, '
                         'next_attempt_at = ?, disabled = ?, edit_lease_token = NULL, edit_lease_until = 0 '
                         'WHERE order_id = ? AND edit_lease_token = ?',
-                        (text, updated, row['keyboard_json'], text, updated, 0 if updated else time.time() + delay,
+                        (row['final_html'], updated, row['keyboard_json'], text, updated, 0 if updated else time.time() + delay,
                          int(disabled), current_id, token),
                     )
                     conn.commit()
@@ -1526,7 +1560,9 @@ def delivery_edit_order_markup(chat_id: int, message_id: int, reply_markup):
         try:
             row = conn.execute(
                 'SELECT c.order_id, o.order_status FROM delivery_admin_cards c JOIN orders o ON o.order_id = c.order_id '
-                "WHERE c.chat_id = ? AND c.message_id = ? AND o.order_status IN ('omw', 'delivered') AND c.disabled = 0",
+                "WHERE c.chat_id = ? AND c.message_id = ? AND c.disabled = 0 AND "
+                "(o.order_status IN ('omw', 'delivered') OR (o.order_status = 'active' AND EXISTS "
+                "(SELECT 1 FROM manual_point_credits p WHERE p.order_id = c.order_id)))",
                 (chat_id, message_id),
             ).fetchone()
             if row:
@@ -1645,9 +1681,10 @@ def delivery_queue_cancelled_order_card(cursor, order_id: int, message_id,
 
 def delivery_remember_group_message(order_id, message_id: int, kind: str,
                                     message_date=None, is_live: bool = False) -> None:
-    """Register only delivery service messages; never scan/delete chat history."""
+    """Register known service messages only; never scan/delete chat history."""
     allowed = {'courier_prompt', 'destination_prompt', 'candidate_prompt', 'ack',
-               'courier_location', 'destination_location', 'notice', 'hint', 'cancellation_notice'}
+               'courier_location', 'destination_location', 'notice', 'hint', 'cancellation_notice',
+               'points_prompt', 'points_reply', 'points_notice'}
     if kind not in allowed:
         return
     now = time.time()
@@ -1657,14 +1694,17 @@ def delivery_remember_group_message(order_id, message_id: int, kind: str,
         # Refuse the order card even if a caller accidentally registers it.
         card = conn.execute(
             "SELECT 1 FROM delivery_tracking WHERE group_order_message_id = ? "
-            "UNION ALL SELECT 1 FROM orders WHERE order_group_message_id = ? LIMIT 1",
-            (message_id, message_id),
+            "UNION ALL SELECT 1 FROM orders WHERE order_group_message_id = ? "
+            "UNION ALL SELECT 1 FROM delivery_admin_cards WHERE chat_id = ? AND message_id = ? LIMIT 1",
+            (message_id, message_id, GROUP_CHAT_ID, message_id),
         ).fetchone()
         if card:
             return
         # Leave ten seconds for the cleanup job to meet the five-minute limit.
         delete_after = ((float(message_date) if message_date is not None else now) + 290
                         if kind == 'cancellation_notice' else now + 10)
+        if kind == 'points_notice':
+            delete_after = now + 60  # Leave time to read a failed-credit warning.
         conn.execute(
             "INSERT INTO delivery_group_messages "
             "(chat_id, message_id, order_id, kind, is_live, message_date, first_seen_at, delete_after) "
@@ -1708,6 +1748,19 @@ def delivery_fulfill_group_prompts(order_id: int, purpose: str) -> None:
 def delivery_group_message_ready(message: dict, row: dict | None, now: float) -> bool:
     if message['chat_id'] != GROUP_CHAT_ID or now < message['delete_after']:
         return False
+    if message['kind'] in ('points_prompt', 'points_reply', 'points_notice'):
+        if row and message['message_id'] == row['group_order_message_id']:
+            return False
+        if message['kind'] == 'points_prompt':
+            # Keep the current input prompt. Replaced, completed and orphaned
+            # (after a restart) prompts are removed by the same retry queue.
+            with pending_manual_point_credits_lock:
+                return not any(
+                    p.get('prompt_chat_id') == message['chat_id']
+                    and p.get('prompt_message_id') == message['message_id']
+                    for p in pending_manual_point_credits.values()
+                )
+        return True
     if message['kind'] == 'cancelled_order_card':
         return message['order_id'] is not None and (row is None or row['state'] == 'stopped')
     if message['kind'] == 'cancellation_notice':
@@ -1809,8 +1862,10 @@ def delivery_group_cleanup_tick(cancelled_order_id: int | None = None) -> None:
                     ).fetchone()
                     row = dict(raw) if raw else None
                     card = conn.execute(
-                        'SELECT 1 FROM orders WHERE order_group_message_id = ? LIMIT 1',
-                        (message['message_id'],),
+                        'SELECT 1 FROM orders WHERE order_group_message_id = ? '
+                        'UNION ALL SELECT 1 FROM delivery_admin_cards WHERE chat_id = ? AND message_id = ? '
+                        "AND ? != 'cancelled_order_card' LIMIT 1",
+                        (message['message_id'], GROUP_CHAT_ID, message['message_id'], message['kind']),
                     ).fetchone()
                     cancelled_card = (
                         message['kind'] == 'cancelled_order_card'
@@ -6769,24 +6824,7 @@ def finalize_order(call):
         if promo_code else ""
     )
 
-    full_rus = (
-        f"📥 Новый заказ №{order_id} от {safe_customer}:\n\n"
-        f"{summary}\n\n"
-        f"{promo_line_ru}"
-        f"Итог: {format_money(total_after)}₺{conversion_suffix}\n\n"
-        f"📍 Адрес: {safe_address}\n"
-        f"📱 Контакт: {safe_contact}\n"
-        f"💬 Комментарий: {safe_comment}"
-    )
-    if PERSONAL_CHAT_ID:
-        try:
-            bot.send_message(
-                PERSONAL_CHAT_ID,
-                full_rus,
-            )
-        except Exception as exc:
-            print(f"Personal order notification failed for order {order_id}: {exc}")
-
+    # The admin order is sent once, to the group. Customer receipts below stay.
     full_en = (
         f"📥 New order #{order_id} from {safe_customer}:\n\n"
         f"{summary}\n\n"
@@ -9605,6 +9643,7 @@ def cancel_group_post_callback(call):
 @bot.callback_query_handler(
     func=lambda call: call.data and call.data.startswith("credit_points|")
 )
+@delivery_lifecycle_guard
 def handle_manual_point_credit_prompt(call):
     """Запрашивает у владельца количество баллов для выбранного заказа."""
     if not is_owner(call.from_user.id):
@@ -9629,6 +9668,12 @@ def handle_manual_point_credit_prompt(call):
             show_alert=True,
         )
     customer_chat_id = int(order_row[0])
+    # Capture the actual order before accepting an amount, so the result can
+    # be shown on this card and retried after a Telegram failure or restart.
+    if not delivery_remember_admin_card(order_id, call.message):
+        return bot.answer_callback_query(
+            call.id, "Не удалось сохранить карточку заказа. Попробуйте ещё раз.", show_alert=True,
+        )
 
     try:
         prompt = bot.send_message(
@@ -9653,10 +9698,14 @@ def handle_manual_point_credit_prompt(call):
             show_alert=True,
         )
 
+    delivery_remember_group_message(
+        order_id, prompt.message_id, 'points_prompt', getattr(prompt, 'date', None),
+    )
     with pending_manual_point_credits_lock:
         pending_manual_point_credits[call.from_user.id] = {
             "order_id": order_id,
             "customer_chat_id": customer_chat_id,
+            "order_message_id": call.message.message_id,
             "prompt_chat_id": call.message.chat.id,
             "prompt_message_id": prompt.message_id,
         }
@@ -9683,6 +9732,7 @@ def is_manual_point_credit_reply(message) -> bool:
 
 
 @bot.message_handler(func=is_manual_point_credit_reply, content_types=["text"])
+@delivery_lifecycle_guard
 def handle_manual_point_credit_input(message):
     """Начисляет введённые баллы сразу после валидного ответа владельца."""
     if not is_manual_point_credit_reply(message):
@@ -9702,22 +9752,28 @@ def handle_manual_point_credit_input(message):
         ):
             return
 
+    delivery_remember_group_message(
+        int(pending["order_id"]), message.message_id, 'points_reply', getattr(message, 'date', None),
+    )
     if raw_value.casefold() in {"0", "отмена", "cancel"}:
         with pending_manual_point_credits_lock:
             if pending_manual_point_credits.get(admin_id) is not pending:
                 return
             pending_manual_point_credits.pop(admin_id, None)
-        bot.reply_to(message, "Начисление отменено.")
         return
 
     if not re.fullmatch(r"\+?\d+", raw_value) or int(raw_value) <= 0:
-        retry_prompt = bot.reply_to(
-            message,
+        retry_prompt = bot.send_message(
+            GROUP_CHAT_ID,
             "Введите целое число больше 0. Для отмены отправьте <code>0</code>.",
+            reply_to_message_id=pending["order_message_id"],
             reply_markup=types.ForceReply(
                 selective=True,
                 input_field_placeholder="Например: 200",
             ),
+        )
+        delivery_remember_group_message(
+            int(pending["order_id"]), retry_prompt.message_id, 'points_prompt', getattr(retry_prompt, 'date', None),
         )
         with pending_manual_point_credits_lock:
             current = pending_manual_point_credits.get(admin_id)
@@ -9754,7 +9810,7 @@ def handle_manual_point_credit_input(message):
             "user_not_found": "Пользователь не найден. Баллы не начислены.",
             "already_processed": "Этот ответ уже обработан. Повторного начисления не было.",
         }.get(str(exc), "Баллы не начислены.")
-        bot.reply_to(message, error_text)
+        delivery_group_send(order_id, f"Заказ №{order_id}: {error_text}", 'points_notice')
         return
     except Exception as exc:
         print(
@@ -9762,14 +9818,17 @@ def handle_manual_point_credit_input(message):
             f"{type(exc).__name__}: {exc}",
             flush=True,
         )
-        bot.reply_to(
-            message,
-            "Не удалось начислить баллы. Ошибка записана в Railway Logs; "
+        delivery_group_send(
+            order_id,
+            f"Заказ №{order_id}: не удалось начислить баллы. Ошибка записана в Railway Logs; "
             "нажмите кнопку заказа и попробуйте ещё раз.",
+            'points_notice',
         )
         return
 
-    customer_notified = True
+    # The ledger drives the card total. Never send a second admin confirmation
+    # or retry the credit just because a Telegram edit could not be delivered.
+    delivery_admin_cards_tick(order_id=order_id)
     try:
         init_user(customer_chat_id)
         bot.send_message(
@@ -9785,21 +9844,16 @@ def handle_manual_point_credit_input(message):
             ),
         )
     except Exception as exc:
-        customer_notified = False
         print(
             f"Manual points notification failed for order {order_id}: {exc}",
             flush=True,
         )
 
-    confirmation = (
-        f"✅ По заказу №{order_id} начислено <b>{amount}</b> баллов.\n"
-        f"Новый баланс клиента: <b>{new_balance}</b>."
-    )
-    if not customer_notified:
-        confirmation += (
-            "\n⚠️ Баланс обновлён, но сообщение клиенту доставить не удалось."
+        delivery_group_send(
+            order_id,
+            f"⚠️ Заказ №{order_id}: баланс обновлён, но сообщение клиенту доставить не удалось.",
+            'points_notice',
         )
-    bot.reply_to(message, confirmation)
 
 
 # ------------------------------------------------------------------------
